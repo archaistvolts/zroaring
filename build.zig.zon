@@ -1,0 +1,12 @@
+.{
+    .name = .roaring_regex,
+    .version = "0.0.0",
+    .fingerprint = 0xeeb222810b73aa6f, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
