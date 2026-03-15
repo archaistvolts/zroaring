@@ -17,7 +17,6 @@ pub fn build(b: *std.Build) void {
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
@@ -54,4 +53,10 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Check if everything compiles");
     check.dependOn(&exe_check.step);
     check.dependOn(&mod_tests.step);
+
+    const avx512 = b.option(bool, "avx512", "enable croaring avx512 support") orelse false;
+    mod_tests.root_module.addIncludePath(b.path("src"));
+    mod_tests.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    mod_tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
+    mod_tests.linkLibC();
 }
