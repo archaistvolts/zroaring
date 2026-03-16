@@ -4,17 +4,19 @@ const word_types = &.{ u1024, u512, u256, u128, u64, u32, u16, u8 };
 /// * `min`, `max`: smallest and largest integers the bitset can represent.
 /// * `Word`: a integer word type such as u64.
 ///
+// TODO
 pub fn WordBitset(options: struct {
     min: comptime_int = 0,
     max: comptime_int = 65535,
+    /// integer word size
     Word: type = u64,
 }) type {
     return struct {
         /// bitset stored as words with length padded to `words_len_padded`
         words: WordsPtrAligned,
         /// cached count of set bits in all words
-        cardinality: usize,
-        capacity: usize,
+        cardinality: u32,
+        capacity: u32,
         //                                                       example: min = 0
         //                                                                max = 65535
         //                                                               Word = u64
@@ -56,7 +58,7 @@ pub fn WordBitset(options: struct {
 
         pub fn init(words: WordsSliceAligned) Self {
             @memset(words, 0);
-            return .{ .words = words.ptr, .cardinality = 0, .capacity = words.len };
+            return .{ .words = words.ptr, .cardinality = 0, .capacity = @intCast(words.len) };
         }
 
         pub fn initBatch(words: WordsSliceAligned, values: []const Value) Self {

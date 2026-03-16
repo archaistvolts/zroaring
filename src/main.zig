@@ -2,11 +2,11 @@ pub const PositionalArgs = struct {
     file: []const u8,
     pattern: []const u8,
 
-    pub const Mask = std.meta.Int(.unsigned, positionals_fields.len);
-    const Mask_all_ones = (1 << (positionals_fields.len)) - 1;
+    // pub const Mask = std.meta.Int(.unsigned, positionals_fields.len);
+    // const Mask_all_ones = (1 << (positionals_fields.len)) - 1;
     pub const Error = error{MissingArg};
     fn usage(exe: []const u8) void {
-        std.debug.print("usage {s} FILE PATTERN\n", .{exe});
+        std.debug.print("usage: {s} FILE PATTERN\n", .{exe});
     }
     pub fn parse(argiter: *std.process.ArgIterator) Error!PositionalArgs {
         var seen: usize = 0;
@@ -49,8 +49,8 @@ pub fn main() !void {
 
     // TODO compile and run regex
 
-    // const r = RoaringRegex.init(args.pattern);
+    // const r = zroaring.init(args.pattern);
 }
 
 const std = @import("std");
-const RoaringRegex = @import("RoaringRegex");
+const zroaring = @import("zroaring");

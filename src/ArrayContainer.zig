@@ -44,6 +44,7 @@ pub fn deinit(c: ArrayContainer, allocator: mem.Allocator) void {
     if (c.capacity == 0) return;
     allocator.free(c.sorted_values[0..c.capacity]);
 }
+
 pub fn slice(c: ArrayContainer) []align(ALIGNMENT) u16 {
     return c.sorted_values[0..c.cardinality];
 }
@@ -156,8 +157,6 @@ pub fn equals(c1: ArrayContainer, c2: *const ArrayContainer) bool {
 }
 
 pub fn bitset_container_from_array(ac: ArrayContainer, allocator: mem.Allocator) !BitsetContainer {
-    // const ans = try allocator.create(BitsetContainer);
-    // errdefer allocator.destroy(ans);
     var ans: BitsetContainer = try .create(allocator);
     for (ac.slice()) |x| _ = ans.put(x);
     return ans;

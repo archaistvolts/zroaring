@@ -320,6 +320,10 @@ pub fn andnot_inplace(r1: *Bitmap, r2: Bitmap) void {
     unreachable; // TODO
 }
 
+pub fn is_frozen(r: Bitmap) bool {
+    return r.high_low_container.flags.contains(.frozen);
+}
+
 ///
 /// TODO: consider implementing:
 ///
@@ -334,7 +338,7 @@ pub fn andnot_inplace(r1: *Bitmap, r2: Bitmap) void {
 /// Frees the memory.
 ///
 pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
-    r.high_low_container.deinit(allocator);
+    if (!r.is_frozen()) r.high_low_container.clear(allocator);
 }
 
 ///
@@ -459,14 +463,13 @@ fn containerptr_add(
             return c;
         }
     } else {
-        const new_ac = try root.ArrayContainer.create(allocator);
-        errdefer new_ac.deinit(allocator);
-        const new_ac_c = Container.init(new_ac);
-        const new_ac_c1 = try new_ac_c.add(allocator, @truncate(val));
+        var new_c = Container.init(try root.ArrayContainer.create(allocator));
+        errdefer new_c.const_cast(.array).deinit(allocator);
+        new_c = try new_c.add(allocator, @truncate(val));
         // we could just assume that it stays an array container
-        try ra.insert_new_key_value_at(allocator, i, key, new_ac_c1);
+        try ra.insert_new_key_value_at(allocator, i, key, new_c);
         index.* = i;
-        return new_ac_c1;
+        return new_c;
     }
 }
 

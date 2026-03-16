@@ -24,7 +24,7 @@ pub const Typecode = enum(u8) {
     }
 };
 
-const Container = union(enum) {
+const Container = union(Typecode) {
     array: root.ArrayContainer,
     bitset: root.BitsetContainer,
     run: root.RunContainer,

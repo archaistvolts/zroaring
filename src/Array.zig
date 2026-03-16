@@ -5,9 +5,10 @@ flags: std.EnumSet(Flag),
 
 pub const ContainerKV = struct { container: Container, key: u16 };
 
-pub const Flag = enum { cow };
+pub const Flag = enum { cow, frozen };
 const NO_OFFSET_THRESHOLD = 4;
-pub const DEFAULT_MAX_SIZE = 4096; // TODO build option or generic
+// TODO build option or generic?
+pub const DEFAULT_MAX_SIZE = 4096;
 pub const MAX_CONTAINERS = 65536; // (1 << 16) * (1 << 16) = 1 << 32
 /// u13 by default
 pub const Cardinality = std.math.IntFittingRange(0, DEFAULT_MAX_SIZE);
@@ -34,8 +35,30 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
     return new_ra;
 }
 
+fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
+    for (0..ra.containers.len) |i| {
+        const c = ra.containers.items(.container)[i];
+        c.free(allocator);
+        switch (c.typecode) {
+            inline else => |t| allocator.destroy(c.const_cast(t)),
+        }
+    }
+}
+
+fn clear_without_containers(ra: *Array, allocator: mem.Allocator) void {
+    ra.containers.deinit(allocator);
+    ra.containers.len = 0;
+}
+
+pub fn clear(ra: *Array, allocator: mem.Allocator) void {
+    ra.clear_containers(allocator);
+    ra.clear_without_containers(allocator);
+}
+
 pub fn deinit(ra: *Array, allocator: mem.Allocator) void {
-    for (ra.containers.items(.container)) |c| c.deinit(allocator);
+    for (ra.containers.items(.container)) |c| {
+        c.deinit(allocator);
+    }
     ra.containers.deinit(allocator);
 }
 
@@ -160,7 +183,6 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
 ///
 /// This function is endian-sensitive.
 pub fn portable_deserialize(
-    // answer: *Array,
     allocator: mem.Allocator,
     r: *Io.Reader,
     tmp_allocator: mem.Allocator,

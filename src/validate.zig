@@ -1,11 +1,7 @@
 /// build identical bitmaps in zroaring and croaring from values.
 /// serialize both, compare bytes. cross deserialize, verify contents.
-fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
+fn validateRoundTrip(arena: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
     _ = name;
-    // TODO remove arena and fix leaks
-    var arenaallr = std.heap.ArenaAllocator.init(allocator);
-    defer arenaallr.deinit();
-    const arena = arenaallr.allocator();
 
     // build zroaring bitmap
     var zr: Bitmap = .{};
@@ -32,8 +28,10 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
 
     // serialize both
     const zr_buf = try arena.alloc(u8, zr_size);
+    defer arena.free(zr_buf);
     var zr_w = std.Io.Writer.fixed(zr_buf);
     const cr_buf = try arena.alloc(u8, cr_size);
+    defer arena.free(cr_buf);
     try testing.expectEqual(
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr)),
         zr.portable_serialize(&zr_w),
@@ -252,7 +250,10 @@ const mem = std.mem;
 const testing = std.testing;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
+
 const c = @cImport({
     // @cDefine("CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    @cInclude("c/roaring.h");
+    // @cDefine("CROARING_ATOMIC_IMPL_NONE", "");
+    // @cInclude("c/roaring.h");
+    @cInclude("c/roaring-subset.h");
 });

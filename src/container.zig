@@ -20,7 +20,10 @@ pub const Container = packed struct(usize) {
 
     pub fn deinit(c: Container, allocator: mem.Allocator) void {
         switch (c.typecode) {
-            inline else => |t| c.mut_cast(t).deinit(allocator),
+            inline else => |t| {
+                c.mut_cast(t).deinit(allocator);
+                allocator.destroy(c.mut_cast(t));
+            },
         }
     }
 
@@ -96,23 +99,18 @@ pub const Container = packed struct(usize) {
             .bitset => {
                 const bs: *BitsetContainer = c.mut_cast(.bitset);
                 _ = bs.put(val);
-
-                // bitset_container_set(CAST_bitset(c), val);
-                // *new_typecode = .bitset;
                 return c;
             },
             .array => {
                 const ac = c.mut_cast(.array);
                 const ok = try ac.try_add(allocator, val, Array.DEFAULT_MAX_SIZE) != .not_added;
-                if (ok) {
-                    return .init(ac);
-                } else {
-                    const bitset = try allocator.create(BitsetContainer);
-                    errdefer allocator.destroy(bitset);
-                    bitset.* = try ac.bitset_container_from_array(allocator);
-                    _ = bitset.put(val);
-                    return .init(bitset);
-                }
+                if (ok) return .init(ac);
+
+                const bitset = try allocator.create(BitsetContainer);
+                errdefer allocator.destroy(bitset);
+                bitset.* = try ac.bitset_container_from_array(allocator);
+                _ = bitset.put(val);
+                return .init(bitset);
             },
             .run => {
                 unreachable;
@@ -134,7 +132,7 @@ pub const Container = packed struct(usize) {
 
     pub fn free(c: Container, allocator: mem.Allocator) void {
         switch (c.typecode) {
-            inline else => |t| c.mut_cast(t).deinit(allocator),
+            inline else => |t| c.mut_cast(t).free(allocator),
         }
     }
 
@@ -259,7 +257,6 @@ pub const SharedContainer = extern struct {
     refcount: std.atomic.Value(u32),
     pub fn deinit(r: SharedContainer, allocator: mem.Allocator) void {
         r.container.deinit(allocator);
-        // allocator.destroy(r);
     }
     pub fn size_in_bytes(s: SharedContainer) usize {
         return s.container.size_in_bytes();

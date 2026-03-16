@@ -1,44 +1,22 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-
     const options = b.addOptions();
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
-
-    const mod = b.addModule("RoaringRegex", .{
+    const target = b.standardTargetOptions(.{});
+    const mod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{.{ .name = "build-options", .module = options.createModule() }},
     });
 
-    const mod_tests = b.addTest(.{
+    const tests_mod = b.addTest(.{
         .root_module = mod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
     });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    const run_tests_mod = b.addRunArtifact(tests_mod);
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-
-    const optimize = b.standardOptimizeOption(.{});
-    const exe = b.addExecutable(.{
-        .name = "roaring_regex",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "RoaringRegex", .module = mod }},
-        }),
-    });
-    b.installArtifact(exe);
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-    test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_tests_mod.step);
 
     const lib = b.addLibrary(.{ .root_module = mod, .name = "roaring_regex" });
     const docs = b.addInstallDirectory(.{
@@ -52,11 +30,11 @@ pub fn build(b: *std.Build) void {
     const exe_check = b.addExecutable(.{ .name = "check", .root_module = mod });
     const check = b.step("check", "Check if everything compiles");
     check.dependOn(&exe_check.step);
-    check.dependOn(&mod_tests.step);
+    check.dependOn(&tests_mod.step);
 
     const avx512 = b.option(bool, "avx512", "enable croaring avx512 support") orelse false;
-    mod_tests.root_module.addIncludePath(b.path("src"));
-    mod_tests.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
-    mod_tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    mod_tests.linkLibC();
+    tests_mod.root_module.addIncludePath(b.path("src"));
+    tests_mod.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    tests_mod.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
+    tests_mod.linkLibC();
 }
