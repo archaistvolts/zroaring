@@ -6,9 +6,11 @@ pub const Container = ctr.Container;
 pub const ArrayContainer = @import("ArrayContainer.zig");
 pub const BitsetContainer = ctr.BitsetContainer;
 pub const RunContainer = ctr.RunContainer;
+pub const Rle16 = RunContainer.Rle16;
 pub const SharedContainer = ctr.SharedContainer;
-pub const Typecode = @import("types.zig").Typecode;
-pub const serialize = @import("serialize.zig");
+const types = @import("types.zig");
+pub const Typecode = types.Typecode;
+pub const Cookie = types.Cookie;
 
 test {
     _ = Container;
@@ -18,6 +20,5 @@ test {
     _ = BitsetContainer;
     _ = RunContainer;
     _ = SharedContainer;
-    _ = serialize;
     _ = @import("validate.zig");
 }

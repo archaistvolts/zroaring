@@ -558,15 +558,16 @@ pub fn remove_checked(r: *Bitmap, x: u32) bool {
 pub fn contains(r: Bitmap, val: u32) bool {
     // For performance reasons, this function is and uses internal
     // functions directly.
-    const hb: u16 = val >> 16;
+    const hb: u16 = @truncate(val >> 16);
 
     // the next function call involves a binary search and lots of branching.
-    const i = r.high_low_container.get_index(hb);
-    if (i < 0) return false;
+    const found, const i = r.high_low_container.get_index(hb);
+    // std.debug.print("Bitmap.contains {} {}. found {}, key {}\n", .{ val, hb, found, i });
+    if (!found) return false;
 
     // rest might be a tad expensive, possibly involving another round of binary
     // search
-    return r.high_low_container.get_container_at_index(i).contains(val);
+    return r.high_low_container.get_container_at_index(i).contains(@truncate(val));
 }
 
 ///
@@ -840,7 +841,11 @@ pub fn size_in_bytes(r: Bitmap) usize {
 pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
     var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
-    var rb: Bitmap = .{ .high_low_container = try Array.portable_deserialize(allocator, r, arena.allocator()) };
+    var rb: Bitmap = .{ .high_low_container = try .portable_deserialize(
+        allocator,
+        r,
+        arena.allocator(),
+    ) };
     rb.set_copy_on_write(false);
     return rb;
 }

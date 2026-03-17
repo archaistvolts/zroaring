@@ -9,7 +9,7 @@ pub const Flag = enum { cow, frozen };
 const NO_OFFSET_THRESHOLD = 4;
 // TODO build option or generic?
 pub const DEFAULT_MAX_SIZE = 4096;
-pub const MAX_CONTAINERS = 65536; // (1 << 16) * (1 << 16) = 1 << 32
+pub const MAX_CONTAINERS = 65536; // (1 << 16)
 /// u13 by default
 pub const Cardinality = std.math.IntFittingRange(0, DEFAULT_MAX_SIZE);
 /// u16 by default
@@ -32,6 +32,7 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
     // Containers hold 64Ki elements, so 64Ki containers is enough to hold
     // `0x10000 * 0x10000` (all 2^32) elements
     try new_ra.containers.ensureTotalCapacity(allocator, @min(MAX_CONTAINERS, cap));
+    // std.debug.print("init_with_capacity({}) new_ra.containers.capacity {}\n", .{ cap, new_ra.containers.capacity });
     return new_ra;
 }
 
@@ -53,6 +54,7 @@ pub fn clear(ra: *Array, allocator: mem.Allocator) void {
 }
 
 pub fn deinit(ra: *Array, allocator: mem.Allocator) void {
+    // std.debug.print("ra deinit() ra {any}\n", .{ra});
     for (ra.containers.items(.container)) |c| {
         c.deinit(allocator);
     }
@@ -93,7 +95,7 @@ pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key
     containers.items(.container)[i] = c;
 }
 
-pub fn get_container_at_index(ra: *Array, i: u16) Container {
+pub fn get_container_at_index(ra: Array, i: u16) Container {
     return ra.containers.items(.container)[i];
 }
 
@@ -112,7 +114,7 @@ pub fn set_container_at_index(ra: *Array, i: u32, c: Container) void {
 pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
     const cslen: u32 = @intCast(ra.containers.len);
     if (cslen == 0) {
-        try w.writeStruct(serialize.Cookie{
+        try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
             .cardinality_minus1 = 0,
         }, .little);
@@ -124,11 +126,11 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
     var written_count: usize = 0;
     const hasrun = ra.has_run_container();
     if (hasrun) {
-        try w.writeStruct(serialize.Cookie{
+        try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE,
             .cardinality_minus1 = @intCast(cslen - 1),
         }, .little);
-        written_count += @sizeOf(serialize.Cookie);
+        written_count += @sizeOf(root.Cookie);
         const s = (cslen + 7) / 8;
         written_count += try w.writeSplat(&.{"\x00"}, s);
         if (true) unreachable; // TODO
@@ -143,12 +145,12 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
         else
             4 + 8 * cslen + s;
     } else { // backwards compatibility
-        try w.writeStruct(serialize.Cookie{
+        try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
             .cardinality_minus1 = @intCast(cslen - 1),
         }, .little);
         try w.writeInt(u32, cslen, .little);
-        written_count += @sizeOf(serialize.Cookie) + @sizeOf(u32);
+        written_count += @sizeOf(root.Cookie) + @sizeOf(u32);
         startOffset = 4 + 4 + 4 * cslen + 4 * cslen;
     }
     for (slice.items(.container), slice.items(.key)) |c, k| {
@@ -184,43 +186,41 @@ pub fn portable_deserialize(
     r: *Io.Reader,
     tmp_allocator: mem.Allocator,
 ) !Array {
-    const cookie = try r.takeStruct(serialize.Cookie, .little);
-    if (cookie.magic != .SERIAL_COOKIE and
-        cookie.magic != .SERIAL_COOKIE_NO_RUNCONTAINER)
-    {
-        return error.InvalidCookie; // failed to find one of the right cookies.
-    }
-    const size: u32 =
-        if (cookie.magic == .SERIAL_COOKIE)
-            cookie.cardinality_minus1 + 1
-        else
-            try r.takeInt(u32, .little);
+    const cookie = try r.takeStruct(root.Cookie, .little);
+    if (cookie.magic != .SERIAL_COOKIE and cookie.magic != .SERIAL_COOKIE_NO_RUNCONTAINER)
+        return error.UnexpectedCookie;
 
-    if (size > MAX_CONTAINERS) {
-        // You cannot have so many containers, the data must be corrupted.
-        return error.TooManyContainers;
-    }
+    const size: u32 = if (cookie.magic == .SERIAL_COOKIE)
+        cookie.cardinality_minus1 + 1
+    else
+        try r.takeInt(u32, .little);
+    if (size > MAX_CONTAINERS)
+        return error.TooManyContainers; // data must be corrupted
+
     var bitmapOfRunContainers: ?[]u8 = null;
     const hasrun = cookie.magic == .SERIAL_COOKIE;
     if (hasrun) {
         const s = (size + 7) / 8;
         bitmapOfRunContainers = try r.readAlloc(tmp_allocator, s);
     }
-    const keyscards = try r.readAlloc(tmp_allocator, size * 2 * @sizeOf(u16));
-
+    const keyscards = try r.readSliceEndianAlloc(tmp_allocator, u16, size * 2, .little);
     var answer = try init_with_capacity(allocator, size);
     errdefer answer.deinit(allocator);
+    // std.debug.print("keyscards {any}\n", .{keyscards});
     answer.containers.len = size;
     for (0..size) |k| {
-        answer.containers.items(.key)[k] = mem.readInt(u16, (keyscards.ptr + 4 * k)[0..2], .little);
+        const key = keyscards[k * 2];
+        answer.containers.items(.key)[k] = key;
     }
+    // std.debug.print("answer {f}\n", .{answer});
 
     if ((!hasrun) or (size >= NO_OFFSET_THRESHOLD)) {
         _ = try r.discard(.limited(size * 4)); // skip the offsets
     }
     for (0..size) |k| { // read containers
-        const tmp = mem.readInt(u16, (keyscards.ptr + 4 * k + 2)[0..2], .little);
-        const thiscard: u32 = tmp + 1;
+
+        const tmp = keyscards[k * 2 + 1];
+        const thiscard = @as(u32, tmp) + 1;
         var isbitmap = (thiscard > DEFAULT_MAX_SIZE);
         var isrun = false;
         if (hasrun) {
@@ -229,6 +229,7 @@ pub fn portable_deserialize(
                 isrun = true;
             }
         }
+        // std.debug.print("k {} tmp {} thiscard {} isbitmap {} isrun {}\n", .{ k, tmp, thiscard, isbitmap, isrun });
         if (isbitmap) {
             const c = try allocator.create(BitsetContainer);
             errdefer allocator.destroy(c);
@@ -237,42 +238,22 @@ pub fn portable_deserialize(
             try c.read(r, thiscard);
             answer.containers.items(.container)[k] = .init(c);
         } else if (isrun) {
-            unreachable; // TODO
-            // we check that the read is allowed
-            // *readbytes += @sizeOf(u16);
-            // if (*readbytes > maxbytes) {
-            //     // Running out of bytes while reading a run container (header).
-            //     ra_clear(answer);  // we need to clear the containers already
-            //                        // allocated, and the roaring array
-            //     return false;
-            // }
-            // u16 n_runs;
-            // memcpy(&n_runs, buf, @sizeOf(u16));
-            // size_t containersize = n_runs * sizeof(rle16_t);
-            // *readbytes += containersize;
-            // if (*readbytes > maxbytes) {  // data is corrupted?
-            //     // Running out of bytes while reading a run container.
-            //     ra_clear(answer);  // we need to clear the containers already
-            //                        // allocated, and the roaring array
-            //     return false;
-            // }
-            // // it is now safe to read
-
-            // run_container_t *c = run_container_create();
-            // if (c == NULL) {  // memory allocation failure
-            //     // Failed to allocate memory for a run container.
-            //     ra_clear(answer);  // we need to clear the containers already
-            //                        // allocated, and the roaring array
-            //     return false;
-            // }
-            // answer.size++;
-            // buf += run_container_read(thiscard, c, buf);
-            // answer.containers[k] = c;
-            // answer.typecodes[k] = RUN_CONTAINER_TYPE;
+            const n_runs = try r.takeInt(u16, .little);
+            const containersize = n_runs * @sizeOf(root.Rle16);
+            _ = containersize; // autofix
+            // std.debug.print("n_runs {} containersize {} thiscard {}\n", .{ n_runs, containersize, thiscard });
+            const c = try allocator.create(RunContainer);
+            errdefer allocator.destroy(c);
+            c.* = try RunContainer.create_with_capacity(allocator, n_runs);
+            errdefer c.deinit(allocator);
+            _ = try c.read(allocator, n_runs, r);
+            answer.containers.items(.container)[k] = .init(c);
         } else {
             const c = try allocator.create(ArrayContainer);
             c.* = try ArrayContainer.init_capacity(allocator, thiscard);
             _ = try c.read(allocator, thiscard, r);
+            // std.debug.print("ArrayContainer after read() {f}\n", .{c});
+            assert(c.cardinality == thiscard);
             answer.containers.items(.container)[k] = .init(c);
         }
     }
@@ -286,32 +267,6 @@ pub fn orderFn16(a: u16, b: u16) std.math.Order {
 pub const GetIndex = struct { bool, u16 };
 pub fn get_index(ra: Array, key: u16) GetIndex {
     return ArrayContainer.get_index(ra.containers.items(.key), key);
-}
-
-///
-///   Good old binary search.
-///   Assumes that array is sorted, has logarithmic complexity.
-///   if the result is x, then:
-///    * if ( x>0 )  you have array[x] = ikey
-///    * if ( x<0 ) then inserting ikey at position -x-1 in array (insuring that
-///  array[-x-1]=ikey) keeps the array sorted.
-// TODO move somewhere shared. remove, use sort.lowerBound()
-pub fn binarySearch(array: []const u16, ikey: u16) i32 {
-    var low: i32 = 0;
-    var high: i32 = @bitCast(@as(u32, @intCast(array.len)));
-    high -= 1;
-    while (low <= high) {
-        const middleIndex = (low + high) >> 1;
-        const middleValue = array[@intCast(middleIndex)];
-        if (middleValue < ikey) {
-            low = middleIndex + 1;
-        } else if (middleValue > ikey) {
-            high = middleIndex - 1;
-        } else {
-            return middleIndex;
-        }
-    }
-    return -(low + 1);
 }
 
 pub fn has_run_container(ra: Array) bool {
@@ -369,8 +324,8 @@ const mem = std.mem;
 const Io = std.Io;
 const assert = std.debug.assert;
 const root = @import("root.zig");
-const serialize = root.serialize;
 const Typecode = root.Typecode;
 const Container = root.Container;
 const BitsetContainer = root.BitsetContainer;
 const ArrayContainer = root.ArrayContainer;
+const RunContainer = root.RunContainer;

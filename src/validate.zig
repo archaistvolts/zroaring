@@ -167,8 +167,6 @@ pub fn validate() !void {
     for (0..5000) |i| bitset5000[i] = @intCast(i);
     try validateRoundTrip(allocator, "bitset_5000", &bitset5000, false);
 
-    if (true) return;
-
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
     try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, true);
@@ -243,6 +241,37 @@ pub fn validate() !void {
 
 test validate {
     try validate();
+}
+
+fn validateTestdata(filepath: []const u8) !void {
+    const f = try std.fs.cwd().openFile(filepath, .{});
+    defer f.close();
+    var rbuf: [256]u8 = undefined;
+    var freader = f.reader(&rbuf);
+    var rb = try Bitmap.portable_deserialize(testing.allocator, &freader.interface);
+    defer rb.deinit(testing.allocator);
+
+    // > That is, they contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
+    // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata
+    var k: u32 = 0;
+    while (k < 100000) : (k += 1000)
+        try testing.expect(rb.contains(k));
+
+    k = 100000;
+    while (k < 200000) : (k += 1)
+        try testing.expect(rb.contains(3 * k));
+
+    k = 700000;
+    while (k < 800000) : (k += 1)
+        try testing.expect(rb.contains(k));
+}
+
+test "without runs" {
+    try validateTestdata("testdata/bitmapwithoutruns.bin");
+}
+
+test "with runs" {
+    try validateTestdata("testdata/bitmapwithruns.bin");
 }
 
 const std = @import("std");

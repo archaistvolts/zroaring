@@ -72,13 +72,12 @@ pub fn read(container: *ArrayContainer, allocator: mem.Allocator, cardinality: u
     }
     container.cardinality = cardinality;
     try r.readSliceEndian(u16, container.slice(), .little);
-
     return container.size_in_bytes();
 }
 
 /// Returns (found, index), if not found, index is where to insert x
 pub fn get_index(values: []const u16, x: u16) Array.GetIndex {
-    const idx = Array.binarySearch(values, x);
+    const idx = misc.binarySearch(values, x);
     const found = idx >= 0;
     return .{ found, @intCast(if (found) idx else -idx - 1) };
 }
@@ -156,6 +155,34 @@ pub fn equals(c1: ArrayContainer, c2: *const ArrayContainer) bool {
     return c1.cardinality == c2.cardinality and mem.eql(u16, c1.slice(), c2.slice());
 }
 
+pub fn contains(c: ArrayContainer, pos: u16) bool {
+    // std.debug.print("ArrayContainer.contains({}) cardinality {} slice {any}\n", .{ pos, c.cardinality, c.slice() });
+    // binary search with fallback to linear search for short ranges
+    var low: i32 = 0;
+    const carr = c.slice();
+    var high = @as(i32, @intCast(c.cardinality)) - 1;
+    while (high >= low + 16) {
+        const middleIndex = (low + high) >> 1;
+        const middleValue = carr[@intCast(middleIndex)];
+        // std.debug.print("low {} high {} middleIndex {} middlevalue {}\n", .{ low, high, middleIndex, middleValue });
+        if (middleValue < pos) {
+            low = middleIndex + 1;
+        } else if (middleValue > pos) {
+            high = middleIndex - 1;
+        } else {
+            return true;
+        }
+    }
+
+    var i = low;
+    while (i <= high) : (i += 1) {
+        const v = carr[@intCast(i)];
+        if (v == pos) return true;
+        if (v > pos) return false;
+    }
+    return false;
+}
+
 pub fn bitset_container_from_array(ac: ArrayContainer, allocator: mem.Allocator) !BitsetContainer {
     var ans: BitsetContainer = try .create(allocator);
     for (ac.slice()) |x| _ = ans.put(x);
@@ -173,3 +200,4 @@ const Io = std.Io;
 const root = @import("root.zig");
 const Array = root.Array;
 const BitsetContainer = root.BitsetContainer;
+const misc = @import("misc.zig");

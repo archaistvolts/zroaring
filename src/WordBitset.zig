@@ -130,6 +130,7 @@ pub fn WordBitset(options: struct {
         }
 
         pub fn contains(self: Self, v2: Value) bool {
+            // std.debug.print("WordBitset.contains({})\n", .{v2});
             const value = v2 - min;
             const word_idx = value / Word_bits;
             const bit_idx = value % Word_bits;

@@ -28,7 +28,7 @@ pub const Container = packed struct(usize) {
     }
 
     pub fn ptr(c: Container) *anyopaque {
-        return @ptrFromInt(@as(usize, c.address << 2));
+        return @ptrFromInt(@as(usize, c.address) << 2);
     }
 
     pub fn is_null(c: Container) bool {
@@ -38,7 +38,7 @@ pub const Container = packed struct(usize) {
     pub fn get_cardinality(c: Container) u64 {
         return switch (c.typecode) {
             inline else => |t| c.const_cast(t).cardinality,
-            .run => unreachable, // TODO
+            .run => c.const_cast(.run).get_cardinality_scalar(), // TODO avx2, avx512
             .shared => unreachable, // TODO
         };
     }
@@ -97,8 +97,7 @@ pub const Container = packed struct(usize) {
         // TODO // const c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
             .bitset => {
-                const bs: *BitsetContainer = c.mut_cast(.bitset);
-                _ = bs.put(val);
+                _ = c.mut_cast(.bitset).put(val);
                 return c;
             },
             .array => {
@@ -119,11 +118,11 @@ pub const Container = packed struct(usize) {
                 // *new_typecode = .run;
                 // return c;
             },
-            .shared => unreachable,
+            .shared => unreachable, // TODO
         }
     }
 
-    pub fn addAssumeCapacity(c: Container, hb: u16, typecode: Typecode) void {
+    pub fn add_assume_capacity(c: Container, hb: u16, typecode: Typecode) void {
         _ = hb;
         _ = typecode;
         _ = c;
@@ -141,24 +140,31 @@ pub const Container = packed struct(usize) {
         const c1 = c.unwrap_shared();
         return switch (c1.typecode) {
             inline else => |t| try c1.const_cast(t).write(w),
-            // .bitset => ,
-            // .array => c1.const_cast(.array).write(w),
-            // .run => c1.const_cast(.run).write(w),
-            .shared => unreachable,
+            .shared => unreachable, // TODO
         };
     }
 
-    pub fn equals(c1: Container, c2: Container) bool {
-        const c1_ = c1.unwrap_shared();
-        const c2_ = c2.unwrap_shared();
+    pub fn contains(c: Container, val: u16) bool {
+        const c1 = c.unwrap_shared();
+        const ret = switch (c1.typecode) {
+            inline else => |t| c1.const_cast(t).contains(val),
+            .shared => unreachable, // TODO
+        };
+        // std.debug.print("Container.contains({}) {t} {}\n", .{ val, c1.typecode, ret });
+        return ret;
+    }
 
-        return switch (c1_.typecode.pair(c2_.typecode)) { // PAIR_CONTAINER_TYPES(type1, type2)) {
-            Typecode.pair(.bitset, .bitset) => c1_.const_cast(.bitset)
-                .equals(c2_.const_cast(.bitset)),
-            Typecode.pair(.array, .array) => c1_.const_cast(.array)
-                .equals(c2_.const_cast(.array)),
+    pub fn equals(c1: Container, c2: Container) bool {
+        const c1u = c1.unwrap_shared();
+        const c2u = c2.unwrap_shared();
+
+        return switch (c1u.typecode.pair(c2u.typecode)) { // PAIR_CONTAINER_TYPES(type1, type2)) {
+            Typecode.pair(.bitset, .bitset) => c1u.const_cast(.bitset)
+                .equals(c2u.const_cast(.bitset)),
+            Typecode.pair(.array, .array) => c1u.const_cast(.array)
+                .equals(c2u.const_cast(.array)),
             else => {
-                std.debug.print("Conatiner.equals(). TODO pair ({t}, {t})\n", .{ c1_.typecode, c2_.typecode });
+                std.debug.print("Conatiner.equals(). TODO pair ({t}, {t})\n", .{ c1u.typecode, c2u.typecode });
                 unreachable;
             },
             //     case CONTAINER_PAIR(BITSET, BITSET):
@@ -218,12 +224,18 @@ pub const Container = packed struct(usize) {
 pub const BitsetContainer = WordBitset(.{});
 
 pub const RunContainer = struct {
+    runs: [*]Rle16,
     n_runs: u32,
     capacity: u32,
-    runs: [*]Rle16,
 
     pub const Rle16 = struct { value: u16, length: u16 };
 
+    pub fn create(allocator: mem.Allocator) !RunContainer {
+        return try create_with_capacity(allocator, 0);
+    }
+    pub fn create_with_capacity(allocator: mem.Allocator, size: u32) !RunContainer {
+        return .{ .runs = (try allocator.alloc(Rle16, size)).ptr, .capacity = size, .n_runs = 0 };
+    }
     pub fn deinit(r: RunContainer, allocator: mem.Allocator) void {
         allocator.free(r.runs[0..r.capacity]);
     }
@@ -238,10 +250,60 @@ pub const RunContainer = struct {
         _ = w;
         unreachable;
     }
-
+    pub fn contains(r: RunContainer, pos: u16) bool {
+        var index = misc.interleavedBinarySearch(r.slice(), pos);
+        // std.debug.print("RunContainer.contains pos {} index {}\n", .{pos, index});
+        if (index >= 0) return true;
+        index = -index - 2; // points to preceding value, possibly -1
+        if (index != -1) { // possible match
+            const offset = pos - r.runs[@intCast(index)].value;
+            const le = r.runs[@intCast(index)].length;
+            if (offset <= le) return true;
+        }
+        return false;
+    }
+    pub fn read(r: *RunContainer, allocator: mem.Allocator, n_runs: u32, ior: *Io.Reader) !usize {
+        if (n_runs > r.capacity) {
+            try r.grow(allocator, n_runs, false);
+        }
+        r.n_runs = n_runs;
+        // std.debug.print("RunContainer.read() r {any}\n", .{r});
+        try ior.readSliceEndian(Rle16, r.slice(), .little);
+        return r.size_in_bytes();
+    }
+    pub fn grow(r: *RunContainer, allocator: mem.Allocator, min: u32, copy: bool) !void {
+        var newCapacity = if (r.capacity == 0)
+            0
+        else if (r.capacity < 64)
+            r.capacity * 2
+        else if (r.capacity < 1024)
+            r.capacity * 3 / 2
+        else
+            r.capacity * 5 / 4;
+        if (newCapacity < min) newCapacity = min;
+        // std.debug.print("RunContainer.grow({}) newCapacity {}\n", .{ min, newCapacity });
+        r.capacity = newCapacity;
+        assert(r.capacity >= min);
+        if (copy) {
+            const oldruns = r.slice();
+            r.runs = (try allocator.realloc(oldruns, r.capacity)).ptr;
+        } else {
+            allocator.free(r.slice());
+            r.runs = (try allocator.alloc(Rle16, r.capacity)).ptr;
+        }
+        // We may have run.runs == NULL.
+    }
+    pub fn slice(c: RunContainer) []Rle16 {
+        return c.runs[0..c.n_runs];
+    }
+    /// Get the cardinality of `run'. Requires an actual computation.
+    pub fn get_cardinality_scalar(run: RunContainer) u64 {
+        var sum = run.n_runs; // start at n_runs to skip +1 for each pair.
+        for (0..run.n_runs) |k| sum += run.runs[k].length;
+        return sum;
+    }
     pub fn format(c: RunContainer, w: *Io.Writer) !void {
-        _ = c; // autofix
-        try w.print("RunConatiner values {any}", .{unreachable});
+        try w.print("RunConatiner values {any}", .{c.slice()});
     }
 };
 
@@ -270,3 +332,4 @@ const Io = std.Io;
 const ArrayContainer = @import("ArrayContainer.zig");
 const Array = @import("Array.zig");
 const WordBitset = @import("WordBitset.zig").WordBitset;
+const misc = @import("misc.zig");
