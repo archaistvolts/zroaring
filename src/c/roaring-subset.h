@@ -38,22 +38,6 @@ typedef struct roaring_array_s {
 typedef struct roaring_bitmap_s {
     roaring_array_t high_low_container;
 } roaring_bitmap_t;
-/**
- * Dynamically allocates a new bitmap (initially empty).
- * Returns NULL if the allocation fails.
- * Capacity is a performance hint for how many "containers" the data will need.
- * Client is responsible for calling `roaring_bitmap_free()`.
- */
-roaring_bitmap_t *roaring_bitmap_create_with_capacity(uint32_t cap);
-
-/**
- * Dynamically allocates a new bitmap (initially empty).
- * Returns NULL if the allocation fails.
- * Client is responsible for calling `roaring_bitmap_free()`.
- */
-inline roaring_bitmap_t *roaring_bitmap_create(void) {
-    return roaring_bitmap_create_with_capacity(0);
-}
 
 /* struct array_container - sparse representation of a bitmap
  *
@@ -129,6 +113,23 @@ typedef struct run_container_s run_container_t;
 #define CAST_run(c) CAST(run_container_t *, c)  // safer downcast
 #define const_CAST_run(c) CAST(const run_container_t *, c)
 #define movable_CAST_run(c) movable_CAST(run_container_t **, c)
+
+/**
+ * Dynamically allocates a new bitmap (initially empty).
+ * Returns NULL if the allocation fails.
+ * Capacity is a performance hint for how many "containers" the data will need.
+ * Client is responsible for calling `roaring_bitmap_free()`.
+ */
+roaring_bitmap_t *roaring_bitmap_create_with_capacity(uint32_t cap);
+
+/**
+ * Dynamically allocates a new bitmap (initially empty).
+ * Returns NULL if the allocation fails.
+ * Client is responsible for calling `roaring_bitmap_free()`.
+ */
+inline roaring_bitmap_t *roaring_bitmap_create(void) {
+    return roaring_bitmap_create_with_capacity(0);
+}
 
 
 /**

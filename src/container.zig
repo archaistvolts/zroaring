@@ -1,7 +1,12 @@
 /// a tagged pointer
 pub const Container = packed struct(usize) {
+    /// lower 2 bits
     typecode: Typecode,
+    /// upper 62 bits on 64 bit platforms
     address: Address,
+
+    pub const MAX_CARDINALITY = 0x10000;
+    pub const zero = mem.zeroes(Container);
 
     const Address = @Type(.{ .int = .{
         .bits = @bitSizeOf(usize) - @bitSizeOf(Typecode),
@@ -15,6 +20,19 @@ pub const Container = packed struct(usize) {
         return .{
             .typecode = Typecode.fromType(@TypeOf(c.*)),
             .address = @intCast(address >> 2),
+        };
+    }
+
+    /// c must be a container type such as ArrayContainer
+    pub fn create_from_value(allocator: mem.Allocator, c: anytype) !Container {
+        const T = @TypeOf(c);
+        return switch (T) {
+            ArrayContainer, BitsetContainer, RunContainer, SharedContainer => {
+                const ret = try allocator.create(T);
+                ret.* = c;
+                return .init(ret);
+            },
+            else => unreachable, // non container type
         };
     }
 
@@ -32,7 +50,7 @@ pub const Container = packed struct(usize) {
     }
 
     pub fn is_null(c: Container) bool {
-        return c.address == 0;
+        return c == mem.zeroes(Container);
     }
 
     pub fn get_cardinality(c: Container) u64 {
@@ -97,18 +115,18 @@ pub const Container = packed struct(usize) {
         // TODO // const c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
             .bitset => {
-                _ = c.mut_cast(.bitset).put(val);
+                _ = c.mut_cast(.bitset).set(val);
                 return c;
             },
             .array => {
                 const ac = c.mut_cast(.array);
-                const ok = try ac.try_add(allocator, val, Array.DEFAULT_MAX_SIZE) != .not_added;
+                const ok = try ac.try_add(allocator, val, C.DEFAULT_MAX_SIZE) != .not_added;
                 if (ok) return .init(ac);
 
                 const bitset = try allocator.create(BitsetContainer);
                 errdefer allocator.destroy(bitset);
                 bitset.* = try ac.bitset_container_from_array(allocator);
-                _ = bitset.put(val);
+                _ = bitset.set(val);
                 return .init(bitset);
             },
             .run => {
@@ -181,12 +199,12 @@ pub const Container = packed struct(usize) {
 
             //     case CONTAINER_PAIR(BITSET, ARRAY):
             //         // java would always return false?
-            //         return array_container_equal_bitset(const_CAST_array(c2),
+            //         return ArrayContainer.equal_bitset(const_CAST_array(c2),
             //                                             const_CAST_bitset(c1));
 
             //     case CONTAINER_PAIR(ARRAY, BITSET):
             //         // java would always return false?
-            //         return array_container_equal_bitset(const_CAST_array(c1),
+            //         return ArrayContainer.equal_bitset(const_CAST_array(c1),
             //                                             const_CAST_bitset(c2));
 
             //     case CONTAINER_PAIR(ARRAY, RUN):
@@ -198,7 +216,7 @@ pub const Container = packed struct(usize) {
             //                                           const_CAST_array(c2));
 
             //     case CONTAINER_PAIR(ARRAY, ARRAY):
-            //         return array_container_equals(const_CAST_array(c1),
+            //         return ArrayContainer.equals(const_CAST_array(c1),
             //                                       const_CAST_array(c2));
 
             //     case CONTAINER_PAIR(RUN, RUN):
@@ -211,7 +229,128 @@ pub const Container = packed struct(usize) {
             // }
         };
     }
+
+    ///
+    ///Create new container which is a union of run container and
+    ///range [min, max]. Caller is responsible for freeing run container.
+    ///
+    pub fn from_run_range(run: *const RunContainer, min: u32, max: u32) Container {
+        _ = run; // autofix
+        _ = min; // autofix
+        _ = max; // autofix
+        unreachable;
+    }
+
+    ///
+    /// Add all values in range [min, max] to a given container.
+    ///
+    /// If the returned pointer is different from $container, then a new container
+    /// has been created and the caller is responsible for freeing it.
+    /// The type of the first container may change. Returns the modified
+    /// (and possibly new) container.
+    ///
+    pub fn add_range(c: Container, allocator: mem.Allocator, min: u32, max: u32) !Container {
+        // NB: when selecting new container type, we perform only inexpensive checks
+        switch (c.typecode) {
+            .bitset => {
+                const bitset = c.mut_cast(.bitset);
+
+                var union_cardinality: u32 = 0;
+                union_cardinality += bitset.cardinality;
+                union_cardinality += max - min + 1;
+                union_cardinality -=
+                    BitsetContainer.lenrange_cardinality(bitset.words, min, max - min);
+
+                if (union_cardinality == MAX_CARDINALITY) {
+                    return try create_from_value(allocator, try RunContainer.create_range(allocator, 0, MAX_CARDINALITY));
+                } else {
+                    BitsetContainer.set_lenrange(bitset.words, min, max - min);
+                    bitset.cardinality = union_cardinality;
+                    return c;
+                }
+            },
+            .array => {
+                const array = c.mut_cast(.array);
+                const nvals_greater =
+                    misc.count_greater(array.slice(), @truncate(max));
+                const nvals_less =
+                    misc.count_less(array.slice()[0 .. array.cardinality - nvals_greater], @truncate(min));
+                const union_cardinality =
+                    nvals_less + (max - min + 1) + nvals_greater;
+
+                if (union_cardinality == MAX_CARDINALITY) {
+                    return try create_from_value(allocator, try RunContainer.create_range(allocator, 0, MAX_CARDINALITY));
+                } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
+                    try array.add_range_nvals(allocator, min, max, nvals_less, nvals_greater);
+                    return c;
+                } else {
+                    var bitset = try array.to_bitset_container(allocator);
+                    BitsetContainer.set_lenrange(bitset.words, min, max - min);
+                    bitset.cardinality = union_cardinality;
+                    return try create_from_value(allocator, bitset);
+                }
+            },
+            .run => {
+                const run = c.mut_cast(.run);
+                const nruns_greater =
+                    misc.rle16_count_greater(run.slice(), @truncate(max));
+                const nruns_less =
+                    misc.rle16_count_less(run.runs[0 .. run.n_runs - nruns_greater], @truncate(min));
+
+                const run_size_bytes =
+                    (nruns_less + 1 + nruns_greater) * @sizeOf(root.Rle16);
+                const bitset_size_bytes =
+                    BitsetContainer.SIZE_IN_WORDS * @sizeOf(u64);
+
+                if (run_size_bytes <= bitset_size_bytes) {
+                    try run.add_range_nruns(allocator, min, max, nruns_less, nruns_greater);
+                    return c;
+                } else {
+                    return from_run_range(run, min, max);
+                }
+            },
+            .shared => unreachable, // TODO
+        }
+    }
+
+    ///
+    /// make a container with a run of ones
+    ///
+    /// initially always use a run container, even if an array might be
+    /// marginally smaller
+    pub fn range_of_ones(allocator: mem.Allocator, range_start: u32, range_end: u32) !Container {
+        assert(range_end >= range_start);
+        const cardinality = range_end - range_start + 1;
+        return try if (cardinality <= 2)
+            create_from_value(allocator, try ArrayContainer.create_range(allocator, range_start, range_end))
+        else
+            create_from_value(allocator, try RunContainer.create_range(allocator, range_start, range_end));
+    }
+
+    /// Create a container with all the values between in [min,max) at a
+    /// distance k*step from min.
+    pub fn from_range(allocator: mem.Allocator, min: u32, max: u32, step: u16) !Container {
+        if (step == 0) return .zero; // being paranoid
+        if (step == 1) {
+            return try range_of_ones(allocator, min, max);
+        }
+        const size = (max - min + step - 1) / step;
+        if (size <= C.DEFAULT_MAX_SIZE) { // array container
+
+            const array = try ArrayContainer.create_with_capacity(allocator, size);
+            try array.add_from_range(allocator, min, max, step);
+            assert(array.cardinality == size);
+            return try create_from_value(allocator, array);
+        } else { // bitset container
+            var bitset = try BitsetContainer.create(allocator);
+            bitset.add_range(min, max, step);
+            assert(bitset.cardinality == size);
+            return try create_from_value(allocator, bitset);
+        }
+    }
+
     pub fn format(c: Container, w: *Io.Writer) !void {
+        std.debug.print("{x}-{x}", .{ @intFromEnum(c.typecode), c.address });
         switch (c.typecode) {
             inline else => |tag| {
                 try w.print("{t} ", .{tag});
@@ -221,7 +360,7 @@ pub const Container = packed struct(usize) {
     }
 };
 
-pub const BitsetContainer = WordBitset(.{});
+pub const BitsetContainer = @import("WordBitset.zig").WordBitset(.{});
 
 pub const RunContainer = struct {
     runs: [*]Rle16,
@@ -236,8 +375,28 @@ pub const RunContainer = struct {
     pub fn create_with_capacity(allocator: mem.Allocator, size: u32) !RunContainer {
         return .{ .runs = (try allocator.alloc(Rle16, size)).ptr, .capacity = size, .n_runs = 0 };
     }
+    ///
+    /// The new container consists of a single run [start,stop).
+    /// It is required that stop>start, the caller is responsability for this check.
+    /// It is required that stop <= (1<<16), the caller is responsability for this
+    /// check. The cardinality of the created container is stop - start. Returns NULL
+    /// on failure
+    ///
+    pub fn create_range(allocator: mem.Allocator, start: u32, stop: u32) !RunContainer {
+        var rc = try create_with_capacity(allocator, 1);
+        _ = rc.append_first(.{ .value = @intCast(start), .length = @intCast(stop - start - 1) });
+        return rc;
+    }
     pub fn deinit(r: RunContainer, allocator: mem.Allocator) void {
         allocator.free(r.runs[0..r.capacity]);
+    }
+    ///
+    /// Like run_container_append but it is assumed that the content of run is empty.
+    ///
+    pub fn append_first(run: *RunContainer, vl: Rle16) Rle16 {
+        run.runs[run.n_runs] = vl;
+        run.n_runs += 1;
+        return vl;
     }
     pub fn serialized_size_in_bytes(r: RunContainer) usize {
         return @sizeOf(u16) + @sizeOf(Rle16) * r.n_runs; // each run requires 2 2-byte entries.
@@ -302,6 +461,51 @@ pub const RunContainer = struct {
         for (0..run.n_runs) |k| sum += run.runs[k].length;
         return sum;
     }
+    ///
+    /// Moves the data so that we can write data at index
+    ///
+    fn makeRoomAtIndex(run: *RunContainer, allocator: mem.Allocator, index: u0) !void {
+        // static inline void makeRoomAtIndex(run_container_t *run, uint16_t index) {
+        // This function calls realloc + memmove sequentially to move by one index.
+        // Potentially copying twice the array.
+        //
+        if (run.n_runs + 1 > run.capacity)
+            try run.grow(allocator, run.n_runs + 1, true);
+        const len = run.n_runs - index;
+        @memmove(
+            (run.runs + 1 + index)[0..len],
+            (run.runs + index)[0..len],
+        );
+        run.n_runs += 1;
+    }
+
+    ///
+    /// Add all values in range [min, max] using hint.
+    ///
+    pub fn add_range_nruns(run: *RunContainer, allocator: mem.Allocator, min: u32, max: u32, nruns_less: u32, nruns_greater: u32) !void {
+        const nruns_common = run.n_runs - nruns_less - nruns_greater;
+        if (nruns_common == 0) {
+            try run.makeRoomAtIndex(allocator, @truncate(nruns_less));
+            run.runs[nruns_less].value = @truncate(min);
+            run.runs[nruns_less].length = @truncate(max - min);
+        } else {
+            const common_min = run.runs[nruns_less].value;
+            const common_max = run.runs[nruns_less + nruns_common - 1].value +
+                run.runs[nruns_less + nruns_common - 1].length;
+            const result_min = if (common_min < min) common_min else min;
+            const result_max = if (common_max > max) common_max else max;
+
+            run.runs[nruns_less].value = @truncate(result_min);
+            run.runs[nruns_less].length = @truncate(result_max - result_min);
+
+            @memmove(
+                run.runs[nruns_less + 1 ..][0..nruns_greater],
+                run.runs[run.n_runs - nruns_greater ..][0..nruns_greater],
+            );
+            run.n_runs = nruns_less + 1 + nruns_greater;
+        }
+    }
+
     pub fn format(c: RunContainer, w: *Io.Writer) !void {
         try w.print("RunConatiner values {any}", .{c.slice()});
     }
@@ -323,13 +527,13 @@ pub const SharedContainer = extern struct {
     }
 };
 
-const types = @import("types.zig");
-const Typecode = types.Typecode;
 const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
 const Io = std.Io;
-const ArrayContainer = @import("ArrayContainer.zig");
-const Array = @import("Array.zig");
-const WordBitset = @import("WordBitset.zig").WordBitset;
+const root = @import("root.zig");
+const Typecode = root.Typecode;
+const ArrayContainer = root.ArrayContainer;
+const Array = root.Array;
 const misc = @import("misc.zig");
+const C = @import("constants.zig");

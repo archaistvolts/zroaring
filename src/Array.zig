@@ -4,14 +4,10 @@ containers: std.MultiArrayList(ContainerKV),
 flags: std.EnumSet(Flag),
 
 pub const ContainerKV = struct { container: Container, key: u16 };
-
 pub const Flag = enum { cow, frozen };
-const NO_OFFSET_THRESHOLD = 4;
-// TODO build option or generic?
-pub const DEFAULT_MAX_SIZE = 4096;
-pub const MAX_CONTAINERS = 65536; // (1 << 16)
+
 /// u13 by default
-pub const Cardinality = std.math.IntFittingRange(0, DEFAULT_MAX_SIZE);
+pub const Cardinality = std.math.IntFittingRange(0, C.DEFAULT_MAX_SIZE);
 /// u16 by default
 pub const Element = u32; // TODO use Element instead of u32 throughout
 pub const Element2 = @Type(.{ // u32
@@ -31,7 +27,7 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
     var new_ra: Array = .init;
     // Containers hold 64Ki elements, so 64Ki containers is enough to hold
     // `0x10000 * 0x10000` (all 2^32) elements
-    try new_ra.containers.ensureTotalCapacity(allocator, @min(MAX_CONTAINERS, cap));
+    try new_ra.containers.ensureTotalCapacity(allocator, @min(C.MAX_CONTAINERS, cap));
     // std.debug.print("init_with_capacity({}) new_ra.containers.capacity {}\n", .{ cap, new_ra.containers.capacity });
     return new_ra;
 }
@@ -39,6 +35,7 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
 fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
     for (0..ra.containers.len) |i| {
         const c = ra.containers.items(.container)[i];
+        // std.debug.print("c {f}\n", .{c});
         c.deinit(allocator);
     }
 }
@@ -69,18 +66,17 @@ pub fn unshare_container_at_index(ra: *Array, i: u16) void {
     assert(i < ra.containers.len);
     ra.containers.items(.container)[i] = ra.containers.items(.container)[i].get_writable_copy_if_shared();
 }
-
-pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: u32) !void {
+pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
     // try ra.containers.ensureTotalCapacity(allocator, k);
 
-    const desired_size = ra.containers.len + k;
-    assert(desired_size <= MAX_CONTAINERS);
+    const desired_size = misc.cast(i32, ra.containers.len) + k;
+    assert(desired_size <= C.MAX_CONTAINERS);
     if (desired_size > ra.containers.capacity) {
-        const new_capacity = @min(MAX_CONTAINERS, if (ra.containers.len < 1024)
+        const new_capacity = @min(C.MAX_CONTAINERS, if (ra.containers.len < 1024)
             2 * desired_size
         else
-            5 * desired_size / 4);
-        try ra.containers.ensureTotalCapacity(allocator, new_capacity);
+            @divFloor(5 * desired_size, 4));
+        try ra.containers.ensureTotalCapacity(allocator, @intCast(new_capacity));
     }
 }
 
@@ -140,7 +136,7 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
                 unreachable; // TODO
             }
         }
-        startOffset = if (cslen < NO_OFFSET_THRESHOLD)
+        startOffset = if (cslen < C.NO_OFFSET_THRESHOLD)
             4 + 4 * cslen + s
         else
             4 + 8 * cslen + s;
@@ -160,7 +156,7 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
         try w.writeInt(u16, @intCast(c.get_cardinality() - 1), .little);
         written_count += @sizeOf(@TypeOf(k)) + @sizeOf(u16);
     }
-    if ((!hasrun) or (cslen >= NO_OFFSET_THRESHOLD)) {
+    if ((!hasrun) or (cslen >= C.NO_OFFSET_THRESHOLD)) {
         // write the containers offsets
         for (slice.items(.container)) |c| {
             try w.writeInt(u32, startOffset, .little);
@@ -194,7 +190,7 @@ pub fn portable_deserialize(
         cookie.cardinality_minus1 + 1
     else
         try r.takeInt(u32, .little);
-    if (size > MAX_CONTAINERS)
+    if (size > C.MAX_CONTAINERS)
         return error.TooManyContainers; // data must be corrupted
 
     var bitmapOfRunContainers: ?[]u8 = null;
@@ -214,14 +210,14 @@ pub fn portable_deserialize(
     }
     // std.debug.print("answer {f}\n", .{answer});
 
-    if ((!hasrun) or (size >= NO_OFFSET_THRESHOLD)) {
+    if ((!hasrun) or (size >= C.NO_OFFSET_THRESHOLD)) {
         _ = try r.discard(.limited(size * 4)); // skip the offsets
     }
     for (0..size) |k| { // read containers
 
         const tmp = keyscards[k * 2 + 1];
         const thiscard = @as(u32, tmp) + 1;
-        var isbitmap = (thiscard > DEFAULT_MAX_SIZE);
+        var isbitmap = (thiscard > C.DEFAULT_MAX_SIZE);
         var isrun = false;
         if (hasrun) {
             if (((bitmapOfRunContainers.?[k / 8] & @as(u8, 1) << @truncate(k % 8))) != 0) {
@@ -277,7 +273,7 @@ pub fn has_run_container(ra: Array) bool {
 }
 pub fn portable_header_size(ra: Array) usize {
     if (ra.has_run_container()) {
-        if (ra.containers.len < NO_OFFSET_THRESHOLD) { // for small bitmaps, we omit the offsets
+        if (ra.containers.len < C.NO_OFFSET_THRESHOLD) { // for small bitmaps, we omit the offsets
             return 4 + (ra.containers.len + 7) / 8 + 4 * ra.containers.len;
         }
         return 4 + (ra.containers.len + 7) / 8 +
@@ -293,6 +289,42 @@ pub fn portable_size_in_bytes(ra: Array) usize {
         count += c.size_in_bytes();
     }
     return count;
+}
+
+pub fn replace_key_and_container_at_index(
+    ra: *Array,
+    i: u32,
+    key: u16,
+    c: Container,
+) void {
+    assert(i < ra.containers.len);
+    const slice = ra.containers.slice();
+    slice.items(.key)[i] = key;
+    slice.items(.container)[i] = c;
+}
+
+///
+/// Shifts rightmost $count containers to the left (distance < 0) or
+/// to the right (distance > 0).
+/// Allocates memory if necessary.
+/// This function doesn't free or create new containers.
+/// Caller is responsible for that.
+///
+pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i32) !void {
+    if (distance > 0) try ra.extend_array(allocator, distance);
+
+    const srcpos = misc.cast(i32, ra.containers.len - count);
+    const dstpos = srcpos + distance;
+    ra.containers.len += @intCast(distance);
+    const s = ra.containers.slice();
+    @memmove(
+        s.items(.key)[@intCast(dstpos)..][0..count],
+        s.items(.key)[@intCast(srcpos)..][0..count],
+    );
+    @memmove(
+        s.items(.container)[@intCast(dstpos)..][0..count],
+        s.items(.container)[@intCast(srcpos)..][0..count],
+    );
 }
 
 pub fn format(ra: Array, w: *Io.Writer) !void {
@@ -329,3 +361,5 @@ const Container = root.Container;
 const BitsetContainer = root.BitsetContainer;
 const ArrayContainer = root.ArrayContainer;
 const RunContainer = root.RunContainer;
+const C = @import("constants.zig");
+const misc = @import("misc.zig");

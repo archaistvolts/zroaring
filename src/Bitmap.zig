@@ -81,9 +81,6 @@ pub fn unshare_all(r: *Bitmap) void {
     unreachable; // TODO
 }
 
-pub const FLAG_COW: u8 = 0x1;
-pub const FLAG_FROZEN: u8 = 0x2;
-
 /// Whether you want to use copy-on-write.
 /// Saves memory and avoids copies, but needs more care in a threaded context.
 /// Most users should ignore this flag.
@@ -486,11 +483,45 @@ pub fn add_checked(r: *Bitmap, x: u32) bool {
 /// Add all values in range [min, max]
 ///
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    _ = allocator;
-    _ = r;
-    _ = min;
-    _ = max;
-    unreachable; // TODO
+    if (min > max) return;
+    const ra = &r.high_low_container;
+    const min_key = min >> 16;
+    const max_key = max >> 16;
+
+    const num_required_containers = max_key - min_key + 1;
+    const suffix_length =
+        misc.count_greater(ra.containers.items(.key), @truncate(max_key));
+    const prefix_length =
+        misc.count_less(ra.containers.items(.key)[0 .. ra.containers.len - suffix_length], @truncate(min_key));
+    const common_length = ra.containers.len - prefix_length - suffix_length;
+
+    if (num_required_containers > common_length) {
+        try ra.shift_tail(allocator, suffix_length, @intCast(num_required_containers -% common_length));
+    }
+
+    var src = prefix_length + common_length -% 1;
+    var dst: u32 = @intCast(ra.containers.len - suffix_length - 1);
+    var key = max_key;
+    while (key != min_key) : (key -= 1) { // beware of min_key==0
+        const container_min: u16 = if (min_key == key) @truncate(min) else 0;
+        const container_max: u16 = if (max_key == key) @truncate(max) else 0xffff;
+        var new_container: Container = .zero;
+        const s = ra.containers.slice();
+        if (src >= 0 and s.items(.key)[src] == key) {
+            ra.unshare_container_at_index(@truncate(src));
+            new_container =
+                try s.items(.container)[src].add_range(allocator, container_min, container_max);
+            if (new_container != s.items(.container)[src]) {
+                s.items(.container)[src].deinit(allocator);
+            }
+            src -= 1;
+        } else {
+            new_container = try .from_range(allocator, container_min, container_max + 1, 1);
+        }
+        assert(!new_container.is_null());
+        ra.replace_key_and_container_at_index(dst, @truncate(key), new_container);
+        dst -= 1;
+    }
 }
 
 const u32_max = std.math.maxInt(u32);
@@ -1514,9 +1545,11 @@ test Bitmap {
 }
 
 const std = @import("std");
+const mem = std.mem;
+const assert = std.debug.assert;
+const Io = std.Io;
 const root = @import("root.zig");
 const Array = root.Array;
 const Container = root.Container;
 const Typecode = root.Typecode;
-const mem = std.mem;
-const Io = std.Io;
+const misc = @import("misc.zig");
