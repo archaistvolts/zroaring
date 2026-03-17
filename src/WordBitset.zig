@@ -1,13 +1,13 @@
 const word_types = &.{ u1024, u512, u256, u128, u64, u32, u16, u8 };
 
-/// a bitset which stores integers as offsets relative to `min`
-/// * `min`, `max`: smallest and largest integers the bitset can represent.
+/// a bitset which stores integers as offsets relative to `MIN`
+/// * `MIN`, `max`: smallest and largest integers the bitset can represent.
 /// * `Word`: a integer word type such as u64.
 ///
 // TODO simplify to non generic?
 pub fn WordBitset(options: struct {
-    min: comptime_int = 0,
-    max: comptime_int = 65535,
+    MIN: comptime_int = 0,
+    MAX: comptime_int = 65535,
     /// integer word size
     Word: type = u64,
 }) type {
@@ -16,18 +16,18 @@ pub fn WordBitset(options: struct {
         words: WordsPtrAligned,
         /// cached count of set bits in all words
         cardinality: u32,
-        //                                                       example: min = 0
+        //                                                       example: MIN = 0
         //                                                                max = 65535
         //                                                               Word = u64
-        /// a integer type for min and max.
-        pub const Value = std.math.IntFittingRange(options.min, options.max); //u16
-        /// positive difference between min and max
-        pub const MAX_DIFFERENCE = options.max - options.min; //                65535
+        /// a integer type for MIN and max.
+        pub const Value = std.math.IntFittingRange(options.MIN, options.MAX); //u16
+        /// positive difference between MIN and max
+        pub const MAX_DIFFERENCE = options.MAX - options.MIN; //                65535
         const MAX_CARDINALITY = MAX_DIFFERENCE + 1; //                          65536
         const ValueCardinality = std.math.IntFittingRange(0, MAX_DIFFERENCE); //u17
         const Word = options.Word;
-        const MIN = options.min;
-        const MAX = options.max;
+        const MIN = options.MIN;
+        const MAX = options.MAX;
         const WORD_BITSIZE: usize = @typeInfo(Word).int.bits; //                64
         /// number of words without padding to block len                        1024
         pub const SIZE_IN_WORDS = std.math.divCeil(usize, MAX_CARDINALITY, WORD_BITSIZE) catch unreachable;
@@ -99,7 +99,7 @@ pub fn WordBitset(options: struct {
             // uint64_t load = bitset->words[offset];
             // ASM_SET_BIT_INC_WAS_CLEAR(load, p, bitset->count);
             // bitset->words[offset] = load;
-            // std.debug.print("set({}) min {}\n", .{ v2, min });
+            // std.debug.print("set({}) MIN {}\n", .{ v2, MIN });
 
             const offset = value - MIN;
             const word_idx = offset / WORD_BITSIZE;
@@ -351,15 +351,15 @@ pub fn WordBitset(options: struct {
 
 /// internal namespace of tests
 // TODO how to make these tests show up in zig docs?  moved here in attempt of that.
-fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
+fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
     return struct {
-        const B = WordBitset(.{ .min = min, .max = max, .Word = Word });
+        const B = WordBitset(.{ .MIN = MIN, .MAX = MAX, .Word = Word });
         const Builder = B.Builder;
 
         test Builder {
             var b: Builder = undefined;
             try testing.expectEqual(b.init().cardinality, 0);
-            try testing.expectEqual(b.initBatch(&.{ min, min + 1 }).cardinality, 2);
+            try testing.expectEqual(b.initBatch(&.{ MIN, MIN + 1 }).cardinality, 2);
         }
 
         const format = B.format;
@@ -367,10 +367,10 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
             var b: Builder = undefined;
             if (!build_options.trace) {
                 try testing.expectFmt("0\n", "{f}\n", .{b.init()});
-                try testing.expectFmt("2\n", "{f}\n", .{b.initBatch(&.{ min, min + 1 })});
+                try testing.expectFmt("2\n", "{f}\n", .{b.initBatch(&.{ MIN, MIN + 1 })});
             } else {
                 // std.debug.print("{f}\n", .{b.init()});
-                // std.debug.print("{f}\n", .{b.initBatch(&.{ min, min + 1 })});
+                // std.debug.print("{f}\n", .{b.initBatch(&.{ MIN, MIN + 1 })});
             }
         }
 
@@ -389,25 +389,25 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
 
         const createBatch = B.createBatch;
         test createBatch {
-            const c = try createBatch(testing.allocator, &.{ min, max });
+            const c = try createBatch(testing.allocator, &.{ MIN, MAX });
             defer c.deinit(testing.allocator);
             try testing.expectEqual(c.cardinality, 2);
         }
 
-        const va = min + B.MAX_DIFFERENCE / 8 - 1;
-        const vb = min + B.MAX_DIFFERENCE / 8;
+        const va = MIN + B.MAX_DIFFERENCE / 8 - 1;
+        const vb = MIN + B.MAX_DIFFERENCE / 8;
 
         const put = B.set;
         test put {
             var b: Builder = undefined;
-            var container = b.initBatch(&.{ min, va, vb, max - 1 });
-            try testing.expect(container.containsBatch(&.{ min, va, vb, max - 1 }));
+            var container = b.initBatch(&.{ MIN, va, vb, MAX - 1 });
+            try testing.expect(container.containsBatch(&.{ MIN, va, vb, MAX - 1 }));
         }
 
         const unset = B.unset;
         test unset {
             var b: Builder = undefined;
-            const n = min + B.MAX_DIFFERENCE / 2;
+            const n = MIN + B.MAX_DIFFERENCE / 2;
             var c = b.initBatch(&.{n});
             try testing.expect(!c.unset(n).contains(n));
         }
@@ -415,18 +415,18 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
         test "count" {
             var b: Builder = undefined;
             var container = b.init();
-            try testing.expectEqual(1, container.set(min + 10).cardinality);
-            try testing.expectEqual(2, container.set(min + 20).cardinality);
-            try testing.expectEqual(2, container.set(min + 10).cardinality);
+            try testing.expectEqual(1, container.set(MIN + 10).cardinality);
+            try testing.expectEqual(2, container.set(MIN + 20).cardinality);
+            try testing.expectEqual(2, container.set(MIN + 10).cardinality);
         }
 
         const unionWith = B.unionWith;
         test unionWith {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            var c1 = b.initBatch(&.{ min + 5, min + 10 });
-            const c2 = b2.initBatch(&.{ min + 10, min + 15 });
-            try testing.expect(c1.unionWith(c2).containsBatch(&.{ min + 5, min + 10, min + 15 }));
+            var c1 = b.initBatch(&.{ MIN + 5, MIN + 10 });
+            const c2 = b2.initBatch(&.{ MIN + 10, MIN + 15 });
+            try testing.expect(c1.unionWith(c2).containsBatch(&.{ MIN + 5, MIN + 10, MIN + 15 }));
             try testing.expectEqual(3, c1.cardinality);
         }
 
@@ -434,21 +434,21 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
         test intersectWith {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            var c1 = b.initBatch(&.{ min + 5, min + 10, min + 15 });
-            const c2 = b2.initBatch(&.{ min + 10, min + 15, min + 20 });
+            var c1 = b.initBatch(&.{ MIN + 5, MIN + 10, MIN + 15 });
+            const c2 = b2.initBatch(&.{ MIN + 10, MIN + 15, MIN + 20 });
             _ = c1.intersectWith(c2);
-            try testing.expect(!c1.containsBatch(&.{ min + 5, min + 20 }));
-            try testing.expect(c1.containsBatch(&.{ min + 10, min + 15 }));
+            try testing.expect(!c1.containsBatch(&.{ MIN + 5, MIN + 20 }));
+            try testing.expect(c1.containsBatch(&.{ MIN + 10, MIN + 15 }));
             try testing.expectEqual(2, c1.cardinality);
         }
 
         const clear = B.clear;
         test clear {
             var b: Builder = undefined;
-            var container = b.initBatch(&.{ min + 5, min + B.MAX_DIFFERENCE / 3, min + B.MAX_DIFFERENCE - 1 });
+            var container = b.initBatch(&.{ MIN + 5, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE - 1 });
             try testing.expectEqual(container.cardinality, 3);
             try testing.expectEqual(container.clear().cardinality, 0);
-            try testing.expect(!container.contains(min + 5));
+            try testing.expect(!container.contains(MIN + 5));
         }
 
         test "word boundaries" {
@@ -460,9 +460,9 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
 
         test "large values" {
             var b: Builder = undefined;
-            const container = b.initBatch(&.{ max - 1, max - 2 });
-            try testing.expect(container.contains(max - 1));
-            try testing.expect(container.contains(max - 2));
+            const container = b.initBatch(&.{ MAX - 1, MAX - 2 });
+            try testing.expect(container.contains(MAX - 1));
+            try testing.expect(container.contains(MAX - 2));
             try testing.expectEqual(container.cardinality, 2);
         }
 
@@ -470,10 +470,10 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
         test differenceWith {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            var c1 = b.initBatch(&.{ min + 5, min + 10, min + 15 });
-            _ = c1.differenceWith(b2.initBatch(&.{ min + 10, min + 15, min + 20 }));
-            try testing.expect(c1.contains(min + 5));
-            try testing.expect(!c1.containsBatch(&.{ min + 10, min + 15, min + 20 }));
+            var c1 = b.initBatch(&.{ MIN + 5, MIN + 10, MIN + 15 });
+            _ = c1.differenceWith(b2.initBatch(&.{ MIN + 10, MIN + 15, MIN + 20 }));
+            try testing.expect(c1.contains(MIN + 5));
+            try testing.expect(!c1.containsBatch(&.{ MIN + 10, MIN + 15, MIN + 20 }));
             try testing.expectEqual(c1.cardinality, 1);
         }
 
@@ -481,12 +481,12 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
         test xorWith {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            var c1 = b.initBatch(&.{ min + 5, min + 10, min + 15 });
-            _ = c1.xorWith(b2.initBatch(&.{ min + 10, min + 15, min + 20 }));
-            try testing.expect(c1.contains(min + 5));
-            try testing.expect(!c1.contains(min + 10));
-            try testing.expect(!c1.contains(min + 15));
-            try testing.expect(c1.contains(min + 20));
+            var c1 = b.initBatch(&.{ MIN + 5, MIN + 10, MIN + 15 });
+            _ = c1.xorWith(b2.initBatch(&.{ MIN + 10, MIN + 15, MIN + 20 }));
+            try testing.expect(c1.contains(MIN + 5));
+            try testing.expect(!c1.contains(MIN + 10));
+            try testing.expect(!c1.contains(MIN + 15));
+            try testing.expect(c1.contains(MIN + 20));
             try testing.expectEqual(c1.cardinality, 2);
         }
 
@@ -495,17 +495,17 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
             var b: Builder = undefined;
             var container = b.init();
             try testing.expect(container.isEmpty());
-            try testing.expect(!container.set(min + B.MAX_DIFFERENCE / 3).isEmpty());
+            try testing.expect(!container.set(MIN + B.MAX_DIFFERENCE / 3).isEmpty());
         }
 
         const equals = B.equals;
         test equals {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            const c1 = b.initBatch(&.{ min + 5, min + 10 });
-            var c2 = b2.initBatch(&.{ min + 5, min + 10 });
+            const c1 = b.initBatch(&.{ MIN + 5, MIN + 10 });
+            var c2 = b2.initBatch(&.{ MIN + 5, MIN + 10 });
             try testing.expect(c1.equals(&c2));
-            try testing.expect(!c1.equals(c2.set(min + 15)));
+            try testing.expect(!c1.equals(c2.set(MIN + 15)));
         }
 
         const copy = B.copy;
@@ -513,25 +513,25 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
             var bsrc: Builder = undefined;
             var bdst: Builder = undefined;
             var dst = bdst.init();
-            _ = dst.copy(bsrc.initBatch(&.{ min + 5, min + B.MAX_DIFFERENCE / 3, min + B.MAX_DIFFERENCE - 1 }));
-            try testing.expect(dst.contains(min + 5));
-            try testing.expect(dst.contains(min + B.MAX_DIFFERENCE / 3));
-            try testing.expect(dst.contains(min + B.MAX_DIFFERENCE - 1));
+            _ = dst.copy(bsrc.initBatch(&.{ MIN + 5, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE - 1 }));
+            try testing.expect(dst.contains(MIN + 5));
+            try testing.expect(dst.contains(MIN + B.MAX_DIFFERENCE / 3));
+            try testing.expect(dst.contains(MIN + B.MAX_DIFFERENCE - 1));
             try testing.expectEqual(dst.cardinality, 3);
         }
 
         test "dense region" {
             var b: Builder = undefined;
             var container = b.init();
-            const n = @min(max + 1, min + B.MAX_DIFFERENCE / 9);
-            for (min..n) |i| _ = container.set(@intCast(i));
-            try testing.expectEqual(n - min, @as(usize, container.cardinality));
-            for (min..n) |i| try testing.expect(container.contains(@intCast(i)));
+            const n = @min(MAX + 1, MIN + B.MAX_DIFFERENCE / 9);
+            for (MIN..n) |i| _ = container.set(@intCast(i));
+            try testing.expectEqual(n - MIN, @as(usize, container.cardinality));
+            for (MIN..n) |i| try testing.expect(container.contains(@intCast(i)));
         }
 
         test "sparse region" {
             var b: Builder = undefined;
-            const vs = &.{ min, min + B.MAX_DIFFERENCE / 3, min + B.MAX_DIFFERENCE / 2, min + B.MAX_DIFFERENCE - 1 };
+            const vs = &.{ MIN, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE / 2, MIN + B.MAX_DIFFERENCE - 1 };
             const container = b.initBatch(vs);
             try testing.expectEqual(4, container.cardinality);
             try testing.expect(container.containsBatch(vs));
@@ -540,12 +540,12 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
         test "alternating pattern" {
             var b: Builder = undefined;
             var container = b.init();
-            const n = @min(max, min + (B.MAX_DIFFERENCE - 1) / 8);
-            for (min..n) |i| {
+            const n = @min(MAX, MIN + (B.MAX_DIFFERENCE - 1) / 8);
+            for (MIN..n) |i| {
                 if (i % 2 == 0) _ = container.set(@intCast(i));
             }
-            try testing.expectEqual((n - min) / 2 + (n & 1), container.cardinality);
-            for (min..n) |i| {
+            try testing.expectEqual((n - MIN) / 2 + (n & 1), container.cardinality);
+            for (MIN..n) |i| {
                 const expected = i % 2 == 0;
                 try testing.expectEqual(expected, container.contains(@intCast(i)));
             }
@@ -555,17 +555,17 @@ fn TestNs(min: comptime_int, max: comptime_int, Word: type) type {
             var b1: Builder = undefined;
             var b2: Builder = undefined;
             var b3: Builder = undefined;
-            var c1 = b1.initBatch(&.{min + 5});
-            _ = c1.unionWith(b2.initBatch(&.{min + 10}))
-                .unionWith(b3.initBatch(&.{min + 15}));
+            var c1 = b1.initBatch(&.{MIN + 5});
+            _ = c1.unionWith(b2.initBatch(&.{MIN + 10}))
+                .unionWith(b3.initBatch(&.{MIN + 15}));
             try testing.expectEqual(3, c1.cardinality);
-            try testing.expect(c1.containsBatch(&.{ min + 5, min + 10, min + 15 }));
+            try testing.expect(c1.containsBatch(&.{ MIN + 5, MIN + 10, MIN + 15 }));
         }
 
         test "intersection with empty" {
             var b: Builder = undefined;
             var b2: Builder = undefined;
-            var c1 = b.initBatch(&.{ min + 5, min + 10 });
+            var c1 = b.initBatch(&.{ MIN + 5, MIN + 10 });
             try testing.expectEqual(0, c1.intersectWith(b2.init()).cardinality);
         }
     };
@@ -594,7 +594,7 @@ pub fn bitmapBatch(
 
 /// causes tests inside Bitmap(min, max, W) to be analyzed and run
 fn testBitmap(min: comptime_int, max: comptime_int, W: type) !void {
-    const Map = WordBitset(.{ .min = min, .max = max, .Word = W });
+    const Map = WordBitset(.{ .MIN = min, .MAX = max, .Word = W });
     var b: Map.Builder = undefined;
     _ = b.init();
     _ = b.initBatch(&.{});
@@ -620,7 +620,7 @@ test bitset {
 }
 
 test "small range - a...z" {
-    const B = WordBitset(.{ .min = 'a', .max = 'z', .Word = u64 });
+    const B = WordBitset(.{ .MIN = 'a', .MAX = 'z', .Word = u64 });
     var b: B.Builder = undefined;
     try testing.expect(b.initBatch(&.{ 'a', 'z' }).containsBatch(&.{ 'a', 'z' }));
     for ('b'..'z') |c| {

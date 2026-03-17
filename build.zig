@@ -4,9 +4,11 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
     const mod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
         .imports = &.{.{ .name = "build-options", .module = options.createModule() }},
     });
 
