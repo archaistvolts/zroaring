@@ -1,4 +1,5 @@
-pub const Bitmap = @This();
+//! warning: many of these methods are currently unimplemented.
+const Bitmap = @This();
 
 high_low_container: Array = .init,
 
@@ -1565,8 +1566,14 @@ pub fn format(b: Bitmap, w: *Io.Writer) !void {
     try w.print("Bitmap ", .{});
     try b.high_low_container.format(w);
 }
-test Bitmap {
-    _ = Bitmap;
+
+test Bitmap { // README test. don't forget to update README if modified
+    const zroaring = @This(); // @import("zroaring");
+    var zr: zroaring.Bitmap = .{};
+    defer zr.deinit(std.testing.allocator);
+    try zr.add(std.testing.allocator, 1);
+    try std.testing.expect(zr.contains(1));
+    try std.testing.expect(!zr.contains(2));
 }
 
 const std = @import("std");

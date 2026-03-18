@@ -1,3 +1,9 @@
+//!
+//! An Roaring Bitmap implementation based on CRoaring.  Does not depend on libc.
+//!  * https://github.com/RoaringBitmap/CRoaring
+//!  * https://github.com/RoaringBitmap/RoaringFormatSpec
+//!
+
 pub const zroaring = @This();
 pub const Array = @import("Array.zig");
 pub const Bitmap = @import("Bitmap.zig");
