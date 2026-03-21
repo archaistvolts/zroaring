@@ -6,11 +6,13 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
     try zr.add_many(allocator, values);
-    for (values) |v| {
+    for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
-            std.debug.print("Bitmap missing value '{}'. containers {}\n", .{ v, zr.high_low_container.containers.len });
-            const hb: u16 = @truncate(v >> 16);
-            const vc = zr.high_low_container.containers.items(.container)[hb];
+            const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };
+            std.debug.print("Bitmap missing value i {}, v {}:{x} hb/lb {}/{}:{x}/{x}, containers {}\n", .{ i, v, v, hb, lb, hb, lb, zr.high_low_container.containers.len });
+            std.debug.print("hlc keys {any}\n", .{zr.high_low_container.containers.items(.key)});
+            std.debug.print("values {any} index {}\n", .{ values, zr.get_index(v) });
+            const vc = zr.high_low_container.containers.items(.container)[@intCast(zr.get_index(v))];
             std.debug.print("  {any}\n", .{vc.const_cast(.array).slice()});
             // std.debug.print("{f}\n", .{zr});
             return e;
@@ -122,7 +124,7 @@ const FrozenBitmap = struct {};
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
 fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
     _ = name;
-    if (true) return; // TODO
+    if (true) unreachable; // TODO
     // Build both and serialize
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
@@ -230,24 +232,25 @@ fn validate() !void {
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
     try validateRangeRoundTrip(allocator, "dense_1M", 0, 999999, true);
-    if (false) { // TODO
-        // Sparse random (500K values across u32 space)
-        var prng = std.Random.DefaultPrng.init(0);
-        const sparse_500k = try allocator.alloc(u32, 500000);
-        defer allocator.free(sparse_500k);
-        for (sparse_500k) |*x| x.* = prng.random().int(u32);
 
-        // Sort and dedupe for consistent results
-        std.mem.sort(u32, sparse_500k, {}, std.sort.asc(u32));
-        var deduped_len: usize = 1;
-        for (1..500000) |i| {
-            if (sparse_500k[i] != sparse_500k[deduped_len - 1]) {
-                sparse_500k[deduped_len] = sparse_500k[i];
-                deduped_len += 1;
-            }
+    const N = if (std.debug.runtime_safety) 2000 else 500000;
+    // Sparse random (N values across u32 space)
+    var prng = std.Random.DefaultPrng.init(0);
+    const sparse_N = try allocator.alloc(u32, N);
+    defer allocator.free(sparse_N);
+    for (sparse_N) |*x| x.* = prng.random().int(u32);
+
+    // Sort and dedupe for consistent results
+    std.mem.sort(u32, sparse_N, {}, std.sort.asc(u32));
+    var deduped_len: usize = 1;
+    for (1..N) |i| {
+        if (sparse_N[i] != sparse_N[deduped_len - 1]) {
+            sparse_N[deduped_len] = sparse_N[i];
+            deduped_len += 1;
         }
-        try validateRoundTrip(allocator, "sparse_500k", sparse_500k[0..deduped_len], false);
     }
+    try validateRoundTrip(allocator, "sparse_500k", sparse_N[0..deduped_len], false);
+
     if (true) return; // TODO
     // Gap 1 fix: validate FrozenBitmap can read serialized bytes correctly
     // FrozenBitmap tests:

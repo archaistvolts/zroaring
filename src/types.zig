@@ -44,3 +44,13 @@ pub const Magic = enum(u16) {
 /// 12346 (SERIAL_COOKIE_NO_RUNCONTAINER) means no run containers are used.
 /// 12347 (SERIAL_COOKIE) means run containers may be present.
 pub const Cookie = extern struct { magic: Magic, cardinality_minus1: u16 };
+
+/// Result of adding a value to a set
+pub const AddResult = enum {
+    /// the value was added to the set
+    added,
+    /// the value was already present
+    already_present,
+    /// not added because cardinality would exceed max_cardinality
+    not_added,
+};

@@ -5,7 +5,6 @@ pub const Container = packed struct(usize) {
     /// upper 62 bits on 64 bit platforms
     address: Address,
 
-    pub const MAX_CARDINALITY = 0x10000;
     pub const zero = mem.zeroes(Container);
 
     const Address = @Type(.{ .int = .{
@@ -133,11 +132,9 @@ pub const Container = packed struct(usize) {
                 return .init(bitset);
             },
             .run => {
-                unreachable;
                 // per Java, no container type adjustments are done (revisit?)
-                // run_container_add(CAST_run(c), val);
-                // *new_typecode = .run;
-                // return c;
+                _ = try c.mut_cast(.run).add(allocator, val); //
+                return c;
             },
             .shared => unreachable, // TODO
         }
@@ -267,8 +264,8 @@ pub const Container = packed struct(usize) {
                 union_cardinality -=
                     BitsetContainer.lenrange_cardinality(bitset.words, min, max - min);
 
-                if (union_cardinality == MAX_CARDINALITY) {
-                    return try create_from_value(allocator, try RunContainer.create_range(allocator, 0, MAX_CARDINALITY));
+                if (union_cardinality == C.MAX_CARDINALITY) {
+                    return try create_from_value(allocator, try RunContainer.init_range(allocator, 0, C.MAX_CARDINALITY));
                 } else {
                     BitsetContainer.set_lenrange(bitset.words, min, max - min);
                     bitset.cardinality = union_cardinality;
@@ -284,8 +281,8 @@ pub const Container = packed struct(usize) {
                 const union_cardinality =
                     nvals_less + (max - min + 1) + nvals_greater;
 
-                if (union_cardinality == MAX_CARDINALITY) {
-                    return try create_from_value(allocator, try RunContainer.create_range(allocator, 0, MAX_CARDINALITY));
+                if (union_cardinality == C.MAX_CARDINALITY) {
+                    return try create_from_value(allocator, try RunContainer.init_range(allocator, 0, C.MAX_CARDINALITY));
                 } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
                     try array.add_range_nvals(allocator, min, max, nvals_less, nvals_greater);
                     return c;
@@ -329,9 +326,9 @@ pub const Container = packed struct(usize) {
         assert(range_end >= range_start);
         const cardinality = range_end - range_start + 1;
         return try if (cardinality <= 2)
-            create_from_value(allocator, try ArrayContainer.create_range(allocator, range_start, range_end))
+            create_from_value(allocator, try ArrayContainer.init_range(allocator, range_start, range_end))
         else
-            create_from_value(allocator, try RunContainer.create_range(allocator, range_start, range_end));
+            create_from_value(allocator, try RunContainer.init_range(allocator, range_start, range_end));
     }
 
     /// Create a container with all the values between in [min,max) at a
@@ -344,7 +341,7 @@ pub const Container = packed struct(usize) {
         const size = (max - min + step - 1) / step;
         if (size <= C.DEFAULT_MAX_SIZE) { // array container
 
-            var array = try ArrayContainer.create_with_capacity(allocator, size);
+            var array = try ArrayContainer.init_with_capacity(allocator, size);
             try array.add_from_range(allocator, min, max, step);
             assert(array.cardinality == size);
             return try create_from_value(allocator, array);
@@ -378,20 +375,20 @@ pub const Container = packed struct(usize) {
                 return c;
             }
             // else convert array to run container
-            var answer = try RunContainer.create_with_capacity(allocator, n_runs);
+            var answer = try RunContainer.init_with_capacity(allocator, n_runs);
             var prev: i32 = -2;
             var run_start: i32 = -1;
 
             assert(card > 0);
             var i: u32 = 0;
             while (i < card) : (i += 1) {
-                const cur_val = c_qua_array.sorted_values[i];
+                const cur_val = c_qua_array.array[i];
                 if (cur_val != prev + 1) {
                     // new run starts; flush old one, if any
                     if (run_start != -1) answer.add_run(@intCast(run_start), @intCast(prev));
                     run_start = cur_val;
                 }
-                prev = c_qua_array.sorted_values[i];
+                prev = c_qua_array.array[i];
             }
             assert(run_start >= 0);
             // now prev is the last seen value
@@ -477,10 +474,8 @@ pub const RunContainer = struct {
 
     pub const Rle16 = struct { value: u16, length: u16 };
 
-    pub fn create(allocator: mem.Allocator) !RunContainer {
-        return try create_with_capacity(allocator, 0);
-    }
-    pub fn create_with_capacity(allocator: mem.Allocator, size: u32) !RunContainer {
+    pub const init: RunContainer = .{ .runs = undefined, .n_runs = 0, .capacity = 0 };
+    pub fn init_with_capacity(allocator: mem.Allocator, size: u32) !RunContainer {
         return .{ .runs = (try allocator.alloc(Rle16, size)).ptr, .capacity = size, .n_runs = 0 };
     }
     ///
@@ -490,8 +485,8 @@ pub const RunContainer = struct {
     /// check. The cardinality of the created container is stop - start. Returns NULL
     /// on failure
     ///
-    pub fn create_range(allocator: mem.Allocator, start: u32, stop: u32) !RunContainer {
-        var rc = try create_with_capacity(allocator, 1);
+    pub fn init_range(allocator: mem.Allocator, start: u32, stop: u32) !RunContainer {
+        var rc = try init_with_capacity(allocator, 1);
         _ = rc.append_first(.{ .value = @truncate(start), .length = @truncate(stop - start - 1) });
         return rc;
     }
@@ -506,6 +501,68 @@ pub const RunContainer = struct {
         run.n_runs += 1;
         return vl;
     }
+    ///
+    /// Effectively deletes the value at index index, repacking data.
+    ///
+    fn recoverRoomAtIndex(run: *RunContainer, index: u16) void {
+        @memmove(
+            run.runs + index,
+            (run.runs + (1 + index))[0 .. run.n_runs - index - 1],
+        );
+        run.n_runs -= 1;
+    }
+
+    pub fn add(run: *RunContainer, allocator: mem.Allocator, pos: u16) !bool {
+        var index = misc.interleavedBinarySearch(run.slice(), pos);
+        if (index >= 0) return false;
+        index = -index - 2; // points to preceding value, possibly -1
+        if (index >= 0) { // possible match
+            const indexu: u32 = @intCast(index);
+
+            const offset = pos - run.runs[indexu].value;
+            const le = run.runs[indexu].length;
+            if (offset <= le) return false; // already there
+            if (offset == le + 1) {
+                // we may need to fuse
+                if (indexu + 1 < run.n_runs) {
+                    if (run.runs[indexu + 1].value == pos + 1) {
+                        // indeed fusion is needed
+                        run.runs[indexu].length = run.runs[indexu + 1].value +
+                            run.runs[indexu + 1].length -
+                            run.runs[indexu].value;
+                        run.recoverRoomAtIndex(@intCast(indexu + 1));
+                        return true;
+                    }
+                }
+                run.runs[indexu].length += 1;
+                return true;
+            }
+            if (indexu + 1 < run.n_runs) {
+                // we may need to fuse
+                if (run.runs[indexu + 1].value == pos + 1) {
+                    // indeed fusion is needed
+                    run.runs[indexu + 1].value = pos;
+                    run.runs[indexu + 1].length = run.runs[indexu + 1].length + 1;
+                    return true;
+                }
+            }
+        }
+        if (index == -1) {
+            // we may need to extend the first run
+            if (0 < run.n_runs) {
+                if (run.runs[0].value == pos + 1) {
+                    run.runs[0].length = 1;
+                    run.runs[0].value -= 1;
+                    return true;
+                }
+            }
+        }
+        try run.makeRoomAtIndex(allocator, @truncate(index + 1));
+        run.runs[@intCast(index + 1)].value = pos;
+        run.runs[@intCast(index + 1)].length = 0;
+        return true;
+    }
+
     pub fn serialized_size_in_bytes(n_runs: u32) usize {
         return @sizeOf(u16) + @sizeOf(Rle16) * n_runs; // each run requires 2 2-byte entries.
     }
@@ -558,7 +615,6 @@ pub const RunContainer = struct {
             allocator.free(r.slice());
             r.runs = (try allocator.alloc(Rle16, r.capacity)).ptr;
         }
-        // We may have run.runs == NULL.
     }
     pub fn slice(c: RunContainer) []Rle16 {
         return c.runs[0..c.n_runs];
@@ -600,8 +656,8 @@ pub const RunContainer = struct {
             const common_min = run.runs[nruns_less].value;
             const common_max = run.runs[nruns_less + nruns_common - 1].value +
                 run.runs[nruns_less + nruns_common - 1].length;
-            const result_min = if (common_min < min) common_min else min;
-            const result_max = if (common_max > max) common_max else max;
+            const result_min = @min(common_min, min);
+            const result_max = @max(common_max, max);
 
             run.runs[nruns_less].value = @truncate(result_min);
             run.runs[nruns_less].length = @truncate(result_max - result_min);
@@ -650,7 +706,7 @@ pub const RunContainer = struct {
         }
         if (card <= C.DEFAULT_MAX_SIZE) {
             // to array
-            var answer = try ArrayContainer.create_with_capacity(allocator, card);
+            var answer = try ArrayContainer.init_with_capacity(allocator, card);
             answer.cardinality = 0;
             for (0..c.n_runs) |rlepos| {
                 const run_start = c.runs[rlepos].value;
@@ -658,7 +714,7 @@ pub const RunContainer = struct {
 
                 var run_value = run_start;
                 while (run_value < run_end) : (run_value += 1) {
-                    answer.sorted_values[answer.cardinality] = run_value;
+                    answer.array[answer.cardinality] = run_value;
                     answer.cardinality += 1;
                 }
             }
@@ -724,3 +780,4 @@ const ArrayContainer = root.ArrayContainer;
 const Array = root.Array;
 const misc = @import("misc.zig");
 const C = @import("constants.zig");
+const types = @import("types.zig");

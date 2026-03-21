@@ -3,7 +3,7 @@ const Array = @This();
 containers: std.MultiArrayList(ContainerKV),
 flags: std.EnumSet(Flag),
 
-pub const ContainerKV = struct { container: Container, key: u16 };
+pub const ContainerKV = struct { key: u16, container: Container };
 pub const Flag = enum { cow, frozen };
 
 /// u13 by default
@@ -27,7 +27,7 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
     var new_ra: Array = .init;
     // Containers hold 64Ki elements, so 64Ki containers is enough to hold
     // `0x10000 * 0x10000` (all 2^32) elements
-    try new_ra.containers.ensureTotalCapacity(allocator, @min(C.MAX_CONTAINERS, cap));
+    try new_ra.containers.setCapacity(allocator, @min(C.MAX_CONTAINERS, cap));
     // std.debug.print("init_with_capacity({}) new_ra.containers.capacity {}\n", .{ cap, new_ra.containers.capacity });
     return new_ra;
 }
@@ -73,29 +73,48 @@ pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
             2 * desired_size
         else
             @divFloor(5 * desired_size, 4)));
-        try ra.containers.ensureTotalCapacity(allocator, new_capacity);
+        try ra.containers.setCapacity(allocator, new_capacity);
     }
 }
 
 pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key: u16, c: Container) !void {
+    // std.debug.print("insert_new_key_value_at i {} key {} len/cap {}/{}\n", .{ i, key, ra.containers.len, ra.containers.capacity });
+    // std.debug.print("  keys1 {any}\n", .{ra.containers.items(.key)});
     try ra.extend_array(allocator, 1);
     ra.containers.len += 1;
     const containers = ra.containers.slice();
+    // std.debug.print("  keys2 {any} cap {}\n", .{ containers.items(.key), containers.capacity });
+    if (i + 1 == ra.containers.len) { // append // TODO skip this branch, avoid overflow below
+        containers.items(.key)[i] = key;
+        containers.items(.container)[i] = c;
+        return;
+    }
     // May be an optimization opportunity with DIY memmove
     @memmove(
-        containers.items(.key).ptr[i + 1 ..],
+        containers.items(.key)[i + 1 .. ra.containers.len - 1],
         containers.items(.key)[i..],
     );
     containers.items(.key)[i] = key;
     @memmove(
-        containers.items(.container).ptr[i + 1 ..],
+        containers.items(.container)[i + 1 .. ra.containers.len - 1],
         containers.items(.container)[i..],
     );
     containers.items(.container)[i] = c;
+    // std.debug.print("  keys3 {any}\n", .{ra.containers.items(.key)});
 }
 
 pub fn get_container_at_index(ra: Array, i: u16) Container {
     return ra.containers.items(.container)[i];
+}
+
+///
+/// Get the index corresponding to a 16-bit key
+///
+pub fn get_index(ra: Array, key: u16) i32 {
+    const keys = ra.containers.items(.key);
+    if (ra.containers.len == 0 or keys[ra.containers.len - 1] == key)
+        return @as(i32, @intCast(ra.containers.len)) - 1;
+    return misc.binarySearch(keys, key);
 }
 
 pub fn get_cardinality(ra: Array) u64 {
@@ -238,13 +257,13 @@ pub fn portable_deserialize(
             answer.containers.items(.container)[k] = .init(c);
         } else if (isrun) {
             const n_runs = try r.takeInt(u16, .little);
-            var c = try RunContainer.create_with_capacity(allocator, n_runs);
+            var c = try RunContainer.init_with_capacity(allocator, n_runs);
             errdefer c.deinit(allocator);
             _ = try c.read(allocator, n_runs, r);
             answer.containers.items(.container)[k] = try .create_from_value(allocator, c);
         } else {
             const c = try allocator.create(ArrayContainer);
-            c.* = try ArrayContainer.init_capacity(allocator, thiscard);
+            c.* = try ArrayContainer.init_with_capacity(allocator, thiscard);
             _ = try c.read(allocator, thiscard, r);
             // std.debug.print("ArrayContainer after read() {f}\n", .{c});
             assert(c.cardinality == thiscard);
@@ -312,7 +331,7 @@ pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i3
     }
     // std.debug.print("  containers.len {} containers.capacity {}\n", .{ ra.containers.len, ra.containers.capacity });
     if (count == 0) return;
-    const srcpos = misc.cast(i32, ra.containers.len - count);
+    const srcpos: i32 = @intCast(ra.containers.len - count);
     const dstpos = srcpos + distance;
     ra.containers.len += @intCast(distance);
     const s = ra.containers.slice();

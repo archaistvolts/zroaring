@@ -1,4 +1,5 @@
 //! warning: many of these methods are currently unimplemented.
+//! 102 pub methods.  27 implemented, 75 unimplemented.
 const Bitmap = @This();
 
 high_low_container: Array = .init,
@@ -416,8 +417,8 @@ fn add_bulk_impl(
     context: *BulkContext,
     val: u32,
 ) !void {
-    // std.debug.print("add_bulk_impl val {}\n", .{val});
     const key: u16 = @truncate(val >> 16);
+    // std.debug.print("add_bulk_impl val {} key {} context.key {}\n", .{ val, key, context.key });
     if (context.container.is_null() or context.key != key) {
         var idx: u32 = undefined;
         const container = try r.containerptr_add(allocator, val, &idx);
@@ -439,6 +440,9 @@ fn add_bulk_impl(
             context.container = container2;
         }
     }
+    // std.debug.print("keys {} {any}\n", .{ r.high_low_container.containers.len, r.high_low_container.containers.items(.key) });
+    if (@import("builtin").mode == .Debug)
+        assert(std.sort.isSorted(u16, r.high_low_container.containers.items(.key), {}, std.sort.asc(u16)));
 }
 
 /// this is like roaring_bitmap_add, but it populates pointer arguments in such
@@ -452,14 +456,14 @@ fn containerptr_add(
     index: *u32,
 ) !Container {
     const ra = &r.high_low_container;
-    const key: u16 = @truncate(val >> 16);
+    const key: u16, const lb: u16 = .{ @truncate(val >> 16), @truncate(val) };
     const i = misc.binarySearch(ra.containers.items(.key), key);
-    // std.debug.print("containerptr_add val {} i {}\n", .{ val, i });
+    // std.debug.print("containerptr_add val {} key {} i {} ra.containers.capacity {}\n", .{ val, key, i, ra.containers.capacity });
     if (i >= 0) {
         const iu: u16 = @intCast(i);
         ra.unshare_container_at_index(iu);
         const c = ra.get_container_at_index(iu);
-        const c2 = try c.add(allocator, @truncate(val));
+        const c2 = try c.add(allocator, lb);
         index.* = iu;
         if (c2 != c) {
             c.deinit(allocator);
@@ -468,13 +472,14 @@ fn containerptr_add(
         } else {
             return c;
         }
-    } else {
-        var new_ac: root.ArrayContainer = .init;
+    } else { // key not found
+        var new_ac: root.ArrayContainer = try .init_with_capacity(allocator, 1);
         errdefer new_ac.deinit(allocator);
-        try new_ac.add(allocator, @truncate(val));
+        new_ac.append_assume_capacity(lb);
         // we can assume that it stays an array container
         const c = try Container.create_from_value(allocator, new_ac);
-        errdefer allocator.destroy(c.mut_cast(.array)); // avoid errdefer double deinit by not using c.deinit
+        errdefer allocator.destroy(c.mut_cast(.array)); // avoid double deinit, don't use c.deinit
+        // std.debug.print("inserting key {} at index {} keys {any}\n", .{ key, -i - 1, ra.containers.items(.key) });
         try ra.insert_new_key_value_at(allocator, @intCast(-i - 1), key, c);
         index.* = @intCast(-i - 1);
         return c;
@@ -1341,9 +1346,7 @@ pub fn rank_many(r: Bitmap, begin: []const u32, end: []const u32, ans: []u64) vo
 /// non-negative number.
 ///
 pub fn get_index(r: Bitmap, x: u32) i64 {
-    _ = r;
-    _ = x;
-    unreachable; // TODO
+    return r.high_low_container.get_index(@truncate(x));
 }
 
 ///
