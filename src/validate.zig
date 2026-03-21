@@ -306,7 +306,6 @@ const Bitmap = zroaring.Bitmap;
 
 const c = @cImport({
     // @cDefine("CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    // @cDefine("CROARING_ATOMIC_IMPL_NONE", "");
-    // @cInclude("c/roaring.h");
-    @cInclude("c/roaring-subset.h");
+    @cDefine("CROARING_ATOMIC_IMPL", "1");
+    @cInclude("c/roaring.h");
 });
