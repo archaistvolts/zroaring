@@ -96,6 +96,7 @@ pub const Array = extern struct {
         // trace(@src(), "portable_size_has_run={}", .{count});
         for (ra.slice(.containers, .len)) |c| {
             count += c.serialized_size_in_bytes();
+            // trace(@src(), "serialized_size_in_bytes={}", .{c.serialized_size_in_bytes()});
         }
         return count;
     }

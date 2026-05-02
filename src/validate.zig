@@ -90,18 +90,18 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), val
 
 /// Validate using addRange instead of individual adds.
 fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), start: u32, end: u32, run_optimize: bool) !void {
+    misc.trace(@src(), "{s}", .{@tagName(name)});
     // build both
-    var zr: Bitmap = .empty;
-    defer zr.deinit(allocator);
-    try zr.add_range(allocator, start, end + 1);
-    misc.trace(@src(), "{s}: after add_range({},{}) zr {}", .{ @tagName(name), start, end + 1, zr.get_header() });
-
-    const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
-
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     c.roaring_bitmap_add_range(cr, start, @as(u64, end) + 1);
     const cr_did_optimize = run_optimize and c.roaring_bitmap_run_optimize(cr);
+
+    var zr: Bitmap = .empty;
+    defer zr.deinit(allocator);
+    try zr.add_range(allocator, start, @as(u64, end) + 1);
+    misc.trace(@src(), "{s}: after add_range({},{}) zr {}", .{ @tagName(name), start, end + 1, zr.get_header() });
+    const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
 
     // serialize both
     const cr_size = c.roaring_bitmap_portable_size_in_bytes(cr);
@@ -236,11 +236,11 @@ fn validateAll(allocator: mem.Allocator) !void {
     for (0..100) |i| four_chunks_runs[200 + i] = @intCast(131072 + i); // chunk 2
     for (0..100) |i| four_chunks_runs[300 + i] = @intCast(196608 + i); // chunk 3
     try validateRoundTrip(allocator, testio, .four_chunks_run_optimized, &four_chunks_runs, true);
-    if (true) return;
 
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
     try validateRangeRoundTrip(allocator, testio, .dense_1M, 0, 999999, true);
+    if (true) return;
 
     // Sparse random (N values across u32 space)
     const N = if (std.debug.runtime_safety) 2000 else 500000;
