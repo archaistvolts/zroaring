@@ -569,12 +569,13 @@ pub fn get_index(r: Bitmap, v: u32) i32 {
 }
 
 pub fn has_run_container(r: Bitmap) bool {
+    if (r.header == Container.uninit) return false;
     return r.get_header().has_run_container();
 }
 
 pub fn portable_header_size(r: Bitmap) usize {
     if (r.header == Container.uninit) return 8;
-    return r.get_header().portable_size();
+    return r.get_header().portable_size_has_run();
 }
 
 pub fn portable_size_in_bytes(r: Bitmap) usize {
@@ -691,12 +692,11 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
 /// Additional savings might be possible by calling `shrinkToFit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
-    for (r.get_header().slice(.containers, .len), 0..) |c, i| {
-        // TODO // r.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
-
+    for (r.get_header().slice(.containers, .len)) |*c| {
+        // TODO // r.unshare_container_at_index(i); // TODO: this introduces extra cloning!
         const c1 = try r.convert_run_optimize(c, allocator);
         if (c1.typecode == .run) answer = true;
-        r.get_header().slice(.containers, .len)[@intCast(i)] = c1;
+        r.get_header().slice(.containers, .len)[c - r.get_header().containers] = c1;
     }
     return answer;
 }
@@ -729,50 +729,53 @@ fn array_number_of_runs(r: *Bitmap, c: Container) u32 {
 ///
 // TODO: split into run- array- and bitset- subfunctions for sanity;
 // a few function calls won't really matter.
-pub fn convert_run_optimize(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
+pub fn convert_run_optimize(r: *Bitmap, c: *Container, allocator: mem.Allocator) !Container {
     trace(@src(), "{t}", .{c.typecode});
     if (c.typecode == .run) {
-        const newc = try r.convert_run_to_efficient_container(c, allocator);
-        if (newc != c) unreachable; // TODO r.deinit_container(allocator, cid);
+        const newc = try r.convert_run_to_efficient_container(c.*, allocator);
+        if (newc != c.*) c.deinit(allocator, r);
         return newc;
     } else if (c.typecode == .array) {
         // it might need to be converted to a run container.
-        const nruns = r.array_number_of_runs(c);
+        const nruns = r.array_number_of_runs(c.*);
         const nblocks = @divExact(mem.alignForward(u32, nruns * @sizeOf(Rle16), C.BLOCK_BYTES), C.BLOCK_BYTES);
-        const rc: Container = .{
+        var rc: Container = .{
             .typecode = .run,
             .cardinality = @intCast(nruns),
-            .nblocks_minus1 = @intCast(nblocks),
+            .nblocks_minus1 = @intCast(nblocks - 1),
             .blockoffset = @intCast(r.blocks.items.len),
         };
         const size_as_run_container = rc.serialized_size_in_bytes();
         const size_as_array_container = c.serialized_size_in_bytes();
         trace(@src(), "arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
         if (size_as_array_container <= size_as_run_container) {
-            return c;
+            return c.*;
         }
-        unreachable;
-        // // else convert array to run container
-        // var answer = try RunContainer.init_with_capacity(allocator, nruns);
-        // var prev: i32 = -2;
-        // var run_start: i32 = -1;
+        // convert array to run container
+        _ = try r.blocks.addManyAsSlice(allocator, nblocks);
+        var prev: i32 = -2;
+        var run_start: i32 = -1;
 
-        // assert(card > 0);
-        // var i: u32 = 0;
-        // while (i < card) : (i += 1) {
-        //     const cur_val = c_qua_array.array[i];
-        //     if (cur_val != prev + 1) {
-        //         // new run starts; flush old one, if any
-        //         if (run_start != -1) answer.add_run(@intCast(run_start), @intCast(prev));
-        //         run_start = cur_val;
-        //     }
-        //     prev = c_qua_array.array[i];
-        // }
-        // assert(run_start >= 0);
-        // // now prev is the last seen value
-        // answer.add_run(@intCast(run_start), @intCast(prev));
-        // c.deinit(allocator);
-        // return .create(allocator, answer);
+        const card = c.cardinality;
+        rc.cardinality = 0;
+        assert(card > 0);
+        const c_qua_array = c.blocks_as(.array, r)[0..c.cardinality];
+        var i: u32 = 0;
+        while (i < card) : (i += 1) {
+            const cur_val = c_qua_array[i];
+            if (cur_val != prev + 1) {
+                // new run starts; flush old one, if any
+                if (run_start != -1) rc.add_run(@intCast(run_start), @intCast(prev), r);
+                run_start = cur_val;
+            }
+            prev = c_qua_array[i];
+        }
+        assert(run_start >= 0);
+        // now prev is the last seen value
+        rc.add_run(@intCast(run_start), @intCast(prev), r);
+        c.deinit(allocator, r);
+        trace(@src(), "rc={}", .{rc});
+        return rc;
     } else if (c.typecode == .bitset) { // run conversions on bitset
         unreachable; // TODO
         // // does bitset need conversion to run?

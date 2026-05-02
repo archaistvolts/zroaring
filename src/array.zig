@@ -63,6 +63,7 @@ pub const Array = extern struct {
         } else false;
     }
 
+    /// depends only on `ra.len`.
     pub fn portable_size_ext(ra: *const Array, hasruns: bool) usize {
         const count = ra.len;
         if (hasruns) {
@@ -92,13 +93,9 @@ pub const Array = extern struct {
     /// `containers` must be populated such as after deserialize()
     pub fn portable_size_in_bytes(ra: *const Array) usize {
         var count = ra.portable_size_has_run();
+        // trace(@src(), "portable_size_has_run={}", .{count});
         for (ra.slice(.containers, .len)) |c| {
-            count += switch (c.typecode) {
-                .array => c.cardinality * @sizeOf(u16),
-                .bitset => @sizeOf(root.Bitset),
-                .run => @sizeOf(u16) + @as(u32, c.cardinality) * @sizeOf(root.Rle16),
-                .shared => unreachable, // TODO
-            };
+            count += c.serialized_size_in_bytes();
         }
         return count;
     }
@@ -191,7 +188,7 @@ pub const Array = extern struct {
         }
     }
 
-    /// allocate and Array.containers and Array.keys.  read/write all container
+    /// allocate `Array`.containers and `Array`.keys.  read/write all container
     /// cardinalities and keys.  read run_flags when present.
     ///
     /// returns number of blocks needed to store all containers.

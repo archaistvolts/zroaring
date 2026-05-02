@@ -372,6 +372,14 @@ pub const Container = packed struct(u64) {
             // },
         }
     }
+
+    // assumes that container has adequate space.  Run from [s,e] (inclusive)
+    pub fn add_run(rc: *Container, s: u16, e: u16, r: *const Bitmap) void {
+        const runs = rc.blocks_as(.run, r);
+        runs[rc.cardinality].value = s;
+        runs[rc.cardinality].length = e - s;
+        rc.cardinality += 1;
+    }
 };
 
 const std = @import("std");
