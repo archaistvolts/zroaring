@@ -116,6 +116,23 @@ pub fn rle16_count_greater(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: 
     return @intCast(@as(i32, @intCast(array.len)) - low);
 }
 
+/// number of groups of size in num. `size=8 | 0:0, [1,8]:1, [9,16]:2 etc`.
+///
+/// align num forward to size and divide by size.
+///
+/// example: `elemscapacity = numGroupsOfSize(capacity*@sizeOf(u16), elem_size)`.
+pub fn numGroupsOfSize(num: anytype, comptime size: anytype) @TypeOf(num) {
+    return (num + size - 1) / size;
+}
+
+test numGroupsOfSize {
+    try testing.expectEqual(0, numGroupsOfSize(0, 8));
+    try testing.expectEqual(1, numGroupsOfSize(1, 8));
+    try testing.expectEqual(1, numGroupsOfSize(8, 8));
+    try testing.expectEqual(2, numGroupsOfSize(9, 8));
+    try testing.expectEqual(2, numGroupsOfSize(16, 8));
+}
+
 // ---
 // Memory helpers
 // ---
@@ -153,5 +170,6 @@ pub fn trace(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: an
 }
 
 const std = @import("std");
+const testing = std.testing;
 const root = @import("root.zig");
 const C = root.constants;

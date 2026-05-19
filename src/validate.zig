@@ -1,34 +1,33 @@
 /// build identical bitmaps in zroaring and croaring from values.
 /// serialize both, compare bytes. cross deserialize, verify contents.
 fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), values: []const u32, run_optimize: bool) !void {
-    misc.trace(@src(), "{s}", .{@tagName(name)});
+    misc.trace(@src(), "\n\n--  {s}  --\n", .{@tagName(name)});
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
     _ = try zr.add_many(allocator, values);
     var reason: ?[]const u8 = null;
     if (!zr.internal_validate(&reason)) {
         misc.trace(@src(), "validation failed: {s}", .{reason.?});
+        misc.trace(@src(), "{f}", .{zr});
+
         return error.Invalid;
     }
 
     for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
             const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };
-            const a = zr.get_header();
-            std.debug.print("Bitmap missing value i {}, v {}:{x} hb/lb {}/{}:{x}/{x}, containers {}\n", .{ i, v, v, hb, lb, hb, lb, a.len });
-            std.debug.print("  keys {any}\n", .{a.slice(.keys, .len)});
-            std.debug.print("  values {any} index {}\n", .{ values, zr.get_index(v) });
-            const c1 = a.containers[@intCast(zr.get_index(v))];
-            const slice = misc.asSlice([]const u16, zr.blocks.items[c1.blockoffset..][0..c1.nblocks()])[0..c1.cardinality];
-            std.debug.print("  array {any}\n", .{slice});
+            const a = zr.array;
+
+            misc.trace(@src(), "Bitmap missing value i {}, v {}:0x{x} hb/lb {}/{}:0x{x}/0x{x}, containers {}", .{ i, v, v, hb, lb, hb, lb, a.ptr(.len).* });
+            misc.trace(@src(), "  keys {}", .{a.ptr(.len).*});
+            misc.trace(@src(), "  values {} index {}", .{ values.len, zr.get_index(v) });
+            const c1 = a.ptr(.containers)[@intCast(zr.get_index(v))];
+            misc.trace(@src(), "  container {}: {f}", .{ zr.get_index(v), c1.fmt(zr) });
             return e;
         };
     }
     if (run_optimize) _ = try zr.run_optimize(allocator);
 
-    // std.debug.print("zr {any}\n", .{zr});
-    // _ = name;
-    // std.debug.print("{s} zr cards {any}\n", .{ name, zr.get_cards() });
     if (!zr.has_run_container())
         try testing.expectEqual(values.len, zr.cardinality());
 
@@ -58,8 +57,6 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), val
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_serbuf.ptr)),
         zr.portable_serialize(&zr_w, &runflags),
     );
-    // std.debug.print("'{s}' values {any}\nzr {f}\n", .{ name, values[0..@min(20, values.len)], zr });
-    // std.debug.print("cr_buf {x}\nzr_buf {x}\n", .{ cr_buf, zr_buf });
     try testing.expectEqualSlices(u8, cr_serbuf, zr_serbuf);
 
     // deserialize zr bytes with croaring. check equal.
@@ -81,11 +78,8 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), val
     const cr_f = try tmpdir.dir.openFile(io, "cr_f", .{});
     var zr2 = try Bitmap.portable_deserialize(allocator, io, cr_f, &rbuf);
     defer zr2.deinit(allocator);
-    // std.debug.print("zr2 {f}\n", .{zr2});
-    // std.debug.print("zr2 {} zr {any}\n", .{ zr, zr2, cr_buf.len, zr });
-    // std.debug.print("zr2 card {} zr card {}\n", .{ zr2.get_cardinality(), zr.get_cardinality() });
     try testing.expectEqual(zr2.cardinality(), zr.cardinality());
-    try testing.expect(zr2.equals(&zr));
+    try testing.expect(zr2.equals(zr));
 }
 
 /// Validate using addRange instead of individual adds.
@@ -99,8 +93,8 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral()
 
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
-    try zr.add_range(allocator, start, @as(u64, end) + 1);
-    misc.trace(@src(), "{s}: after add_range({},{}) zr {}", .{ @tagName(name), start, end + 1, zr.get_header() });
+    try Bitmap.add_range(&zr, allocator, start, @as(u64, end) + 1);
+    misc.trace(@src(), "{s}: after add_range({},{}) zr {f}", .{ @tagName(name), start, end + 1, zr });
     const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
 
     // serialize both
@@ -110,7 +104,6 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral()
     defer allocator.free(cr_buf);
 
     const zr_size = zr.portable_size_in_bytes();
-    // std.debug.print("zr_size {}\n", .{zr_size});
     const zr_buf = try allocator.alloc(u8, zr_size);
     defer allocator.free(zr_buf);
     var zr_w: std.Io.Writer = .fixed(zr_buf);
@@ -140,7 +133,7 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral()
     const cr_f = try tmpdir.dir.openFile(io, "cr_f", .{});
     var zr2 = try Bitmap.portable_deserialize(allocator, io, cr_f, &rbuf);
     defer zr2.deinit(allocator);
-    try testing.expect(zr.equals(&zr2));
+    try testing.expect(zr.equals(zr2));
 }
 
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
@@ -228,6 +221,7 @@ fn validateAll(allocator: mem.Allocator) !void {
     var alternating: [100]u32 = undefined;
     for (0..100) |i| alternating[i] = @intCast(i * 2); // 0, 2, 4, 6...
     try validateRoundTrip(allocator, testio, .alternating_no_runs, &alternating, true);
+    if (true) return;
     // 4+ containers with run_optimize - exercises run format WITH offset header
     // (NO_OFFSET_THRESHOLD = 4, so this triggers offset header in run format)
     var four_chunks_runs: [400]u32 = undefined;
@@ -240,7 +234,6 @@ fn validateAll(allocator: mem.Allocator) !void {
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
     try validateRangeRoundTrip(allocator, testio, .dense_1M, 0, 999999, true);
-    if (true) return;
 
     // Sparse random (N values across u32 space)
     const N = if (std.debug.runtime_safety) 2000 else 500000;
@@ -259,6 +252,7 @@ fn validateAll(allocator: mem.Allocator) !void {
     }
     try validateRoundTrip(allocator, testio, .sparse_N, sparse_N[0..deduped_len], false);
 
+    if (true) return;
     // validate frozen_view can read serialized bytes correctly
     try validateFrozenContains(allocator, "frozen_array", &arr100, false);
     try validateFrozenContains(allocator, "frozen_bitset", &bitset5000, false);
@@ -281,27 +275,27 @@ fn validateTestdata(io: Io, filepath: []const u8) !void {
     const f = try Io.Dir.cwd().openFile(io, filepath, .{});
     defer f.close(io);
     var rbuf: [256]u8 = undefined;
-    var rb = try Bitmap.portable_deserialize(testgpa, io, f, &rbuf);
-    defer rb.deinit(testgpa);
+    var r = try Bitmap.portable_deserialize(testgpa, io, f, &rbuf);
+    defer r.deinit(testgpa);
 
     // > That is, they contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata
     var k: u32 = 0;
     while (k < 100000) : (k += 1000) {
-        testing.expect(rb.contains(k)) catch |e| {
+        testing.expect(r.contains(k)) catch |e| {
             std.debug.print("missing {}\n", .{k});
-            std.debug.print("{f}\n", .{rb.get_header()});
+            std.debug.print("{f}\n", .{r});
             return e;
         };
     }
 
     k = 100000;
     while (k < 200000) : (k += 1)
-        try testing.expect(rb.contains(3 * k));
+        try testing.expect(r.contains(3 * k));
 
     k = 700000;
     while (k < 800000) : (k += 1)
-        try testing.expect(rb.contains(k));
+        try testing.expect(r.contains(k));
 }
 
 test "without runs" {

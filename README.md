@@ -56,8 +56,10 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/RoaringBitmap/CRoaring
 * https://github.com/awesomo4000/rawr
 * https://github.com/lalinsky/roaring.zig
+* https://github.com/archaistvolts/resizable-struct
 
 # Ideas / TODOs - contributions welcome
+* [x] in memory layout - a single allocation, resizable struct to model state - serialization friendly, single write, single read.
 * [x] Transition to a more from-scratch approach.  Don't try to follow CRoaring impl closely, but try to follow the API.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [ ] Provide a similar api to std.HashMap

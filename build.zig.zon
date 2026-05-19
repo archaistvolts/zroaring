@@ -8,6 +8,11 @@
             .url = "git+https://github.com/kristoff-it/zig-afl-kit#e8026e45fb8b7c62515e753a1911ba97b60c1d00",
             .hash = "afl_kit-0.1.0-NdJ3cncdAADtO8S74G1yMYKO1f2XoHputmaJBInsHLp2",
         },
+        .flexible_struct = .{
+            // .path = "../flexible-struct",
+            .url = "git+https://github.com/archaistvolts/resizable-struct?ref=aligned-pointers2#2ee5dada7b351a54590448e0da74643986e3a485",
+            .hash = "flexible_struct-0.0.0-LDUscCM9AACxizqe_37EV1CqThEZZ3CA8-DpmqGHPJ83",
+        },
     },
     .paths = .{
         "build.zig",

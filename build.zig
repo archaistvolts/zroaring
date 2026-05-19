@@ -6,21 +6,23 @@ pub fn build(b: *std.Build) !void {
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
 
     // TODO // const translate_c = b.addTranslateC(.{ .root_source_file = b.path("c/roaring.h"), .target = target, .optimize = optimize });
     // https://codeberg.org/ziglang/translate-c/issues/330
-    const mod = b.addModule("zroaring", .{
+    const zrmod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "build-options", .module = options.createModule() },
+            .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
         },
     });
 
     const use_llvm = b.option(bool, "llvm", "use llvm. false by default. needed when fuzzing by zig 0.15.2.") orelse false;
     const tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = zrmod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
         .use_llvm = use_llvm,
     });
@@ -34,7 +36,7 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_tests.step);
     b.installArtifact(tests);
 
-    const lib = b.addLibrary(.{ .root_module = mod, .name = "zroaring" });
+    const lib = b.addLibrary(.{ .root_module = zrmod, .name = "zroaring" });
     const docs = b.addInstallDirectory(.{
         .source_dir = lib.getEmittedDocs(),
         .install_dir = .{ .prefix = {} },
@@ -43,13 +45,13 @@ pub fn build(b: *std.Build) !void {
     const docs_step = b.step("docs", "Generate documentation to zig-out/docs.");
     docs_step.dependOn(&docs.step);
 
-    const exe_check = b.addExecutable(.{ .name = "check", .root_module = mod });
+    const exe_check = b.addExecutable(.{ .name = "check", .root_module = zrmod });
     const check = b.step("check", "Check if everything compiles");
     check.dependOn(&exe_check.step);
     check.dependOn(&tests.step);
 
     // AFL++ fuzzing exe
-    if (b.option(bool, "build-fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
+    if (b.option(bool, "fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
         // a step for generating fuzzing tooling
         // an oblect file that contains the test function
         const afl_obj = b.addObject(.{
@@ -61,7 +63,11 @@ pub fn build(b: *std.Build) !void {
                 .link_libc = true,
                 .stack_check = false,
                 .fuzz = true,
-                .imports = &.{.{ .name = "zroaring", .module = mod }},
+                .imports = &.{
+                    .{ .name = "zroaring", .module = zrmod },
+                    .{ .name = "build-options", .module = options.createModule() },
+                    .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                },
             }),
         });
 
