@@ -198,7 +198,6 @@ pub fn portable_deserialize_file_reader(
     const blockslen = curblock - blocks;
     ret.array.ptr(.blockslen).* = @intCast(blockslen);
 
-    trace(@src(), "{f}", .{ret});
     assert(ret.array.ptr(.blockslen).* <= ret.array.ptr(.blockscapacity).*);
 
     // FIXME - portable_size_in_bytes() doesn't match logicalPos() on testdatawithruns - 48056 48050
@@ -510,64 +509,14 @@ pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void
 }
 
 pub fn contains(r: Bitmap, val: u32) bool {
-    // trace(@src(), "{}/{} {*} {*}", .{ h.ptr(.len), h.capacity, h.containers, h.keys });
-    const key: u16 = @truncate(val >> 16);
+    const hb: u16 = @truncate(val >> 16);
     // the next function call involves a binary search and lots of branching.
-    // trace(@src(), "{any}", .{h.slice(.keys, .len)});
-    const i = misc.binarySearch(r.slice(.keys, .len), key);
+    const i = r.get_key_index(hb);
     if (i < 0) return false;
+    // rest might be a tad expensive, possibly involving another round of binary
+    // search
     const iu: u32 = @bitCast(i);
-
-    // rest might be a tad expensive, possibly involving another round of binary search
-    const c: Container = r.slice(.containers, .len)[iu];
-
-    const pos: u16 = @truncate(val);
-    switch (c.typecode) {
-        .bitset => {
-            const word_idx = pos / 64;
-            const bit_idx = pos % 64;
-            return (c.blocks_as(.bitset, r)[word_idx] & (@as(u64, 1) << @intCast(bit_idx))) != 0;
-        },
-        .array => {
-            const values = c.blocks_as(.array, r)[0..c.cardinality];
-            // trace(@src(), "{} {any}", .{ c, values });
-
-            // binary search with fallback to linear search for short ranges
-            var low: i32 = 0;
-            var high = @as(i32, @intCast(c.cardinality)) - 1;
-            while (high >= low + 16) {
-                const middleIndex = (low + high) >> 1;
-                const middleValue = values[@intCast(middleIndex)];
-                if (middleValue < pos) {
-                    low = middleIndex + 1;
-                } else if (middleValue > pos) {
-                    high = middleIndex - 1;
-                } else {
-                    return true;
-                }
-            }
-
-            var j = low;
-            while (j <= high) : (j += 1) {
-                const v = values[@intCast(j)];
-                if (v == pos) return true;
-                if (v > pos) return false;
-            }
-            return false;
-        },
-        .run => {
-            const runs = c.blocks_as(.run, r)[0..c.cardinality];
-            var index = misc.interleavedBinarySearch(runs, pos);
-            if (index >= 0) return true;
-            index = -index - 2; // points to preceding value, possibly -1
-            if (index != -1) { // possible match
-                const offset = pos - runs[@intCast(index)].value;
-                if (offset <= runs[@intCast(index)].length) return true;
-            }
-            return false;
-        },
-        .shared => unreachable,
-    }
+    return r.array.ptr(.containers)[iu].contains(@truncate(val), r);
 }
 
 /// true if the two bitmaps contain the same elements.
@@ -595,16 +544,35 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     return true;
 }
 
-///
 /// Get the index corresponding to a 16-bit key
-///
-pub fn get_index(r: Bitmap, v: u32) i32 {
-    const key: u16 = @truncate(v >> 16);
-    const h = r.array;
-    const keys = r.slice(.keys, .len);
-    if (h.ptr(.len).* == 0 or keys[h.ptr(.len).* - 1] == key)
-        return @as(i32, @intCast(h.ptr(.len).* - 1));
-    return misc.binarySearch(keys, key);
+pub fn get_key_index(r: Bitmap, key: u16) i32 {
+    const len = r.array.ptr(.len).*;
+    const keys = r.array.ptr(.keys);
+    if (len == 0 or keys[len - 1] == key) return @bitCast(len -% 1);
+    return misc.binarySearch(keys[0..len], key);
+}
+
+/// returns the index of x, if not exist return -1.
+pub fn get_index(r: Bitmap, x: u32) i64 {
+    var index: i64 = 0;
+    const xhigh: u16 = @truncate(x >> 16);
+    const high_idx = r.get_key_index(xhigh);
+    if (high_idx < 0) return -1;
+    const high_idxu: u32 = @bitCast(high_idx);
+
+    const cs = r.array.ptr(.containers);
+    for (r.slice(.keys, .len), cs) |key, c| {
+        if (xhigh > key) {
+            index += c.get_cardinality(r);
+        } else if (xhigh == key) {
+            const low_idx = cs[high_idxu].get_index(@truncate(x), r);
+            if (low_idx < 0) return -1;
+            return index + low_idx;
+        } else {
+            return -1;
+        }
+    }
+    return index;
 }
 
 pub fn has_run_container(r: Bitmap) bool {
@@ -685,9 +653,7 @@ fn portable_serialize_empty(w: *std.Io.Writer) !usize {
 }
 
 pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags) !usize {
-    const h = r.array;
-    const cslen = h.ptr(.len).*;
-    trace(@src(), "{f}", .{r});
+    const len = r.array.ptr(.len).*;
 
     var startOffset: u32 = 0;
     var written_count: usize = 0;
@@ -697,10 +663,10 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
     if (hasrun) {
         try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE,
-            .cardinality_minus1 = @intCast(cslen - 1),
+            .cardinality_minus1 = @intCast(len - 1),
         }, .little);
         written_count += @sizeOf(root.Cookie);
-        const s = (cslen + 7) / 8;
+        const s = (len + 7) / 8;
         @memset(runflags[0..s], 0);
         for (cs, 0..) |c, i| {
             if (c.typecode == .run) {
@@ -709,18 +675,18 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
         }
         try w.writeAll(runflags[0..s]);
         written_count += s;
-        startOffset = if (cslen < C.NO_OFFSET_THRESHOLD)
-            4 + 4 * cslen + s
+        startOffset = if (len < C.NO_OFFSET_THRESHOLD)
+            4 + 4 * len + s
         else
-            4 + 8 * cslen + s;
+            4 + 8 * len + s;
     } else { // backwards compatibility
         try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
             .cardinality_minus1 = 0,
         }, .little);
-        try w.writeInt(u32, cslen, .little);
+        try w.writeInt(u32, len, .little);
         written_count += @sizeOf(root.Cookie) + @sizeOf(u32);
-        startOffset = 4 + 4 + 4 * cslen + 4 * cslen;
+        startOffset = 4 + 4 + 4 * len + 4 * len;
     }
 
     for (r.slice(.keys, .len), cs) |k, c| {
@@ -731,7 +697,7 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
         try w.writeInt(u16, card, .little);
         written_count += @sizeOf(u16) + @sizeOf(u16);
     }
-    if ((!hasrun) or (cslen >= C.NO_OFFSET_THRESHOLD)) {
+    if ((!hasrun) or (len >= C.NO_OFFSET_THRESHOLD)) {
         // write the containers offsets
         for (cs) |c| {
             try w.writeInt(u32, startOffset, .little);
@@ -1092,7 +1058,7 @@ pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
         if (@hasField(Model.Lengths, sf.name)) continue; // skip lengths
         const f = @field(Model.Field, sf.name);
         // TODO dont copy blocks here when they need to be immediately moved
-        // again (ie when adding growing an array container)
+        // again (ie when growing an array container).
         newarray.copyField(r.array, f);
     }
 }
@@ -1103,18 +1069,20 @@ pub fn realloc_array(r: *Bitmap, allocator: mem.Allocator, new_capacity: u32, ne
         r.deinit(allocator);
         return;
     }
-    const cap = r.array.ptr(.capacity).*;
-    const bcap = r.array.ptr(.blockscapacity).*;
-    assert(new_capacity > cap or new_blockscapacity > bcap);
+    const capacity = r.array.ptr(.capacity).*;
+    const blockscapacity = r.array.ptr(.blockscapacity).*;
+    assert(new_capacity > capacity or new_blockscapacity > blockscapacity);
 
     const newlens: Model.Lengths = .{
-        .capacity = @max(cap, new_capacity),
-        .blockscapacity = @max(bcap, new_blockscapacity),
+        .capacity = @max(capacity, new_capacity),
+        .blockscapacity = @max(blockscapacity, new_blockscapacity),
     };
     const lens = r.array.calcLens();
     const size = Model.calcSize(lens);
-    const newsize = Model.calcSize(newlens);
-    trace(@src(), "lens:old/new={},{}/{},{} sizes={B:.1}/{B:.1}", .{ lens.capacity, lens.blockscapacity, newlens.capacity, newlens.blockscapacity, size, newsize });
+    // if (@import("build-options").trace) {
+    //     const newsize = Model.calcSize(newlens);
+    //     trace(@src(), "lens:old/new={},{}/{},{} sizes={B:.1}/{B:.1}", .{ lens.capacity, lens.blockscapacity, newlens.capacity, newlens.blockscapacity, size, newsize });
+    // }
     if (r.is_empty()) {
         r.array = try Model.create(allocator, newlens);
         zero_init(r.array);
@@ -1209,6 +1177,125 @@ pub fn format(r: Bitmap, w: *Io.Writer) !void {
     }
     // if (cs.len > 0) try w.print("\n  {?}: {f}", .{ 0,  cs[0].fmt(f.r)  });
 
+}
+
+/// FROZEN SERIALIZATION FORMAT DESCRIPTION
+///
+/// -- (beginning must be aligned by 32 bytes) --
+///   - <bitset_data> uint64_t[BITSET_CONTAINER_SIZE_IN_WORDS * num_bitset_containers]
+///   - <run_data>    rle16_t[total number of rle elements in all run containers]
+///   - <array_data>  uint16_t[total number of array elements in all array containers]
+///   - <keys>        uint16_t[num_containers]
+///   - <counts>      uint16_t[num_containers]
+///   - <typecodes>   uint8_t[num_containers]
+///   - <header>      uint32_t
+///
+/// <header> is a 4-byte value which is a bit union of FROZEN_COOKIE (15 bits)
+/// and the number of containers (17 bits).
+///
+/// <counts> stores number of elements for every container.
+/// Its meaning depends on container type.
+/// For array and bitset containers, this value is the container cardinality
+/// minus one. For run container, it is the number of rle_t elements (n_runs).
+///
+/// <bitset_data>,<array_data>,<run_data> are flat arrays of elements of
+/// all containers of respective type.
+///
+/// <*_data> and <keys> are kept close together because they are not accessed
+/// during deserilization. This may reduce IO in case of large mmaped bitmaps.
+/// All members have their native alignments during deserilization except
+/// <header>, which is not guaranteed to be aligned by 4 bytes.
+pub fn frozen_size_in_bytes(rb: *Bitmap) usize {
+    var num_bytes: usize = 0;
+    const len = rb.array.ptr(.len).*;
+    const cs = rb.array.ptr(.containers);
+    for (0..len) |i| {
+        const c = cs[i];
+        num_bytes += switch (c.typecode) {
+            .bitset => @sizeOf(root.Bitset),
+            .run => c.cardinality * @sizeOf(root.Rle16),
+            .array => c.cardinality * @sizeOf(u16),
+            else => unreachable,
+        };
+    }
+    num_bytes += (2 + 2 + 1) * len; // keys, counts, typecodes
+    num_bytes += 4; // header
+    return num_bytes;
+}
+
+fn arena_alloc(T: type, arena: *[*]u8, count: usize) []align(1) T {
+    const size = @sizeOf(T) * count;
+    defer arena.* += size;
+    return @as([]align(1) T, @ptrCast(arena.*[0..size]))[0..count];
+}
+
+pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
+    // Note: we do not require user to supply a specifically aligned buffer.
+
+    var bitset_zone_size: usize = 0;
+    var run_zone_size: usize = 0;
+    var array_zone_size: usize = 0;
+
+    const len = r.array.ptr(.len).*;
+    const cs = r.array.ptr(.containers);
+    for (cs[0..len]) |c| {
+        switch (c.typecode) {
+            .bitset => bitset_zone_size += C.BITSET_SIZE_IN_WORDS,
+            .run => run_zone_size += c.cardinality,
+            .array => array_zone_size += c.cardinality,
+            .shared => unreachable,
+        }
+    }
+
+    var cur = buf.ptr;
+    var bitset_zone = arena_alloc(root.Word, &cur, bitset_zone_size).ptr;
+    var run_zone = arena_alloc(root.Rle16, &cur, run_zone_size).ptr;
+    var array_zone = arena_alloc(u16, &cur, array_zone_size).ptr;
+    const key_zone = arena_alloc(u16, &cur, len);
+    const count_zone = arena_alloc(u16, &cur, len);
+    const typecode_zone = arena_alloc(Typecode, &cur, len);
+    const header_zone = arena_alloc(u32, &cur, 1);
+    assert(cur == buf.ptr + buf.len);
+    const fixedw = Io.Writer.fixed;
+    for (cs[0..len], count_zone, typecode_zone) |c, *count, *typecode| {
+        // std.debug.print("c {f} typecode {}\n", .{ c, @intFromEnum(c.typecode) });
+        typecode.* = c.typecode;
+        count.* = @intCast(switch (c.typecode) {
+            .bitset => blk: {
+                var w = fixedw(mem.sliceAsBytes(bitset_zone[0..C.BITSET_SIZE_IN_WORDS]));
+                try w.writeSliceEndian(root.Word, c.blocks_as(.bitset, r), .little);
+                assert(w.unusedCapacityLen() == 0);
+                bitset_zone += C.BITSET_SIZE_IN_WORDS;
+                break :blk if (c.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
+                    (c.cardinality - 1)
+                else
+                    (c.compute_cardinality() - 1);
+            },
+            .run => blk: {
+                var w = fixedw(mem.sliceAsBytes(run_zone[0..c.cardinality]));
+                try w.writeSliceEndian(root.Rle16, c.blocks_as(.run, r)[0..c.cardinality], .little);
+                assert(w.unusedCapacityLen() == 0);
+                run_zone += c.cardinality;
+                break :blk c.cardinality;
+            },
+            .array => blk: {
+                var w = fixedw(mem.sliceAsBytes(array_zone[0..c.cardinality]));
+                try w.writeSliceEndian(u16, c.blocks_as(.array, r)[0..c.cardinality], .little);
+                assert(w.unusedCapacityLen() == 0);
+                array_zone += c.cardinality;
+                break :blk c.cardinality - 1;
+            },
+            else => unreachable,
+        });
+    }
+    var keysw = fixedw(mem.sliceAsBytes(key_zone[0..len]));
+    try keysw.writeSliceEndian(u16, r.array.ptr(.keys)[0..len], .little);
+    var headerw = fixedw(mem.sliceAsBytes(header_zone[0..1]));
+    try headerw.writeInt(
+        u32,
+        (@as(u32, @intCast(len)) << 15) | @intFromEnum(root.Magic.FROZEN_COOKIE),
+        .little,
+    );
 }
 
 fn deserializeTestdataPortable(io: Io, f: Io.File) !Bitmap {

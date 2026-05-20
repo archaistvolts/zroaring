@@ -8,7 +8,7 @@
 ///    * if ( x<0 ) then inserting ikey at position -x-1 in array (insuring that
 ///  array[-x-1]=ikey) keeps the array sorted.
 // TODO use sort.lowerBound()?
-pub fn binarySearch(array: []const u16, ikey: u16) i32 {
+pub fn binarySearch(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) i32 {
     var low: i32 = 0;
     var high: i32 = @intCast(array.len);
     high -= 1;
@@ -24,6 +24,31 @@ pub fn binarySearch(array: []const u16, ikey: u16) i32 {
         }
     }
     return -(low + 1);
+}
+
+/// binary search with fallback to linear search for short ranges
+pub fn binarySearch2(array: []align(C.BLOCK_ALIGN) const u16, pos: u16) i32 {
+    var low: i32 = 0;
+    var high = @as(i32, @intCast(array.len)) - 1;
+    while (high >= low + 16) {
+        const middleIndex = (low + high) >> 1;
+        const middleValue = array[@intCast(middleIndex)];
+        if (middleValue < pos) {
+            low = middleIndex + 1;
+        } else if (middleValue > pos) {
+            high = middleIndex - 1;
+        } else {
+            return middleIndex;
+        }
+    }
+
+    var j = low;
+    while (j <= high) : (j += 1) {
+        const v = array[@intCast(j)];
+        if (v == pos) return j;
+        if (v > pos) break;
+    }
+    return -j - 1;
 }
 
 //
@@ -51,7 +76,7 @@ pub fn interleavedBinarySearch(array: []align(C.BLOCK_ALIGN) const root.Rle16, i
 /// Returns number of elements which are greater than ikey.
 /// Array elements must be unique and sorted.
 ///
-pub fn count_greater(array: []const u16, ikey: u16) u32 {
+pub fn count_greater(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) u32 {
     if (array.len == 0) return 0;
     const pos = binarySearch(array, ikey);
     if (pos >= 0) {
@@ -65,7 +90,7 @@ pub fn count_greater(array: []const u16, ikey: u16) u32 {
 /// Returns number of elements which are less than ikey.
 /// Array elements must be unique and sorted.
 ///
-pub fn count_less(array: []const u16, ikey: u16) u32 {
+pub fn count_less(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) u32 {
     if (array.len == 0) return 0;
     const pos = binarySearch(array, ikey);
     return @intCast(if (pos >= 0) pos else -(pos + 1));

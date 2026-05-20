@@ -1,7 +1,9 @@
 /// 8192
 pub const MAX_CONTAINER_SIZE = @sizeOf(root.Bitset);
-pub const DEFAULT_MAX_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(u16)); // MAX_CONTAINER_SIZE / @sizeOf(u16), 4096
-pub const MAX_KEY_CARDINALITY = MAX_CONTAINER_SIZE * 8; // DEFAULT_MAX_SIZE * 16, 65536
+/// 4096
+pub const DEFAULT_MAX_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(u16));
+/// 1<<16, 65536
+pub const MAX_KEY_CARDINALITY = MAX_CONTAINER_SIZE * 8;
 pub const MAX_CONTAINERS = MAX_KEY_CARDINALITY;
 pub const MAX_VALUE_CARDINALITY = MAX_KEY_CARDINALITY * MAX_KEY_CARDINALITY;
 
@@ -12,6 +14,7 @@ pub const BLOCK_ALIGN = @alignOf(root.Block);
 pub const BLOCK_ALIGNMENT: std.mem.Alignment = .fromByteUnits(BLOCK_ALIGN);
 /// 256 with avx2.
 pub const BITSET_BLOCKS = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Block));
+pub const BITSET_SIZE_IN_WORDS = @typeInfo(root.Bitset).array.len;
 /// length of a block of u16s, 16 with avx2.
 pub const BLOCK_LEN16 = @divExact(BLOCK_SIZE, @sizeOf(u16));
 pub const MAX_CONTAINER_BLOCKS = BITSET_BLOCKS;

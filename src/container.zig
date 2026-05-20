@@ -40,7 +40,7 @@ pub const Container = packed struct(u64) {
     pub fn is_full(c: Container) bool {
         return switch (c.typecode) {
             .array => c.cardinality == c.nblocks() * C.BLOCK_LEN16,
-            .bitset => c.cardinality == C.MAX_CONTAINER_SIZE,
+            .bitset => c.cardinality == C.MAX_KEY_CARDINALITY,
             .run => unreachable,
             .shared => unreachable,
         };
@@ -81,30 +81,47 @@ pub const Container = packed struct(u64) {
         if (!c.internal_validate(&reason, r)) {
             trace(@src(), "{s}", .{reason.?});
             trace(@src(), "{f}", .{c.fmt(r)});
+            switch (c.typecode) {
+                .array => trace(@src(), "{any}", .{c.blocks_as(.array, r)[0..c.cardinality]}),
+                .bitset => {},
+                .run => {},
+                .shared => {},
+            }
+
             unreachable;
         }
     }
+
+    /// add blocks to a container: extend, move following blocks forward, update
+    /// affected container blockoffsets
     pub fn array_container_grow(c: *Container, allocator: mem.Allocator, r: *Bitmap, mincapacity: u32, preserve: bool) !void {
         const max: u32 = if (mincapacity <= C.DEFAULT_MAX_SIZE) C.DEFAULT_MAX_SIZE else C.MAX_CONTAINERS;
         const newcap = std.math.clamp(grow_capacity(c.cardinality), mincapacity, max);
-        const k = newcap - c.cardinality;
-        const kblocks = k / C.BLOCK_LEN16;
+        const morecap = newcap - c.cardinality;
+        const moreblocks = morecap / C.BLOCK_LEN16;
 
-        // trace(@src(), "newcap={} k={} kblocks={}", .{ newcap, k, kblocks });
+        const cid = c - r.array.ptr(.containers);
+        // trace(@src(), "newcap={} morecap={} moreblocks={} cid={}", .{ newcap, morecap, moreblocks, cid });
         if (preserve) {
-            const cid = c - r.array.ptr(.containers);
-            if (r.array.ptr(.blockslen).* + c.nblocks() + kblocks >=
+            // TODO move this logic to extend_array?
+            if (r.array.ptr(.blockslen).* + c.nblocks() + moreblocks >=
                 r.array.ptr(.blockscapacity).*)
             {
-                try r.extend_array(allocator, 0, kblocks);
+                try r.extend_array(allocator, 0, moreblocks);
             }
+            // move blocks and update blocks info
             const blocks = r.slice(.blocks, .blockscapacity);
             const c2 = &r.array.ptr(.containers)[cid];
             const rest = blocks[c2.blockoffset + c2.nblocks() ..];
-            @memmove(rest.ptr + kblocks, rest);
-            c2.nblocks_minus1 += @intCast(kblocks);
-            // trace(@src(), "newcap={} k={} kblocks={}", .{ newcap, k, kblocks });
-            r.array.ptr(.blockslen).* += kblocks;
+            @memmove(rest.ptr + moreblocks, rest);
+            c2.nblocks_minus1 += @intCast(moreblocks);
+            r.array.ptr(.blockslen).* += moreblocks;
+
+            // update blockoffsets of containers with moved blocks
+            for (r.slice(.containers, .len)) |*c3| {
+                if (c3.blockoffset <= c2.blockoffset) continue;
+                c3.blockoffset += @intCast(moreblocks);
+            }
         } else {
             unreachable; // TODO !preserve
         }
@@ -146,23 +163,28 @@ pub const Container = packed struct(u64) {
         if (loc >= 0) {
             return 0;
         } else if (ac.cardinality < maxcard) {
+            const acid = ac - r.array.ptr(.containers);
             if (ac.is_full()) {
                 try ac.array_container_grow(allocator, r, ac.cardinality + 1, true);
             }
-            const insertidx: u32 = @intCast(-loc - 1);
-            const array1 = ac.blocks_as(.array, r.*)[0..ac.cardinality];
-            trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
 
+            const ac2 = &r.array.ptr(.containers)[acid];
+            const array1 = ac2.blocks_as(.array, r.*)[0..ac2.cardinality];
+            // trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
+
+            const insertidx: u32 = @intCast(-loc - 1);
             @memmove(array1.ptr + insertidx + 1, array1[insertidx..]);
             array1[insertidx] = value;
-            ac.cardinality += 1;
-            assert_valid(ac, r.*);
+            ac2.cardinality += 1;
+            assert_valid(ac2, r.*);
             return 1;
         } else {
             return -1;
         }
     }
+
     const Words = @FieldType(Element, "bitset");
+
     /// Set the ith bit.
     pub fn bitset_container_set(bc: *Container, pos: u16, words: Words) void {
         const old_word = words[pos >> 6];
@@ -318,7 +340,7 @@ pub const Container = packed struct(u64) {
                 // typecode = shared_container.typecode;
             },
             .bitset => {
-                if (!(0 < v.cardinality and v.cardinality <= C.DEFAULT_MAX_SIZE * 2)) { // <= 8192
+                if (!(0 < v.cardinality and v.cardinality <= C.MAX_KEY_CARDINALITY)) { // <= 65536
                     reason.* = "bitset cardinality";
                     return false;
                 }
@@ -380,10 +402,103 @@ pub const Container = packed struct(u64) {
         rc.cardinality += 1;
     }
 
+    /// Get the value of the ith bit.
+    pub fn bitset_container_get(words: [*]root.Word, pos: u16) bool {
+        const word = words[pos >> 6];
+        return (word >> @truncate(pos & 63)) & 1 != 0;
+    }
+
+    /// Returns the index of x , if not exsist return -1
+    pub fn bitset_container_get_index(container: Container, x: u16, r: Bitmap) i32 {
+        const words = container.blocks_as(.bitset, r);
+        if (bitset_container_get(words.ptr, x)) {
+            // credit: aqrit
+            var sum: i32 = 0;
+            var i: i32 = 0;
+            const end = x / 64;
+            while (i < end) : (i += 1) {
+                sum += @popCount(words[@intCast(i)]);
+            }
+            const lastword = words[@intCast(i)];
+            const lastpos = @as(u64, 1) << @truncate(x % 64);
+            const mask = lastpos + lastpos - 1; // smear right
+            sum += @popCount(lastword & mask);
+            return sum - 1;
+        } else {
+            return -1;
+        }
+    }
+
+    /// Returns the index of x , if not exsist return -1
+    pub fn array_container_get_index(arr: Container, x: u16, r: Bitmap) i32 {
+        const array = arr.blocks_as(.array, r)[0..arr.cardinality];
+        const idx = misc.binarySearch(array, x);
+        return if (idx >= 0) idx else -1;
+    }
+
+    /// Check whether `pos' is present in `runs'.
+    pub fn run_container_contains(runs: []align(C.BLOCK_ALIGN) root.Rle16, pos: u16) bool {
+        var index = misc.interleavedBinarySearch(runs, pos);
+        if (index >= 0) return true;
+        index = -index - 2; // points to preceding value, possibly -1
+        if (index != -1) { // possible match
+            const run = runs[@intCast(index)];
+            const offset: i32 = pos - run.value;
+            const le: i32 = run.length;
+            if (offset <= le) return true;
+        }
+        return false;
+    }
+
+    pub fn run_container_get_index(container: Container, x: u16, r: Bitmap) i32 {
+        const runs = container.blocks_as(.run, r)[0..container.cardinality];
+        if (run_container_contains(runs, x)) {
+            var sum: i32 = 0;
+            const x32: u32 = x;
+            for (0..container.cardinality) |i| {
+                const startpoint: u32 = runs[i].value;
+                const length: u32 = runs[i].length;
+                const endpoint: u32 = length + startpoint;
+                if (x <= endpoint) {
+                    if (x < startpoint) break;
+                    return sum + @as(i32, @intCast(x32 - startpoint));
+                } else {
+                    sum += @intCast(length + 1);
+                }
+            }
+            return sum - 1;
+        } else {
+            return -1;
+        }
+    }
+
+    // return the index of x, if not exsist return -1
+    pub fn get_index(c: Container, x: u16, r: Bitmap) i32 {
+        // c = container_unwrap_shared(c, &type); // TODO
+        return switch (c.typecode) {
+            .bitset => c.bitset_container_get_index(x, r),
+            .array => c.array_container_get_index(x, r),
+            .run => c.run_container_get_index(x, r),
+            .shared => unreachable,
+        };
+    }
+
+    /// Check whether a value is in a container
+    pub fn contains(c: Container, val: u16, r: Bitmap) bool {
+        // c = container_unwrap_shared(c, &typecode); // TODO
+        return switch (c.typecode) {
+            .bitset => bitset_container_get(c.blocks_as(.bitset, r).ptr, val),
+            .array => misc.binarySearch2(c.blocks_as(.array, r)[0..c.cardinality], val) >= 0,
+            .run => run_container_contains(c.blocks_as(.run, r)[0..c.cardinality], val),
+            .shared => unreachable,
+        };
+    }
+
     pub const fmt = Fmt.init;
     pub const Fmt = struct {
         r: Bitmap,
         c: Container,
+
         pub fn format(f: Fmt, w: *std.Io.Writer) !void {
             if (f.c == Container.uninit) {
                 try w.writeAll("uninit");

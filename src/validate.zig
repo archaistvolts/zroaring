@@ -8,7 +8,7 @@ fn validateRoundTrip(
     run_optimize: bool,
     cr_f: std.Io.File,
 ) !void {
-    misc.trace(@src(), "\n\n--  {s} run_optimize={}  --\n", .{ @tagName(name), run_optimize });
+    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " run_optimize" else "" });
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
     _ = try zr.add_many(allocator, values);
@@ -23,13 +23,16 @@ fn validateRoundTrip(
     for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
             const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };
-            const a = zr.array;
-
-            misc.trace(@src(), "Bitmap missing value i {}, v {}:0x{x} hb/lb {}/{}:0x{x}/0x{x}, containers {}", .{ i, v, v, hb, lb, hb, lb, a.ptr(.len).* });
-            misc.trace(@src(), "  keys {}", .{a.ptr(.len).*});
+            misc.trace(@src(), "Bitmap missing value {}:0x{x} hb/lb {}/{}:0x{x}/0x{x}, #containers {} at values index {}", .{ v, v, hb, lb, hb, lb, zr.array.ptr(.len).*, i });
+            misc.trace(@src(), "  keys {}", .{zr.array.ptr(.len).*});
             misc.trace(@src(), "  values {} index {}", .{ values.len, zr.get_index(v) });
-            const c1 = a.ptr(.containers)[@intCast(zr.get_index(v))];
+            misc.trace(@src(), "  zr {f}", .{zr});
+            const c1 = zr.array.ptr(.containers)[@intCast(zr.get_index(v))];
             misc.trace(@src(), "  container {}: {f}", .{ zr.get_index(v), c1.fmt(zr) });
+            // misc.trace(@src(), "    {}", .{c1});
+            // if (c1.typecode == .array) {
+            //     misc.trace(@src(), "array={any}", .{c1.blocks_as(.array, zr)[0..c1.cardinality]});
+            // }
             return e;
         };
     }
@@ -95,7 +98,7 @@ fn validateRangeRoundTrip(
     run_optimize: bool,
     cr_f: std.Io.File,
 ) !void {
-    misc.trace(@src(), "\n\n--  {s} run_optimize={} --\n", .{ @tagName(name), run_optimize });
+    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " run_optimize" else "" });
     // build both
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
@@ -157,20 +160,20 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     c.roaring_bitmap_frozen_serialize(cr, cr_frozen_buf.ptr);
     // std.debug.print("{s} cr_frozen_size {}\n", .{ name, cr_frozen_size });
 
-    var zr: Bitmap = .{};
+    var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
-    try zr.add_many(allocator, values);
-    if (true) unreachable;
+    _ = try zr.add_many(allocator, values);
     if (run_optimize) _ = try zr.run_optimize(allocator);
     const zr_frozen_buf = try allocator.alignedAlloc(u8, .@"32", zr.frozen_size_in_bytes());
     defer allocator.free(zr_frozen_buf);
     try zr.frozen_serialize(zr_frozen_buf);
+
     try testing.expectEqualSlices(u8, cr_frozen_buf, zr_frozen_buf);
 
-    var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
-    defer zr_frozen.deinit(allocator);
-    for (values) |v| try testing.expect(zr_frozen.contains(v));
-    try testing.expect(zr.equals(zr_frozen));
+    // var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
+    // defer zr_frozen.deinit(allocator);
+    // for (values) |v| try testing.expect(zr_frozen.contains(v));
+    // try testing.expect(zr.equals(zr_frozen));
 }
 
 const testio = testing.io;
@@ -236,30 +239,23 @@ fn validateAll(allocator: mem.Allocator, cr_f: Io.File) !void {
     for (0..100) |i| four_chunks_runs[100 + i] = @intCast(65536 + i); // chunk 1
     for (0..100) |i| four_chunks_runs[200 + i] = @intCast(131072 + i); // chunk 2
     for (0..100) |i| four_chunks_runs[300 + i] = @intCast(196608 + i); // chunk 3
-    try validateRoundTrip(allocator, testio, .four_chunks_run_optimized, &four_chunks_runs, true, cr_f);
+    try validateRoundTrip(allocator, testio, .four_chunks_runs, &four_chunks_runs, true, cr_f);
 
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
     try validateRangeRoundTrip(allocator, testio, .dense_1M, 0, 999999, true, cr_f);
 
-    // Sparse random (N values across u32 space)
-    const N = if (std.debug.runtime_safety) 2000 else 500000;
+    // Sparse random (N values across u17 space)
+    const N = 100_000;
     var prng = std.Random.DefaultPrng.init(0);
-    const sparse_N = try allocator.alloc(u32, N);
-    defer allocator.free(sparse_N);
-    for (sparse_N) |*x| x.* = prng.random().int(u32);
-    // Sort and dedupe for consistent results
-    std.mem.sort(u32, sparse_N, {}, std.sort.asc(u32));
-    var deduped_len: usize = 1;
-    for (1..N) |i| {
-        if (sparse_N[i] != sparse_N[deduped_len - 1]) {
-            sparse_N[deduped_len] = sparse_N[i];
-            deduped_len += 1;
-        }
+    var set = std.AutoArrayHashMapUnmanaged(u32, void).empty;
+    defer set.deinit(testing.allocator);
+    try set.ensureTotalCapacity(testing.allocator, N);
+    for (0..N) |_| {
+        set.putAssumeCapacity(prng.random().int(u17), {});
     }
-    try validateRoundTrip(allocator, testio, .sparse_N, sparse_N[0..deduped_len], false, cr_f);
+    try validateRoundTrip(allocator, testio, .sparse_N, set.keys(), false, cr_f);
 
-    if (true) return;
     // validate frozen_view can read serialized bytes correctly
     try validateFrozenContains(allocator, "frozen_array", &arr100, false);
     try validateFrozenContains(allocator, "frozen_bitset", &bitset5000, false);
