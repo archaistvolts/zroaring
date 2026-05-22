@@ -48,7 +48,7 @@ pub fn binarySearch2(array: []align(C.BLOCK_ALIGN) const u16, pos: u16) i32 {
         if (v == pos) return j;
         if (v > pos) break;
     }
-    return -j - 1;
+    return -(j + 1);
 }
 
 //
@@ -60,7 +60,6 @@ pub fn interleavedBinarySearch(array: []align(C.BLOCK_ALIGN) const root.Rle16, i
     while (low <= high) {
         const middleIndex = (low + high) >> 1;
         const middleValue = array[@intCast(middleIndex)].value;
-        // std.debug.print("low {} high {} middleIndex {} middlevalue {}\n", .{ low, high, middleIndex, middleValue });
         if (middleValue < ikey) {
             low = middleIndex + 1;
         } else if (middleValue > ikey) {

@@ -21,11 +21,9 @@ pub const Container = packed struct(u64) {
     };
 
     /// TODO strat for reusing old blocks
-    pub fn deinit(c: *Container, allocator: mem.Allocator, r: *Bitmap) void {
-        _ = allocator; // autofix
-
-        const blocks = c.get_blocks(r.*);
-        @memset(blocks, @splat(0xFF));
+    pub fn deinit(c: *Container, r: Bitmap) void {
+        // trace(@src(), "deinit {}", .{c});
+        @memset(c.get_blocks(r), @splat(0xFF));
         c.* = .uninit;
     }
 
@@ -94,8 +92,17 @@ pub const Container = packed struct(u64) {
 
     /// add blocks to a container: extend, move following blocks forward, update
     /// affected container blockoffsets
-    pub fn array_container_grow(c: *Container, allocator: mem.Allocator, r: *Bitmap, mincapacity: u32, preserve: bool) !void {
-        const max: u32 = if (mincapacity <= C.DEFAULT_MAX_SIZE) C.DEFAULT_MAX_SIZE else C.MAX_CONTAINERS;
+    pub fn array_container_grow(
+        c: *Container,
+        allocator: mem.Allocator,
+        r: *Bitmap,
+        mincapacity: u32,
+        preserve: bool,
+    ) !void {
+        const max: u32 = if (mincapacity <= C.DEFAULT_MAX_SIZE)
+            C.DEFAULT_MAX_SIZE
+        else
+            C.MAX_CONTAINERS;
         const newcap = std.math.clamp(grow_capacity(c.cardinality), mincapacity, max);
         const morecap = newcap - c.cardinality;
         const moreblocks = morecap / C.BLOCK_LEN16;
@@ -527,6 +534,29 @@ pub const Container = packed struct(u64) {
             return .{ .c = c, .r = r };
         }
     };
+
+    /// returns bytes saved by shrinking c.
+    ///
+    /// does not move blocks. modifies c if it has extra blocks to minimum
+    /// blocks needed or deinit when cardinality is 0.
+    pub fn shrink_to_fit(c: *Container, r: Bitmap) !usize {
+        const nblocksneeded = switch (c.typecode) {
+            .bitset => return 0, // no shrinking possible
+            .array => misc.numGroupsOfSize(c.cardinality, C.BLOCK_LEN16),
+            .run => misc.numGroupsOfSize(c.cardinality, C.BLOCK_LEN32),
+            .shared => unreachable,
+        };
+        const nblocks0 = c.nblocks();
+        trace(@src(), "nblocksneeded={} nblocks={} src={}\n", .{ nblocksneeded, nblocks0, c });
+
+        if (c.cardinality == 0) {
+            c.deinit(r);
+        } else if (nblocksneeded < c.nblocks()) {
+            c.nblocks_minus1 = @intCast(nblocksneeded - 1);
+        }
+
+        return (nblocks0 - c.nblocks()) * C.BLOCK_SIZE;
+    }
 };
 
 const std = @import("std");

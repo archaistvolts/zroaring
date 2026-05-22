@@ -127,8 +127,8 @@ fn zig_fuzz_test1(data: []const u8) !void {
     // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
     var a: Bitmap = .empty;
     _ = try a.add_many(alloc, bitmap_data_a.items);
-    // if (true) unreachable; // TODO
     _ = try a.run_optimize(alloc);
+    _ = try a.shrink_to_fit(alloc);
 
     const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
     // std.debug.print("bitmap_data_b {any}\n", .{bitmap_data_b});
@@ -147,19 +147,18 @@ fn zig_fuzz_test1(data: []const u8) !void {
 
 fn bitmap32(io: Io, data: []const u8) u8 {
     // We test that deserialization never fails.
-    {
-        const f = tmpdir.createFile(io, "bitmap32", .{}) catch unreachable;
-        defer f.close(io);
-        f.writeStreamingAll(io, data) catch unreachable;
-    }
-    const f = tmpdir.openFile(io, "bitmap32", .{}) catch unreachable;
-    var read_buf: [256]u8 = undefined;
-    var bitmap = zroaring.Bitmap.portable_deserialize(gpa, io, f, &read_buf) catch return 0;
+    const f = tmpdir.openFile(io, "bitmap32", .{}) catch return 0;
+    f.writePositionalAll(io, data, 0) catch return 0;
+    var rbuf: [256]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+    fr.seekTo(0) catch return 0;
+
+    var bitmap = zroaring.Bitmap.portable_deserialize_file_reader(gpa, &fr) catch return 0;
     defer bitmap.deinit(gpa);
     // The bitmap may not be usable if it does not follow the specification.
     // We can validate the bitmap we recovered to make sure it is proper.
-    var reason_failure: ?[]const u8 = undefined;
-    if (bitmap.internal_validate(@ptrCast(&reason_failure))) {
+    var reason_failure: ?[]const u8 = null;
+    if (bitmap.internal_validate(&reason_failure)) {
         // the bitmap is ok!
         var cardinality = bitmap.get_cardinality();
         for (100..1000) |ii| {

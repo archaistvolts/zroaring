@@ -8,7 +8,7 @@ fn validateRoundTrip(
     run_optimize: bool,
     cr_f: std.Io.File,
 ) !void {
-    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " run_optimize" else "" });
+    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " +run_optimize" else "" });
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
     _ = try zr.add_many(allocator, values);
@@ -86,6 +86,16 @@ fn validateRoundTrip(
     defer zr2.deinit(allocator);
     try testing.expectEqual(zr2.cardinality(), zr.cardinality());
     try testing.expect(zr2.equals(zr));
+
+    // compare to cr/zr2 after shrink_to_fit()
+    const zrshrink = try zr.shrink_to_fit(allocator);
+    const crshrink = c.roaring_bitmap_shrink_to_fit(cr);
+    if (false) misc.trace(@src(), "zrshrink={} crshrink={}\n", .{ zrshrink, crshrink });
+    zr_w = std.Io.Writer.fixed(zr_serbuf);
+    const crlen = c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_serbuf.ptr));
+    try testing.expectEqual(crlen, zr.portable_serialize(&zr_w, &runflags));
+    try testing.expectEqualSlices(u8, cr_serbuf[0..crlen], zr_serbuf[0..crlen]);
+    try testing.expect(zr2.equals(zr));
 }
 
 /// Validate using addRange instead of individual adds.
@@ -98,7 +108,7 @@ fn validateRangeRoundTrip(
     run_optimize: bool,
     cr_f: std.Io.File,
 ) !void {
-    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " run_optimize" else "" });
+    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " +run_optimize" else "" });
     // build both
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);

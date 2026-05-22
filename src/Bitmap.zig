@@ -80,7 +80,7 @@ pub fn can_have_run_containers(h: Bitmap) bool {
 
 pub const Info = struct { cookie: root.Cookie, len: u32 };
 
-/// read how many bytes are needed to store array slices (not including `@sizeOf(Array)`).
+/// wrapper of `info_from_file_reader()`.
 pub fn info_from_file(io: Io, bitmap_file: Io.File) !Info {
     var read_buf: [8]u8 = undefined;
     var freader = bitmap_file.reader(io, &read_buf);
@@ -288,7 +288,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         if (c != c2) {
             // skip deinit of inplace array/bitset conversion
             if (c.blockoffset != c2.blockoffset) {
-                r.array.ptr(.containers)[cid].deinit(allocator, r);
+                r.array.ptr(.containers)[cid].deinit(r.*);
             }
             r.array.ptr(.containers)[cid] = c2;
         }
@@ -582,7 +582,7 @@ pub fn has_run_container(r: Bitmap) bool {
     } else false;
 }
 
-/// depends only on `ra.len`.
+/// depends only on `Array` `len`.
 pub fn portable_size_ext(ra: Bitmap, hasruns: bool) usize {
     const count = ra.array.ptr(.len).*;
     if (hasruns) {
@@ -597,14 +597,13 @@ pub fn portable_size_ext(ra: Bitmap, hasruns: bool) usize {
 }
 
 /// file position where array data ends and container data starts.
-/// depends only on `ra.magic` and `ra.len`.
+/// depends only on `Array` `magic` and `len`.
 pub fn portable_size(ra: Bitmap) usize {
     return ra.portable_size_ext(ra.can_have_run_containers());
 }
 
-/// file position where array data ends and container data starts.
-/// depends on `ra.containers` being populated and checks if there are any
-/// run containers present.
+/// file position where array data ends and container data starts.   depends on
+/// `containers` being populated to check if run containers are present.
 pub fn portable_header_size(ra: Bitmap) usize {
     return ra.portable_size_ext(ra.has_run_container());
 }
@@ -713,12 +712,11 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
     return written_count;
 }
 
-///
 /// Convert array and bitmap containers to run containers when it is more
 /// efficient; also convert from run containers when more space efficient.
 ///
 /// Returns true if the result has at least one run container.
-/// Additional savings might be possible by calling `shrinkToFit()`.
+/// Additional savings might be possible by calling `shrink_to_fit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
     for (0..r.array.ptr(.len).*) |i| {
@@ -752,8 +750,7 @@ fn array_number_of_runs(r: Bitmap, c: Container) u32 {
     return nr_runs;
 }
 
-/// once converted, the original container is disposed here, rather than
-/// in roaring_array
+/// once converted, the original container is disposed here.
 ///
 // TODO: split into run- array- and bitset- subfunctions for sanity;
 // a few function calls won't really matter.
@@ -761,7 +758,7 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
     const c = r.array.ptr(.containers)[cid];
     if (c.typecode == .run) {
         const newc = try r.convert_run_to_efficient_container(c, allocator);
-        if (newc != c) r.array.ptr(.containers)[cid].deinit(allocator, r);
+        if (newc != c) r.array.ptr(.containers)[cid].deinit(r.*);
         return newc;
     } else if (c.typecode == .array) {
         // it might need to be converted to a run container.
@@ -775,7 +772,7 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
         };
         const size_as_run_container = rc.serialized_size_in_bytes();
         const size_as_array_container = c.serialized_size_in_bytes();
-        trace(@src(), "arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
+        trace(@src(), "array. arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
         if (size_as_array_container <= size_as_run_container) {
             return c;
         }
@@ -803,7 +800,7 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
         assert(run_start >= 0);
         // now prev is the last seen value
         rc.add_run(@intCast(run_start), @intCast(prev), r.*);
-        c2.deinit(allocator, r);
+        c2.deinit(r.*);
         trace(@src(), "rc={}", .{rc});
         return rc;
     } else if (c.typecode == .bitset) { // run conversions on bitset
@@ -876,14 +873,8 @@ pub fn convert_run_to_efficient_container(r: Bitmap, c: Container, allocator: me
     const size_as_run_container = c.serialized_size_in_bytes();
     const size_as_bitset_container = @sizeOf(root.Bitset);
     const card = c.compute_cardinality(r);
-    var ac: Container = .{ .typecode = .array, .cardinality = card, .nblocks_minus1 = undefined, .blockoffset = undefined };
-    const size_as_array_container = ac.serialized_size_in_bytes();
-
-    const min_size_non_run =
-        if (size_as_bitset_container < size_as_array_container)
-            size_as_bitset_container
-        else
-            size_as_array_container;
+    const size_as_array_container = card * @sizeOf(u16);
+    const min_size_non_run = @min(size_as_bitset_container, size_as_array_container);
     if (size_as_run_container <= min_size_non_run) { // no conversion
         return c;
     }
@@ -1044,7 +1035,7 @@ pub fn assert_valid(r: Bitmap) void {
         trace(@src(), "{s}", .{reason.?});
         trace(@src(), "{f}", .{r});
         for (r.slice(.keys, .len), r.slice(.containers, .len), 0..) |k, c, i| {
-            if (false and c.cardinality > 1)
+            if (false)
                 trace(@src(), "{} {}: {f}", .{ i, k, c.fmt(r) });
         }
 
@@ -1064,7 +1055,12 @@ pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
 }
 
 /// grow if necessary to new_capacity.  deinit if 0.  modifies `Array.len/capacity`.
-pub fn realloc_array(r: *Bitmap, allocator: mem.Allocator, new_capacity: u32, new_blockscapacity: u32) !void {
+pub fn realloc_array(
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    new_capacity: u32,
+    new_blockscapacity: u32,
+) !void {
     if (new_capacity == 0) {
         r.deinit(allocator);
         return;
@@ -1296,6 +1292,52 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
         (@as(u32, @intCast(len)) << 15) | @intFromEnum(root.Magic.FROZEN_COOKIE),
         .little,
     );
+}
+
+/// shrink containers if they use extra blocks then copy used blocks to a new allocation.
+pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
+    const capacity = r.array.ptr(.capacity).*;
+    const blockscapacity = r.array.ptr(.blockscapacity).*;
+    const len = r.array.ptr(.len).*;
+    const blockslen = r.array.ptr(.blockslen).*;
+
+    var answer: usize = 0;
+    for (0..len) |i| {
+        // TODO handle previously deinit() containers/blocks marked .uninit/0xff
+        const c = &r.array.ptr(.containers)[i];
+        answer += try c.shrink_to_fit(r.*);
+    }
+    if (answer == 0 and capacity == len and blockscapacity == blockslen)
+        return 0;
+
+    const size = Model.calcSize(.{ .capacity = capacity, .blockscapacity = blockscapacity });
+    const newlens = Model.Lengths{ .capacity = len, .blockscapacity = blockslen };
+    const newsize = Model.calcSize(newlens);
+    const keysoffset = r.array.offsetOf(.keys);
+    const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, newsize);
+    // copy non-array fields
+    @memcpy(buf[0..keysoffset], r.array.asBytes()[0..keysoffset]);
+    const newarray: *Model = @ptrCast(buf);
+    newarray.ptr(.capacity).* = len;
+    newarray.ptr(.blockscapacity).* = blockslen;
+    const newr = Bitmap{ .array = newarray };
+    // copy keys and containers
+    newarray.copyField(r.array, .keys);
+    newarray.copyField(r.array, .containers);
+    // copy blocks
+    const blocks = newarray.ptr(.blocks);
+    var block = blocks;
+    const cs = r.array.ptr(.containers);
+    const newcs = newarray.ptr(.containers);
+    for (0..len) |i| {
+        newcs[i].blockoffset = @intCast(block - blocks);
+        block += cs[i].nblocks();
+        @memcpy(newcs[i].get_blocks(newr), cs[i].get_blocks(r.*));
+    }
+    allocator.free(r.array.asBytes()[0..size]);
+    r.array = newarray;
+
+    return answer + size - newsize;
 }
 
 fn deserializeTestdataPortable(io: Io, f: Io.File) !Bitmap {

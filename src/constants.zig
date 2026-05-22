@@ -17,6 +17,8 @@ pub const BITSET_BLOCKS = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Block));
 pub const BITSET_SIZE_IN_WORDS = @typeInfo(root.Bitset).array.len;
 /// length of a block of u16s, 16 with avx2.
 pub const BLOCK_LEN16 = @divExact(BLOCK_SIZE, @sizeOf(u16));
+/// length of a block of Rle16s, 8 with avx2.
+pub const BLOCK_LEN32 = @divExact(BLOCK_SIZE, @sizeOf(root.Rle16));
 pub const MAX_CONTAINER_BLOCKS = BITSET_BLOCKS;
 /// Bitmap.blocks should never actually get this big.
 pub const MAX_BLOCKS = MAX_CONTAINERS * MAX_CONTAINER_BLOCKS; // 1<<16 * 1<<8 = 1<<24
