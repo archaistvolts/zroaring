@@ -3,7 +3,9 @@ const afl = @import("afl_kit");
 
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
+    const with_croaring = b.option(bool, "with-croaring", "include src/c/roaring.c in test exe.  default true.  use when fuzzing with zig to prevent undefined symbols (#31412).") orelse true;
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
+    options.addOption(bool, "with_croaring", with_croaring);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
@@ -26,11 +28,15 @@ pub fn build(b: *std.Build) !void {
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
         .use_llvm = use_llvm,
     });
+
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
-    tests.root_module.addIncludePath(b.path("src"));
-    tests.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
-    tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    tests.root_module.link_libc = true;
+
+    if (with_croaring) {
+        tests.root_module.addIncludePath(b.path("src"));
+        tests.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+        tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
+        tests.root_module.link_libc = true;
+    }
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);

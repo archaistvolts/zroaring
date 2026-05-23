@@ -40,7 +40,7 @@ try std.testing.expect(!zr.contains(2));
 ### Fuzz
 * with the build system:
 ```console
-$ zig build test -Dllvm --fuzz
+$ zig build test -Dllvm --fuzz --release=safe -Dwith-croaring=false --webui=[::1]:40313 -j1
 ```
 * with nix-shell and AFL++:
 ```console
@@ -62,6 +62,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [x] in memory layout - a single allocation, resizable struct to model state - serialization friendly, single write, single read.
 * [x] Transition to a more from-scratch approach.  Don't try to follow CRoaring impl closely, but try to follow the API.
 * [x] validation: fix failing checkAllAllocationFailures test
+* [ ] checkAllAllocationFailures - why so slow?
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
 * [ ] Support more set sizes than just u32 with generics - Bitmap(T)

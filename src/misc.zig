@@ -51,9 +51,7 @@ pub fn binarySearch2(array: []align(C.BLOCK_ALIGN) const u16, pos: u16) i32 {
     return -(j + 1);
 }
 
-//
-// Good old binary search through rle data
-//
+/// binary search through rle data
 pub fn interleavedBinarySearch(array: []align(C.BLOCK_ALIGN) const root.Rle16, ikey: u16) i32 {
     var low: i32 = 0;
     var high = @as(i32, @intCast(array.len)) - 1;
@@ -71,10 +69,8 @@ pub fn interleavedBinarySearch(array: []align(C.BLOCK_ALIGN) const root.Rle16, i
     return -(low + 1);
 }
 
-///
 /// Returns number of elements which are greater than ikey.
 /// Array elements must be unique and sorted.
-///
 pub fn count_greater(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) u32 {
     if (array.len == 0) return 0;
     const pos = binarySearch(array, ikey);
@@ -85,21 +81,17 @@ pub fn count_greater(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) u32 {
     }
 }
 
-///
 /// Returns number of elements which are less than ikey.
 /// Array elements must be unique and sorted.
-///
 pub fn count_less(array: []align(C.BLOCK_ALIGN) const u16, ikey: u16) u32 {
     if (array.len == 0) return 0;
     const pos = binarySearch(array, ikey);
     return @intCast(if (pos >= 0) pos else -(pos + 1));
 }
 
-///
 /// Returns number of runs which can'be be merged with the key because they
 /// are less than the key.
 /// Note that [5,6,7,8] can be merged with the key 9 and won't be counted.
-///
 pub fn rle16_count_less(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: u16) u32 {
     if (array.len == 0) return 0;
     var low: i32 = 0;
@@ -140,7 +132,7 @@ pub fn rle16_count_greater(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: 
     return @intCast(@as(i32, @intCast(array.len)) - low);
 }
 
-/// number of groups of size in num. `size=8 | 0:0, [1,8]:1, [9,16]:2 etc`.
+/// number of groups of size in num. `size=8 | 0=>0, [1,8]=>1, [9,16]=>2` etc.
 ///
 /// align num forward to size and divide by size.
 ///
@@ -167,13 +159,6 @@ pub fn cast(T: type, i: anytype) T {
 /// convert other_slice to Slice with pointer attributes
 pub fn asSlice(Slice: type, other_slice: anytype) Slice {
     return std.mem.bytesAsSlice(std.meta.Child(Slice), std.mem.sliceAsBytes(other_slice));
-}
-
-pub fn fieldTypes(comptime Header: type) *const [@typeInfo(Header).@"struct".fields.len]type {
-    const fs = std.meta.fields(Header);
-    comptime var ret: [fs.len]type = undefined;
-    for (fs, &ret) |f, *r| r.* = f.type;
-    return &ret;
 }
 
 pub fn trace(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {

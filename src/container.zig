@@ -50,7 +50,11 @@ pub const Container = packed struct(u64) {
 
     /// return container blocks as aligned slice of u16 when typecode == .array etc.
     /// ignores container.cardinality.
-    pub fn blocks_as(c: Container, comptime typecode: root.Typecode, r: Bitmap) @FieldType(Element, @tagName(typecode)) {
+    pub fn blocks_as(
+        c: Container,
+        comptime typecode: root.Typecode,
+        r: Bitmap,
+    ) @FieldType(Element, @tagName(typecode)) {
         return @ptrCast(c.get_blocks(r));
     }
 
@@ -159,7 +163,13 @@ pub const Container = packed struct(u64) {
     ///  * 1  -- value was added
     ///  * 0  -- value was already present
     ///  * -1 -- value was not added because cardinality would exceed max_cardinality
-    pub fn try_add_array(ac: *Container, allocator: mem.Allocator, r: *Bitmap, value: u16, maxcard: u32) !i32 {
+    pub fn array_container_try_add(
+        ac: *Container,
+        allocator: mem.Allocator,
+        r: *Bitmap,
+        value: u16,
+        maxcard: u32,
+    ) !i32 {
         const array = ac.blocks_as(.array, r.*)[0..ac.cardinality];
         // best case, we can append.
         if ((ac.cardinality == 0 or value > array[ac.cardinality - 1]) and ac.cardinality < maxcard) {
@@ -193,12 +203,75 @@ pub const Container = packed struct(u64) {
     const Words = @FieldType(Element, "bitset");
 
     /// Set the ith bit.
-    pub fn bitset_container_set(bc: *Container, pos: u16, words: Words) void {
+    fn bitset_container_set(bc: *Container, pos: u16, words: Words) void {
         const old_word = words[pos >> 6];
         const index: u6 = @truncate(pos & 63);
         const new_word = old_word | (@as(u64, 1) << index);
         bc.cardinality += @intCast((old_word ^ new_word) >> index);
         words[pos >> 6] = new_word;
+    }
+
+    /// Add `pos' to `bitset'. Returns true if `pos' was not present. Might be slower
+    /// than bitset_container_set.
+    fn bitset_container_add(bc: *Container, pos: u16, words: Words) bool {
+        const old_word = words[pos >> 6];
+        const index: u6 = @truncate(pos & 63);
+        const new_word = old_word | (@as(u64, 1) << index);
+        const increment = (old_word | new_word) >> index;
+        bc.cardinality += @intCast(increment);
+        words[pos >> 6] = new_word;
+        return increment > 0;
+    }
+
+    pub fn run_container_add(run: *Container, allocator: mem.Allocator, pos: u16, r: Bitmap) !bool {
+        const runs = run.blocks_as(.run, r)[0..run.cardinality];
+        var mindex = misc.interleavedBinarySearch(runs, pos);
+        if (mindex >= 0) return false; // already there
+        mindex = -mindex - 2; // points to preceding value, possibly -1
+        const index: u32 = @bitCast(mindex);
+        if (index >= 0) { // possible match
+            const offset: i32 = pos - runs[index].value;
+            const le: i32 = runs[index].length;
+            if (offset <= le) return false; // already there
+            if (offset == le + 1) {
+                // we may need to fuse
+                if (index + 1 < run.cardinality) {
+                    if (runs[index + 1].value == pos + 1) {
+                        // indeed fusion is needed
+                        runs[index].length = runs[index + 1].value +
+                            runs[index + 1].length -
+                            runs[index].value;
+                        r.recoverRoomAtIndex(run, @intCast(index + 1));
+                        return true;
+                    }
+                }
+                runs[index].length += 1;
+                return true;
+            }
+            if (index + 1 < run.cardinality) {
+                // we may need to fuse
+                if (runs[index + 1].value == pos + 1) {
+                    // indeed fusion is needed
+                    runs[index + 1].value = pos;
+                    runs[index + 1].length = runs[index + 1].length + 1;
+                    return true;
+                }
+            }
+        }
+        if (index == -1) {
+            // we may need to extend the first run
+            if (0 < run.cardinality) {
+                if (runs[0].value == pos + 1) {
+                    runs[0].length += 1;
+                    runs[0].value -= 1;
+                    return true;
+                }
+            }
+        }
+        try r.makeRoomAtIndex(allocator, run, @intCast(index + 1));
+        runs.ptr[index + 1].value = pos;
+        runs.ptr[index + 1].length = 0;
+        return true;
     }
 
     /// convert ac to a bitset in place.
@@ -246,7 +319,7 @@ pub const Container = packed struct(u64) {
             },
             .array => {
                 const cid = c - r.array.ptr(.containers);
-                const add_res = try c.try_add_array(allocator, r, value, C.DEFAULT_MAX_SIZE);
+                const add_res = try c.array_container_try_add(allocator, r, value, C.DEFAULT_MAX_SIZE);
                 if (add_res != -1) {
                     return r.array.ptr(.containers)[cid];
                 } else {
@@ -256,7 +329,10 @@ pub const Container = packed struct(u64) {
                     return bitset;
                 }
             },
-            .run => unreachable,
+            .run => {
+                _ = try c.run_container_add(allocator, value, r.*);
+                return c.*;
+            },
             .shared => unreachable,
         }
     }
@@ -396,7 +472,46 @@ pub const Container = packed struct(u64) {
                 return true;
             },
             .run => {
-                unreachable;
+                const run = v;
+                if (run.cardinality < 0) {
+                    reason.* = "negative run count";
+                    return false;
+                }
+                if (run.calc_capacity() < run.cardinality) {
+                    reason.* = "capacity less than run count";
+                    return false;
+                }
+
+                if (run.cardinality == 0) {
+                    reason.* = "zero run count";
+                    return false;
+                }
+
+                // Use u32 to avoid overflow issues on ranges that contain UINT16_MAX.
+                var last_end: u32 = 0;
+                const runs = run.blocks_as(.run, r);
+                for (0..run.cardinality) |i| {
+                    const start: u32 = runs[i].value;
+                    const end: u32 = start + runs[i].length + 1;
+                    if (end <= start) {
+                        reason.* = "run start + length overflow";
+                        return false;
+                    }
+                    if (end > (1 << 16)) {
+                        reason.* = "run start + length too large";
+                        return false;
+                    }
+                    if (start < last_end) {
+                        reason.* = "run start less than last end";
+                        return false;
+                    }
+                    if (start == last_end and last_end != 0) {
+                        reason.* = "run start equal to last end, should have combined";
+                        return false;
+                    }
+                    last_end = end;
+                }
+                return true;
             },
         }
     }
@@ -507,23 +622,26 @@ pub const Container = packed struct(u64) {
         c: Container,
 
         pub fn format(f: Fmt, w: *std.Io.Writer) !void {
-            if (f.c == Container.uninit) {
+            const c = f.c;
+            if (c == Container.uninit) {
                 try w.writeAll("uninit");
                 return;
             }
-            switch (f.c.typecode) {
+            switch (c.typecode) {
                 inline .array, .run => |typecode| {
-                    const vals0 = f.c.blocks_as(typecode, f.r);
-                    const vals = if (f.c.cardinality <= vals0.len) vals0[0..f.c.cardinality] else &.{};
-                    try w.print("{t} {?}..{?} : {}", .{
+                    const vals0 = c.blocks_as(typecode, f.r);
+                    const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
+                    try w.print("{t} {}:{?}..{?}", .{
                         typecode,
+                        vals.len,
                         if (vals.len > 0) vals[0] else null,
                         if (vals.len > 1) vals[vals.len - 1] else null,
-                        vals.len,
                     });
+
+                    // try w.print("{t}={}-{any}", .{ typecode, c.cardinality, vals });
                 },
                 .bitset => {
-                    try w.print("bitset cardinality={}", .{f.c.cardinality});
+                    try w.print("bitset cardinality={}", .{c.cardinality});
                 },
                 .shared => {
                     try w.writeAll("TODO: shared");
@@ -556,6 +674,246 @@ pub const Container = packed struct(u64) {
         }
 
         return (nblocks0 - c.nblocks()) * C.BLOCK_SIZE;
+    }
+
+    pub fn calc_capacity(c: Container) u32 {
+        return @as(u32, c.nblocks()) *
+            @as(u32, switch (c.typecode) {
+                .bitset => C.BLOCK_SIZE,
+                .array => C.BLOCK_LEN16,
+                .run => C.BLOCK_LEN32,
+                .shared => unreachable,
+            });
+    }
+
+    pub fn array_container_create_given_capacity(
+        allocator: mem.Allocator,
+        card: u32,
+        blockoffset: u32,
+        r: *Bitmap,
+    ) !Container {
+        trace(@src(), "card={}", .{card});
+        const numblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
+        try r.extend_array(allocator, 1, numblocks);
+        return .{
+            .typecode = .array,
+            .cardinality = 0,
+            .blockoffset = @intCast(blockoffset),
+            .nblocks_minus1 = @intCast(numblocks - 1),
+        };
+    }
+
+    pub fn run_container_create_given_capacity(
+        allocator: mem.Allocator,
+        nruns: u32,
+        blockoffset: u32,
+        r: *Bitmap,
+    ) !Container {
+        trace(@src(), "nruns={}", .{nruns});
+        const numblocks = misc.numGroupsOfSize(nruns * @sizeOf(root.Rle16), C.BLOCK_SIZE);
+        try r.extend_array(allocator, 1, numblocks);
+        return .{
+            .typecode = .run,
+            .cardinality = 0,
+            .blockoffset = @intCast(blockoffset),
+            .nblocks_minus1 = @intCast(numblocks - 1),
+        };
+    }
+
+    pub fn bitset_container_create(
+        allocator: mem.Allocator,
+        blockoffset: u32,
+        r: *Bitmap,
+    ) !Container {
+        try r.extend_array(allocator, 1, C.BITSET_BLOCKS);
+        return .{
+            .typecode = .bitset,
+            .cardinality = 0,
+            .blockoffset = @intCast(blockoffset),
+            .nblocks_minus1 = C.BITSET_BLOCKS - 1,
+        };
+    }
+
+    /// Check whether this bitset is empty,
+    pub fn bitset_container_empty(bitset: Container, r: Bitmap) bool {
+        if (bitset.cardinality == C.BITSET_UNKNOWN_CARDINALITY) {
+            const words = bitset.blocks_as(.bitset, r);
+            for (0..C.BITSET_CONTAINER_SIZE_IN_WORDS) |i| {
+                if ((words[i]) != 0) return false;
+            }
+            return true;
+        }
+        return bitset.cardinality == 0;
+    }
+
+    /// Checks whether a container is not empty, requires a  typecode
+    pub fn nonzero_cardinality(c: Container, r: Bitmap) bool {
+        // TODO // c = container_unwrap_shared(c, &typecode);
+        return switch (c.typecode) {
+            .bitset => !c.bitset_container_empty(r),
+            .array, .run => c.cardinality != 0,
+            else => unreachable,
+        };
+    }
+
+    /// Remove `pos' from `bitset'. Returns true if `pos' was present.  Might be
+    /// slower than bitset_container_unset.
+    fn bitset_container_remove(bitset: *Container, pos: u16, r: Bitmap) bool {
+        const words = bitset.blocks_as(.bitset, r);
+        const old_word = words[pos >> 6];
+        const index: u6 = @truncate(pos & 63);
+        const new_word = old_word & (~(@as(u64, 1) << index));
+        const increment = (old_word ^ new_word) >> index;
+        bitset.cardinality -= @intCast(increment);
+        words[pos >> 6] = new_word;
+        if (bitset.cardinality == 0) bitset.deinit(r);
+        return increment > 0;
+    }
+
+    /// Remove x from the set. Returns true if x was present.
+    fn array_container_remove(arr: *Container, pos: u16, r: Bitmap) bool {
+        const array = arr.blocks_as(.array, r)[0..arr.cardinality];
+        const idx = misc.binarySearch(array, pos);
+        const is_present = idx >= 0;
+        if (is_present) {
+            const idxu: u32 = @bitCast(idx);
+            @memmove(array.ptr + idxu, (array.ptr + idxu + 1)[0 .. arr.cardinality - idxu - 1]);
+            arr.cardinality -= 1;
+            if (arr.cardinality == 0) arr.deinit(r);
+        }
+
+        return is_present;
+    }
+
+    /// Remove `pos' from `run'. Returns true if `pos' was present.
+    fn run_container_remove(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
+        const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
+        var index = misc.interleavedBinarySearch(runs, pos);
+        if (index >= 0) {
+            const indexu: u32 = @bitCast(index);
+            const le = runs[indexu].length;
+            if (le == 0) {
+                r.recoverRoomAtIndex(run, @intCast(indexu));
+            } else {
+                runs[indexu].value += 1;
+                runs[indexu].length -= 1;
+            }
+            return true;
+        }
+        index = -index - 2; // points to preceding value, possibly -1
+        if (index >= 0) { // possible match
+            const indexu: u32 = @bitCast(index);
+            const offset: i32 = pos - runs[indexu].value;
+            const le: i32 = runs[indexu].length;
+            if (offset < le) {
+                // need to break in two
+                runs[indexu].length = @intCast(offset - 1);
+                // need to insert
+                const newvalue = pos + 1;
+                const newlength: i32 = le - offset - 1;
+                try r.makeRoomAtIndex(allocator, run, @intCast(index + 1));
+                runs[indexu + 1].value = newvalue;
+                runs[indexu + 1].length = @intCast(newlength);
+                return true;
+            } else if (offset == le) {
+                runs[indexu].length -= 1;
+                return true;
+            }
+        }
+        // no match
+        return false;
+    }
+
+    /// Given a bitset of "words", write out the position of all the set bits to
+    /// "out", values start at "base" (can be set to zero).
+    ///
+    /// The "out" pointer should be sufficient to store the actual number of bits
+    /// set.
+    ///
+    /// Returns how many values were actually decoded.
+    pub fn bitset_extract_setbits_u16(
+        words: [*]align(C.BLOCK_ALIGN) u64,
+        out: []align(C.BLOCK_ALIGN) u16,
+        base: u16,
+    ) usize {
+        var outpos: usize = 0;
+        var base1 = base;
+        for (words[0..C.BITSET_CONTAINER_SIZE_IN_WORDS]) |w0| {
+            var w = w0;
+            while (w != 0) {
+                out[outpos] = (@ctz(w) + base1);
+                outpos += 1;
+                w &= (w - 1);
+            }
+            base1 += 64;
+        }
+        return outpos;
+    }
+
+    pub fn run_container_grow(run: *Container, allocator: mem.Allocator, min: u32, copy: bool) !void {
+        var capacity = run.calc_capacity();
+        const newCapacity = @max(min, if (capacity == 0)
+            0
+        else if (capacity < 64)
+            capacity * 2
+        else if (capacity < 1024)
+            capacity * 3 / 2
+        else
+            capacity * 5 / 4);
+
+        capacity = newCapacity;
+
+        if (copy) {
+            _ = allocator; // TODO
+            unreachable;
+            // rle16_t *oldruns = run->runs;
+            // run->runs = (rle16_t *)roaring_realloc(oldruns,
+            //                                        capacity * sizeof(rle16_t));
+            // if (run->runs == NULL) roaring_free(oldruns);
+        } else {
+            unreachable;
+            // roaring_free(run->runs);
+            // run->runs = (rle16_t *)roaring_malloc(capacity * sizeof(rle16_t));
+        }
+        // We may have run->runs == NULL.
+    }
+
+    pub fn array_container_from_bitset(bits: *Container, allocator: mem.Allocator, r: *Bitmap) !Container {
+        var result = try array_container_create_given_capacity(allocator, bits.cardinality, r.array.ptr(.blockslen).*, r);
+        result.cardinality = bits.cardinality;
+        // TODO avx512 version?
+        // sse version ends up being slower here because of the sparsity of the data
+        _ = bitset_extract_setbits_u16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
+
+        return result;
+    }
+
+    /// Remove a value from a container return (possibly different) container.
+    /// This function may allocate a new container, and caller is responsible for
+    /// memory deallocation
+    pub fn remove(c: *Container, allocator: mem.Allocator, val: u16, r: *Bitmap) !Container {
+        trace(@src(), "{}", .{val});
+        // TODO // c = get_writable_copy_if_shared(c, &typecode);
+        switch (c.typecode) {
+            .bitset => {
+                if (c.bitset_container_remove(val, r.*)) {
+                    if (c.cardinality <= C.DEFAULT_MAX_SIZE) {
+                        return try c.array_container_from_bitset(allocator, r);
+                    }
+                }
+                return c.*;
+            },
+            .array => {
+                _ = c.array_container_remove(val, r.*);
+                return c.*;
+            },
+            .run => {
+                // per Java, no container type adjustments are done (revisit?)
+                _ = try c.run_container_remove(allocator, val, r);
+                return c.*;
+            },
+            else => unreachable,
+        }
     }
 };
 

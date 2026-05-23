@@ -14,7 +14,7 @@ pub const BLOCK_ALIGN = @alignOf(root.Block);
 pub const BLOCK_ALIGNMENT: std.mem.Alignment = .fromByteUnits(BLOCK_ALIGN);
 /// 256 with avx2.
 pub const BITSET_BLOCKS = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Block));
-pub const BITSET_SIZE_IN_WORDS = @typeInfo(root.Bitset).array.len;
+pub const BITSET_CONTAINER_SIZE_IN_WORDS = @typeInfo(root.Bitset).array.len;
 /// length of a block of u16s, 16 with avx2.
 pub const BLOCK_LEN16 = @divExact(BLOCK_SIZE, @sizeOf(u16));
 /// length of a block of Rle16s, 8 with avx2.

@@ -16,7 +16,6 @@ fn validateRoundTrip(
     if (!zr.internal_validate(&reason)) {
         misc.trace(@src(), "validation failed: {s}", .{reason.?});
         misc.trace(@src(), "{f}", .{zr});
-
         return error.Invalid;
     }
 
@@ -189,6 +188,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
 const testio = testing.io;
 
 fn validateAll(allocator: mem.Allocator, cr_f: Io.File) !void {
+    if (!@import("build-options").with_croaring) return;
     // Basic tests:
     try validateRoundTrip(allocator, testio, .empty, &.{}, false, cr_f);
     try validateRoundTrip(allocator, testio, .single_zero, &.{0}, false, cr_f);
@@ -327,11 +327,74 @@ test "with runs" {
     try validateTestdata(testing.io, "testdata/bitmapwithruns.bin");
 }
 
+const Op = union(enum) {
+    add: u32,
+    add_many: []const u32,
+    add_range_closed: [2]u32,
+    contains: u32,
+    contains_many: []const u32,
+    get_cardinality: u64,
+};
+
+test "add range to existing container" {
+    if (!@import("build-options").with_croaring) return;
+    const ops = [_]Op{
+        .{ .add_many = &.{ 98128, 17714 } },
+        .{ .add_range_closed = .{ 0, 100 } },
+        .{ .contains = 98128 },
+        .{ .contains = 17714 },
+        .{ .contains = 0 },
+        .{ .contains = 50 },
+        .{ .contains = 100 },
+        .{ .get_cardinality = 103 },
+    };
+    const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
+    defer c.roaring_bitmap_free(cr);
+    var zr: Bitmap = .empty;
+    defer zr.deinit(testgpa);
+
+    for (ops) |op| {
+        errdefer {
+            std.debug.print("failed op: {}\n", .{op});
+            std.debug.print("{}\n", .{op});
+            std.debug.print("zr={f}\n", .{zr});
+            c.roaring_bitmap_printf(cr);
+        }
+        switch (op) {
+            .add_many => |x| {
+                c.roaring_bitmap_add_many(cr, x.len, x.ptr);
+                _ = try zr.add_many(testgpa, x);
+            },
+            .add_range_closed => |x| {
+                c.roaring_bitmap_add_range_closed(cr, x[0], x[1]);
+                try zr.add_range_closed(testgpa, x[0], x[1]);
+            },
+            .contains => |x| {
+                try testing.expectEqual(
+                    c.roaring_bitmap_contains(cr, x),
+                    zr.contains(x),
+                );
+            },
+            .contains_many => |x| for (x) |v| {
+                try testing.expectEqual(
+                    c.roaring_bitmap_contains(cr, v),
+                    zr.contains(v),
+                );
+            },
+            .get_cardinality => |x| {
+                try testing.expectEqual(x, c.roaring_bitmap_get_cardinality(cr));
+                try testing.expectEqual(x, zr.get_cardinality());
+            },
+            else => std.debug.panic("TODO {t}", .{op}),
+        }
+    }
+}
+
 const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
 const testing = std.testing;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
-const c = @import("c.zig").root;
+const c = zroaring.c.root;
 const misc = @import("misc.zig");
