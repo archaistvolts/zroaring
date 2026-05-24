@@ -331,6 +331,7 @@ const Op = union(enum) {
     add: u32,
     add_many: []const u32,
     add_range_closed: [2]u32,
+    remove: u32,
     contains: u32,
     contains_many: []const u32,
     get_cardinality: u64,
@@ -364,6 +365,11 @@ fn perform_ops(ops: []const Op) !void {
                 c.roaring_bitmap_add_range_closed(cr, x[0], x[1]);
                 try zr.add_range_closed(testgpa, x[0], x[1]);
             },
+            .remove => |x| {
+                c.roaring_bitmap_remove(cr, x);
+                try zr.remove(testgpa, x);
+            },
+
             .contains => |x| {
                 try testing.expectEqual(
                     c.roaring_bitmap_contains(cr, x),
@@ -403,6 +409,11 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 58, 109 } },
         .{ .add_range_closed = .{ 15, 158 } },
         .{ .contains = 65277 },
+    });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 6, 140 } },
+        .{ .remove = 13 },
     });
 }
 

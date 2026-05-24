@@ -786,12 +786,11 @@ pub const Container = packed struct(u64) {
 
     /// Remove `pos' from `run'. Returns true if `pos' was present.
     fn run_container_remove(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
-        const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
-        var index = misc.interleavedBinarySearch(runs, pos);
-        if (index >= 0) {
-            const indexu: u32 = @bitCast(index);
-            const le = runs[indexu].length;
-            if (le == 0) {
+        var runs = run.blocks_as(.run, r.*)[0..run.cardinality];
+        var mindex = misc.interleavedBinarySearch(runs, pos);
+        if (mindex >= 0) {
+            const indexu: u32 = @bitCast(mindex);
+            if (runs[indexu].length == 0) {
                 r.recoverRoomAtIndex(run, @intCast(indexu));
             } else {
                 runs[indexu].value += 1;
@@ -799,23 +798,24 @@ pub const Container = packed struct(u64) {
             }
             return true;
         }
-        index = -index - 2; // points to preceding value, possibly -1
-        if (index >= 0) { // possible match
-            const indexu: u32 = @bitCast(index);
-            const offset: i32 = pos - runs[indexu].value;
-            const le: i32 = runs[indexu].length;
-            if (offset < le) {
+        mindex = -mindex - 2; // points to preceding value, possibly -1
+        if (mindex >= 0) { // possible match
+            const index: u32 = @bitCast(mindex);
+            const offset: i32 = pos - runs[index].value;
+            const runlength = runs[index].length;
+            if (offset < runlength) {
                 // need to break in two
-                runs[indexu].length = @intCast(offset - 1);
+                runs[index].length = @intCast(offset - 1);
                 // need to insert
                 const newvalue = pos + 1;
-                const newlength: i32 = le - offset - 1;
-                try r.makeRoomAtIndex(allocator, run, @intCast(index + 1));
-                runs[indexu + 1].value = newvalue;
-                runs[indexu + 1].length = @intCast(newlength);
+                const newlength: i32 = runlength - offset - 1;
+                try r.makeRoomAtIndex(allocator, run, @intCast(mindex + 1));
+                runs.len += 1;
+                runs[index + 1].value = newvalue;
+                runs[index + 1].length = @intCast(newlength);
                 return true;
-            } else if (offset == le) {
-                runs[indexu].length -= 1;
+            } else if (offset == runlength) {
+                runs[index].length -= 1;
                 return true;
             }
         }
