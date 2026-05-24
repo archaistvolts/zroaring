@@ -459,6 +459,46 @@ test "crash reproductions" {
         .{ .contains = 73080 },
         .{ .add = 28 },
     });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 39, 139 } },
+        .{ .add_range_closed = .{ 12690, 12753 } },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+    });
+    try perform_ops(&.{
+        .{ .remove = 87070 },
+        .{ .add_range_closed = .{ 166, 192 } },
+        .{ .add = 0 },
+        .{ .add = 512 },
+        .{ .add = 256 },
+        .{ .add = 167 },
+        .{ .add = 26389 },
+        .{ .add_range_closed = .{ 104, 178 } },
+        .{ .add = 22272 },
+        .{ .add = 0 },
+        .{ .add = 7168 },
+        .{ .add = 512 },
+        .{ .add = 0 },
+        .{ .add = 256 },
+        .{ .add = 194 },
+        .{ .add = 28 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 50119 },
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+        .{ .add_range_closed = .{ 10276, 10424 } },
+        .{ .remove = 49098 },
+        .{ .clear = {} },
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+        .{ .add = 49721 },
+    });
 }
 
 const std = @import("std");

@@ -287,18 +287,18 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     const mcontaineridx = misc.binarySearch(r.slice(.keys, .len), key);
     if (mcontaineridx >= 0) { // key found
         const cid: u32 = @bitCast(mcontaineridx);
-        const c: Container = r.array.ptr(.containers)[cid];
-
+        const c = &r.array.ptr(.containers)[cid];
+        const card = c.cardinality;
         // trace(@src(), "key found container={f} {any}", .{ c.fmt(r), c.blocks_as(.array, r)[0..card] });
-        const c2 = try r.array.ptr(.containers)[cid].add(allocator, r, valuelow);
-        if (c != c2) {
+        const c2 = try c.add(allocator, r, valuelow);
+        if (c.* != c2) {
             // skip deinit of inplace array/bitset conversion
             if (c.blockoffset != c2.blockoffset) {
                 r.array.ptr(.containers)[cid].deinit(r.*);
             }
             r.array.ptr(.containers)[cid] = c2;
         }
-        return c.cardinality != r.array.ptr(.containers)[cid].cardinality;
+        return card != r.array.ptr(.containers)[cid].cardinality;
     } else { // key not found, add new array container
         const cid: u32 = @intCast(-mcontaineridx - 1);
         // trace(@src(), "new container - cid={} {f}", .{ cid, r });
@@ -524,8 +524,10 @@ fn run_container_add_range_nruns(
     const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
     if (nruns_common == 0) {
         try r.makeRoomAtIndex(allocator, run, @truncate(nruns_less));
-        runs[nruns_less].value = @truncate(min);
-        runs[nruns_less].length = @truncate(max - min);
+        runs.ptr[nruns_less] = .{
+            .value = @truncate(min),
+            .length = @truncate(max - min),
+        };
     } else {
         const common_min = runs[nruns_less].value;
         const common_max = runs[nruns_less + nruns_common - 1].value +
@@ -1567,11 +1569,6 @@ pub fn remove_at_index(ra: Bitmap, i: u32) void {
     ra.array.ptr(.len).* -= 1;
 }
 
-fn remove_at_index_and_free(ra: *Bitmap, i: u32) void {
-    ra.array.ptr(.containers)[i].deinit(ra.*);
-    ra.remove_at_index(i);
-}
-
 /// Effectively deletes the value at index index, repacking data.
 pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
     const runs = run.blocks_as(.run, r)[0..run.cardinality].ptr;
@@ -1584,10 +1581,11 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
 pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
     // This function calls realloc + memmove sequentially to move by one index.
     // Potentially copying the array twice.
-    const runs = run.blocks_as(.run, r.*)[0..run.cardinality].ptr;
 
     if (run.cardinality + 1 > run.calc_capacity())
         try run.run_container_grow(allocator, run.cardinality + 1, true, r);
+
+    const runs = run.blocks_as(.run, r.*).ptr;
     @memmove(runs + 1 + index, (runs + index)[0 .. run.cardinality - index]);
     run.cardinality += 1;
 }
@@ -1623,7 +1621,7 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
         if (newCardinality != 0) {
             r.array.ptr(.containers)[iu] = container2;
         } else {
-            r.remove_at_index_and_free(iu);
+            r.array.ptr(.containers)[iu].deinit(r.*);
         }
         return oldCardinality != newCardinality;
     }

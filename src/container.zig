@@ -22,9 +22,8 @@ pub const Container = packed struct(u64) {
 
     /// TODO reclaim in shrink_to_fit()
     pub fn deinit(c: *Container, r: Bitmap) void {
-        // trace(@src(), "deinit {}", .{c});
-        @memset(c.get_blocks(r), @splat(0xFF));
-        c.* = .uninit;
+        if (c.* == Container.uninit) return;
+        r.remove_at_index(@intCast(c - r.array.ptr(.containers)));
     }
 
     pub fn slice(c: Container, T: type, blocks: []align(C.BLOCK_ALIGN) Block) []align(C.BLOCK_ALIGN) T {
@@ -384,6 +383,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn compute_cardinality(v: Container, r: Bitmap) u30 {
+        if (v == Container.uninit) return 0;
         var ret: u30 = undefined;
         switch (v.typecode) {
             .bitset => {
@@ -405,6 +405,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn internal_validate(v: Container, reason: *?[]const u8, r: Bitmap) bool {
+        if (v == Container.uninit) return true; // FIXME
         if (v.cardinality == 0) {
             reason.* = "container is empty";
             return false;
@@ -482,27 +483,25 @@ pub const Container = packed struct(u64) {
                 return true;
             },
             .run => {
-                const run = v;
-                if (run.cardinality < 0) {
+                if (v.cardinality < 0) {
                     reason.* = "negative run count";
                     return false;
                 }
-                if (run.calc_capacity() < run.cardinality) {
+                if (v.calc_capacity() < v.cardinality) {
                     reason.* = "capacity less than run count";
                     return false;
                 }
 
-                if (run.cardinality == 0) {
+                if (v.cardinality == 0) {
                     reason.* = "zero run count";
                     return false;
                 }
 
                 // Use u32 to avoid overflow issues on ranges that contain UINT16_MAX.
                 var last_end: u32 = 0;
-                const runs = run.blocks_as(.run, r);
-                for (0..run.cardinality) |i| {
-                    const start: u32 = runs[i].value;
-                    const end: u32 = start + runs[i].length + 1;
+                for (v.blocks_as(.run, r)[0..v.cardinality]) |run| {
+                    const start: u32 = run.value;
+                    const end: u32 = start + run.length + 1;
                     if (end <= start) {
                         reason.* = "run start + length overflow";
                         return false;
@@ -859,7 +858,13 @@ pub const Container = packed struct(u64) {
         return outpos;
     }
 
-    pub fn run_container_grow(run: *Container, allocator: mem.Allocator, min: u32, copy: bool, r: *Bitmap) !void {
+    pub fn run_container_grow(
+        run: *Container,
+        allocator: mem.Allocator,
+        min: u32,
+        copy: bool,
+        r: *Bitmap,
+    ) !void {
         var capacity = run.calc_capacity();
         const newCapacity = @max(min, if (capacity == 0)
             0
@@ -870,9 +875,9 @@ pub const Container = packed struct(u64) {
         else
             capacity * 5 / 4);
         capacity = newCapacity;
-
-        const morecap = capacity - run.cardinality;
+        const morecap = capacity - run.calc_capacity();
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
+
         if (copy) {
             try add_container_blocks(r, allocator, run, moreblocks);
         } else {
