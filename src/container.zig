@@ -94,6 +94,35 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    fn add_container_blocks(
+        r: *Bitmap,
+        allocator: mem.Allocator,
+        c: *Container,
+        moreblocks: u32,
+    ) !void {
+        // TODO move this logic to extend_array?
+        const cid = c - r.array.ptr(.containers);
+        const blockslen = r.array.ptr(.blockslen).*;
+        if (blockslen + c.nblocks() + moreblocks >=
+            r.array.ptr(.blockscapacity).*)
+        {
+            try r.extend_array(allocator, 0, moreblocks);
+        }
+        // move blocks and update blocks info
+        const blocks = r.slice(.blocks, .blockscapacity);
+        const c2 = &r.array.ptr(.containers)[cid];
+        const rest = blocks[c2.blockoffset + c2.nblocks() .. blockslen];
+        @memmove(rest.ptr + moreblocks, rest);
+        c2.nblocks_minus1 += @intCast(moreblocks);
+        r.array.ptr(.blockslen).* += moreblocks;
+
+        // update blockoffsets of containers with moved blocks
+        for (r.slice(.containers, .len)) |*c3| {
+            if (c3.blockoffset <= c2.blockoffset) continue;
+            c3.blockoffset += @intCast(moreblocks);
+        }
+    }
+
     /// add blocks to a container: extend, move following blocks forward, update
     /// affected container blockoffsets
     pub fn array_container_grow(
@@ -111,28 +140,9 @@ pub const Container = packed struct(u64) {
         const morecap = newcap - c.cardinality;
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN16);
 
-        const cid = c - r.array.ptr(.containers);
         // trace(@src(), "newcap={} morecap={} moreblocks={} cid={}", .{ newcap, morecap, moreblocks, cid });
         if (preserve) {
-            // TODO move this logic to extend_array?
-            if (r.array.ptr(.blockslen).* + c.nblocks() + moreblocks >=
-                r.array.ptr(.blockscapacity).*)
-            {
-                try r.extend_array(allocator, 0, moreblocks);
-            }
-            // move blocks and update blocks info
-            const blocks = r.slice(.blocks, .blockscapacity);
-            const c2 = &r.array.ptr(.containers)[cid];
-            const rest = blocks[c2.blockoffset + c2.nblocks() ..];
-            @memmove(rest.ptr + moreblocks, rest);
-            c2.nblocks_minus1 += @intCast(moreblocks);
-            r.array.ptr(.blockslen).* += moreblocks;
-
-            // update blockoffsets of containers with moved blocks
-            for (r.slice(.containers, .len)) |*c3| {
-                if (c3.blockoffset <= c2.blockoffset) continue;
-                c3.blockoffset += @intCast(moreblocks);
-            }
+            try add_container_blocks(r, allocator, c, moreblocks);
         } else {
             unreachable; // TODO !preserve
         }
@@ -223,8 +233,8 @@ pub const Container = packed struct(u64) {
         return increment > 0;
     }
 
-    pub fn run_container_add(run: *Container, allocator: mem.Allocator, pos: u16, r: Bitmap) !bool {
-        const runs = run.blocks_as(.run, r)[0..run.cardinality];
+    pub fn run_container_add(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
+        const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) return false; // already there
         mindex = -mindex - 2; // points to preceding value, possibly -1
@@ -330,7 +340,7 @@ pub const Container = packed struct(u64) {
                 }
             },
             .run => {
-                _ = try c.run_container_add(allocator, value, r.*);
+                _ = try c.run_container_add(allocator, value, r);
                 return c.*;
             },
             .shared => unreachable,
@@ -849,7 +859,7 @@ pub const Container = packed struct(u64) {
         return outpos;
     }
 
-    pub fn run_container_grow(run: *Container, allocator: mem.Allocator, min: u32, copy: bool) !void {
+    pub fn run_container_grow(run: *Container, allocator: mem.Allocator, min: u32, copy: bool, r: *Bitmap) !void {
         var capacity = run.calc_capacity();
         const newCapacity = @max(min, if (capacity == 0)
             0
@@ -859,22 +869,17 @@ pub const Container = packed struct(u64) {
             capacity * 3 / 2
         else
             capacity * 5 / 4);
-
         capacity = newCapacity;
 
+        const morecap = capacity - run.cardinality;
+        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
         if (copy) {
-            _ = allocator; // TODO
-            unreachable;
-            // rle16_t *oldruns = run->runs;
-            // run->runs = (rle16_t *)roaring_realloc(oldruns,
-            //                                        capacity * sizeof(rle16_t));
-            // if (run->runs == NULL) roaring_free(oldruns);
+            try add_container_blocks(r, allocator, run, moreblocks);
         } else {
             unreachable;
             // roaring_free(run->runs);
             // run->runs = (rle16_t *)roaring_malloc(capacity * sizeof(rle16_t));
         }
-        // We may have run->runs == NULL.
     }
 
     pub fn array_container_from_bitset(bits: *Container, allocator: mem.Allocator, r: *Bitmap) !Container {

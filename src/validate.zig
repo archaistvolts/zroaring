@@ -335,6 +335,7 @@ const Op = union(enum) {
     contains: u32,
     contains_many: []const u32,
     get_cardinality: u64,
+    clear,
 };
 
 fn perform_ops(ops: []const Op) !void {
@@ -386,6 +387,10 @@ fn perform_ops(ops: []const Op) !void {
                 try testing.expectEqual(x, c.roaring_bitmap_get_cardinality(cr));
                 try testing.expectEqual(x, zr.get_cardinality());
             },
+            .clear => {
+                c.roaring_bitmap_clear(cr);
+                zr.clear_retaining_capacity();
+            },
             // else => std.debug.panic("TODO {t}", .{op}),
         }
     }
@@ -393,6 +398,7 @@ fn perform_ops(ops: []const Op) !void {
 
 test "crash reproductions" {
     if (!@import("build-options").with_croaring) return;
+
     try perform_ops(&.{
         .{ .add_many = &.{ 98128, 17714 } },
         .{ .add_range_closed = .{ 0, 100 } },
@@ -426,6 +432,32 @@ test "crash reproductions" {
     try perform_ops(&.{
         .{ .add_range_closed = .{ 51, 194 } },
         .{ .add = 10 },
+    });
+
+    try perform_ops(&.{
+        .{ .add_many = &.{ 46535, 45534 } },
+        .{ .add_range_closed = .{ 11, 181 } },
+    });
+
+    try perform_ops(&.{
+        .{ .remove = 87070 },
+        .{ .add_range_closed = .{ 166, 192 } },
+        .{ .add = 0 },
+        .{ .add = 512 },
+        .{ .add = 256 },
+        .{ .add = 167 },
+        .{ .add = 26389 },
+        .{ .add_range_closed = .{ 104, 178 } },
+        .{ .add = 22272 },
+        .{ .add = 0 },
+        .{ .add = 7168 },
+        .{ .add = 512 },
+        .{ .add = 0 },
+        .{ .add = 256 },
+        .{ .add = 194 },
+        .{ .contains = 107 },
+        .{ .contains = 73080 },
+        .{ .add = 28 },
     });
 }
 

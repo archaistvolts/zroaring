@@ -512,7 +512,7 @@ fn array_container_add_range_nvals(
 
 /// Add all values in range [min, max] using hint.
 fn run_container_add_range_nruns(
-    r: Bitmap,
+    r: *Bitmap,
     allocator: mem.Allocator,
     run: *Container,
     min: u32,
@@ -521,7 +521,7 @@ fn run_container_add_range_nruns(
     nruns_greater: u32,
 ) !void {
     const nruns_common = run.cardinality - nruns_less - nruns_greater;
-    const runs = run.blocks_as(.run, r)[0..run.cardinality];
+    const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
     if (nruns_common == 0) {
         try r.makeRoomAtIndex(allocator, run, @truncate(nruns_less));
         runs[nruns_less].value = @truncate(min);
@@ -1581,13 +1581,13 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
 }
 
 /// Moves the data so that we can write data at index
-pub fn makeRoomAtIndex(r: Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
+pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
     // This function calls realloc + memmove sequentially to move by one index.
     // Potentially copying the array twice.
-    const runs = run.blocks_as(.run, r)[0..run.cardinality].ptr;
+    const runs = run.blocks_as(.run, r.*)[0..run.cardinality].ptr;
 
     if (run.cardinality + 1 > run.calc_capacity())
-        try run.run_container_grow(allocator, run.cardinality + 1, true);
+        try run.run_container_grow(allocator, run.cardinality + 1, true, r);
     @memmove(runs + 1 + index, (runs + index)[0 .. run.cardinality - index]);
     run.cardinality += 1;
 }

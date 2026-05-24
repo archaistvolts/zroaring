@@ -3,7 +3,7 @@ const afl = @import("afl_kit");
 
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
-    const with_croaring = b.option(bool, "with-croaring", "include src/c/roaring.c in test exe.  default true.  use when fuzzing with zig to prevent undefined symbols (#31412).") orelse true;
+    const with_croaring = b.option(bool, "with-croaring", "Don't include src/c/roaring.c in test exe.  Default false.  Use when fuzzing with zig to prevent undefined symbols (issue #31412).") orelse false;
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
     options.addOption(bool, "with_croaring", with_croaring);
     const target = b.standardTargetOptions(.{});
