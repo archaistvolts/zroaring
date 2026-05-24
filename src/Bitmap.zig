@@ -494,18 +494,20 @@ fn array_container_add_range_nvals(
     nvals_greater: u32,
 ) !void {
     const union_cardinality = nvals_less + (max - min + 1) + nvals_greater;
+    const acid = ac - r.array.ptr(.containers);
     if (union_cardinality > ac.calc_capacity()) {
         try ac.array_container_grow(allocator, r, union_cardinality, true);
     }
-    const array = ac.blocks_as(.array, r.*)[0..union_cardinality];
+    const ac2 = &r.array.ptr(.containers)[acid];
+    const array = ac2.blocks_as(.array, r.*)[0..union_cardinality];
     @memmove(
         array.ptr + union_cardinality - nvals_greater,
-        (array.ptr + ac.cardinality - nvals_greater)[0..nvals_greater],
+        (array.ptr + ac2.cardinality - nvals_greater)[0..nvals_greater],
     );
     for (0..max - min + 1) |i| {
         array[nvals_less + i] = @intCast(min + i);
     }
-    ac.cardinality = @intCast(union_cardinality);
+    ac2.cardinality = @intCast(union_cardinality);
 }
 
 /// Add all values in range [min, max] using hint.
@@ -590,6 +592,7 @@ fn container_add_range(
     blockoffset: u24,
 ) !Container {
     trace(@src(), "{f}", .{r});
+    const cid = c - r.array.ptr(.containers);
     // NB: when selecting new container type, we perform only inexpensive checks
     switch (c.typecode) {
         .bitset => {
@@ -621,7 +624,7 @@ fn container_add_range(
                 return run_container_create_range(0, C.MAX_KEY_CARDINALITY, blockoffset, r.*);
             } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
                 try r.array_container_add_range_nvals(allocator, c, min, max, nvals_less, nvals_greater);
-                return c.*;
+                return r.array.ptr(.containers)[cid];
             } else {
                 var bitset = try c.bitset_container_from_array(allocator, r);
                 bitset_set_lenrange(bitset.blocks_as(.bitset, r.*).ptr, min, max - min);
