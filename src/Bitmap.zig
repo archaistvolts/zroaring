@@ -658,8 +658,8 @@ fn replace_key_and_container_at_index(r: Bitmap, i: u32, key: u16, c: Container)
 
 /// Add all values in range [min, max]
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    // assert_valid(r.*); // TODO
-    // defer assert_valid(r.*);
+    assert_valid(r.*); // TODO
+    defer assert_valid(r.*);
 
     if (min > max) return;
     if (r.is_empty()) {
@@ -674,10 +674,14 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const num_required_containers = max_key - min_key + 1;
     const len = r.array.ptr(.len).*;
     const keys = r.array.ptr(.keys)[0..len];
+    var blockoffset: u24 = @intCast(r.array.ptr(.blockslen).*);
+    errdefer {
+        r.array.ptr(.len).* = len;
+        r.array.ptr(.blockslen).* = blockoffset;
+    }
     const suffix_length = misc.count_greater(keys, @truncate(max_key));
     const prefix_length = misc.count_less(keys[0 .. len - suffix_length], @truncate(min_key));
     const common_length = len - prefix_length - suffix_length;
-    var blockoffset: u24 = @intCast(r.array.ptr(.blockslen).*);
     // trace(@src(), "num_required_containers={} prefix_length={} suffix_length={} common_length={}", .{ num_required_containers, prefix_length, suffix_length, common_length });
     if (num_required_containers > common_length) {
         const distance = num_required_containers - common_length;
@@ -721,7 +725,8 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
 /// Add all values in range [min, max)
 pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
     trace(@src(), "{} {}", .{ min, max });
-    if (max <= min or min > C.MAX_VALUE_CARDINALITY) {
+
+    if (!(min < max and min <= C.MAX_VALUE_CARDINALITY)) {
         return;
     }
     try r.add_range_closed(allocator, @intCast(min), @intCast(max - 1));
