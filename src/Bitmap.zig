@@ -288,17 +288,17 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     if (mcontaineridx >= 0) { // key found
         const cid: u32 = @bitCast(mcontaineridx);
         const c = &r.array.ptr(.containers)[cid];
-        const card = c.cardinality;
+        const oldc = c.*;
         // trace(@src(), "key found container={f} {any}", .{ c.fmt(r), c.blocks_as(.array, r)[0..card] });
         const c2 = try c.add(allocator, r, valuelow);
-        if (c.* != c2) {
+        if (oldc != c2) {
             // skip deinit of inplace array/bitset conversion
-            if (c.blockoffset != c2.blockoffset) {
-                r.array.ptr(.containers)[cid].deinit(r.*);
+            if (oldc.blockoffset != c2.blockoffset) {
+                @memset(oldc.get_blocks(r.*), @splat(0xFF));
             }
             r.array.ptr(.containers)[cid] = c2;
         }
-        return card != r.array.ptr(.containers)[cid].cardinality;
+        return oldc.cardinality != r.array.ptr(.containers)[cid].cardinality;
     } else { // key not found, add new array container
         const cid: u32 = @intCast(-mcontaineridx - 1);
         // trace(@src(), "new container - cid={} {f}", .{ cid, r });
@@ -1606,6 +1606,7 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
     const key: u16 = @truncate(val >> 16);
     const i = r.get_key_index(key);
     trace(@src(), "val={} i={}", .{ val, i });
+    // trace(@src(), "{f}", .{r});
 
     if (i >= 0) {
         // TODO // r.unshare_container_at_index(i);
@@ -1614,9 +1615,10 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
         const oldCardinality = container.get_cardinality(r.*);
         const container2 = try container.remove(allocator, @truncate(val), r);
         if (container2 != container.*) {
-            container.deinit(r.*);
+            @memset(container.get_blocks(r.*), @splat(0xFF));
             r.array.ptr(.containers)[iu] = container2;
         }
+
         const newCardinality = container2.get_cardinality(r.*);
         if (newCardinality != 0) {
             r.array.ptr(.containers)[iu] = container2;

@@ -677,10 +677,10 @@ pub const Container = packed struct(u64) {
 
         if (c.cardinality == 0) {
             c.deinit(r);
+            return nblocks0 * C.BLOCK_SIZE;
         } else if (nblocksneeded < c.nblocks()) {
             c.nblocks_minus1 = @intCast(nblocksneeded - 1);
         }
-
         return (nblocks0 - c.nblocks()) * C.BLOCK_SIZE;
     }
 
@@ -774,7 +774,6 @@ pub const Container = packed struct(u64) {
         const increment = (old_word ^ new_word) >> index;
         bitset.cardinality -= @intCast(increment);
         words[pos >> 6] = new_word;
-        if (bitset.cardinality == 0) bitset.deinit(r);
         return increment > 0;
     }
 
@@ -787,7 +786,6 @@ pub const Container = packed struct(u64) {
             const idxu: u32 = @bitCast(idx);
             @memmove(array.ptr + idxu, (array.ptr + idxu + 1)[0 .. arr.cardinality - idxu - 1]);
             arr.cardinality -= 1;
-            if (arr.cardinality == 0) arr.deinit(r);
         }
 
         return is_present;

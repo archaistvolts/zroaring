@@ -499,6 +499,18 @@ test "crash reproductions" {
         .{ .remove = 62568 },
         .{ .add = 49721 },
     });
+
+    try perform_ops(&.{
+        .{ .add = 49191 },
+        .{ .add_range_closed = .{ 66, 136 } },
+        .{ .add_range_closed = .{ 13544, 13684 } },
+        .{ .add_range_closed = .{ 14890, 15026 } },
+        .{ .add = 0 },
+        .{ .add_range_closed = .{ 8080, 8142 } },
+        .{ .add_range_closed = .{ 3464, 3609 } },
+        .{ .remove = 92533 },
+        .{ .add = 512 },
+    });
 }
 
 const std = @import("std");
