@@ -336,18 +336,7 @@ const Op = union(enum) {
     get_cardinality: u64,
 };
 
-test "add range to existing container" {
-    if (!@import("build-options").with_croaring) return;
-    const ops = [_]Op{
-        .{ .add_many = &.{ 98128, 17714 } },
-        .{ .add_range_closed = .{ 0, 100 } },
-        .{ .contains = 98128 },
-        .{ .contains = 17714 },
-        .{ .contains = 0 },
-        .{ .contains = 50 },
-        .{ .contains = 100 },
-        .{ .get_cardinality = 103 },
-    };
+fn perform_ops(ops: []const Op) !void {
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     var zr: Bitmap = .empty;
@@ -360,7 +349,13 @@ test "add range to existing container" {
             std.debug.print("zr={f}\n", .{zr});
             c.roaring_bitmap_printf(cr);
         }
+        std.debug.print("op: {}\n", .{op});
+        std.debug.print("zr={f}\n", .{zr});
         switch (op) {
+            .add => |x| {
+                c.roaring_bitmap_add(cr, x);
+                try zr.add(testgpa, x);
+            },
             .add_many => |x| {
                 c.roaring_bitmap_add_many(cr, x.len, x.ptr);
                 _ = try zr.add_many(testgpa, x);
@@ -385,9 +380,30 @@ test "add range to existing container" {
                 try testing.expectEqual(x, c.roaring_bitmap_get_cardinality(cr));
                 try testing.expectEqual(x, zr.get_cardinality());
             },
-            else => std.debug.panic("TODO {t}", .{op}),
+            // else => std.debug.panic("TODO {t}", .{op}),
         }
     }
+}
+
+test "crash reproductions" {
+    if (!@import("build-options").with_croaring) return;
+    try perform_ops(&.{
+        .{ .add_many = &.{ 98128, 17714 } },
+        .{ .add_range_closed = .{ 0, 100 } },
+        .{ .contains = 98128 },
+        .{ .contains = 17714 },
+        .{ .contains = 0 },
+        .{ .contains = 50 },
+        .{ .contains = 100 },
+        .{ .get_cardinality = 103 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 28939 },
+        .{ .add_range_closed = .{ 58, 109 } },
+        .{ .add_range_closed = .{ 15, 158 } },
+        .{ .contains = 65277 },
+    });
 }
 
 const std = @import("std");

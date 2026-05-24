@@ -241,7 +241,13 @@ pub fn deserialize_file_reader(
     assert(freader.logicalPos() == rb.portable_size());
 }
 
-pub fn insert_new_kv_at(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container, i: u32) !void {
+pub fn insert_new_kv_at(
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    key: u16,
+    c: Container,
+    i: u32,
+) !void {
     try r.extend_array(allocator, 1, 1);
     const ks = r.array.ptr(.keys);
     const cs = r.array.ptr(.containers);
@@ -481,25 +487,25 @@ fn run_container_create_range(start: u32, stop: u32, blockoffset: u24, r: Bitmap
 fn array_container_add_range_nvals(
     r: *Bitmap,
     allocator: mem.Allocator,
-    array: *Container,
+    ac: *Container,
     min: u32,
     max: u32,
     nvals_less: u32,
     nvals_greater: u32,
 ) !void {
     const union_cardinality = nvals_less + (max - min + 1) + nvals_greater;
-    if (union_cardinality > array.calc_capacity()) {
-        try array.array_container_grow(allocator, r, union_cardinality, true);
+    if (union_cardinality > ac.calc_capacity()) {
+        try ac.array_container_grow(allocator, r, union_cardinality, true);
     }
-    const a = array.blocks_as(.array, r.*);
+    const array = ac.blocks_as(.array, r.*)[0..union_cardinality];
     @memmove(
-        a.ptr + union_cardinality - nvals_greater,
-        (a.ptr + array.cardinality - nvals_greater)[0..nvals_greater],
+        array.ptr + union_cardinality - nvals_greater,
+        (array.ptr + ac.cardinality - nvals_greater)[0..nvals_greater],
     );
     for (0..max - min + 1) |i| {
-        a.ptr[nvals_less + i] = @intCast(min + i);
+        array[nvals_less + i] = @intCast(min + i);
     }
-    array.cardinality = @intCast(union_cardinality);
+    ac.cardinality = @intCast(union_cardinality);
 }
 
 /// Add all values in range [min, max] using hint.
@@ -583,6 +589,7 @@ fn container_add_range(
     max: u32,
     blockoffset: u24,
 ) !Container {
+    trace(@src(), "{f}", .{r});
     // NB: when selecting new container type, we perform only inexpensive checks
     switch (c.typecode) {
         .bitset => {
@@ -609,7 +616,7 @@ fn container_add_range(
                 misc.count_less(array[0 .. c.cardinality - nvals_greater], @truncate(min));
             const union_cardinality =
                 nvals_less + (max - min + 1) + nvals_greater;
-
+            trace(@src(), "array union_cardinality={}", .{union_cardinality});
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
                 return run_container_create_range(0, C.MAX_KEY_CARDINALITY, blockoffset, r.*);
             } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
@@ -628,7 +635,6 @@ fn container_add_range(
                 misc.rle16_count_greater(runs, @truncate(max));
             const nruns_less =
                 misc.rle16_count_less(runs[0 .. c.cardinality - nruns_greater], @truncate(min));
-
             const run_size_bytes =
                 (nruns_less + 1 + nruns_greater) * @sizeOf(root.Rle16);
             const bitset_size_bytes = @sizeOf(root.Bitset);
@@ -652,6 +658,9 @@ fn replace_key_and_container_at_index(r: Bitmap, i: u32, key: u16, c: Container)
 
 /// Add all values in range [min, max]
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
+    // assert_valid(r.*); // TODO
+    // defer assert_valid(r.*);
+
     if (min > max) return;
     if (r.is_empty()) {
         @branchHint(.unlikely);
@@ -1540,10 +1549,13 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
     return answer + size - newsize;
 }
 
-pub fn remove_at_index(ra: *Bitmap, i: u32) void {
+pub fn remove_at_index(ra: Bitmap, i: u32) void {
     const len = ra.array.ptr(.len).*;
-    @memmove(ra.array.ptr(.containers)[i..], ra.array.ptr(.containers)[i + 1 ..][0..len]);
-    @memmove(ra.array.ptr(.keys)[i..], ra.array.ptr(.keys)[i + 1 ..][0..len]);
+    const ctrs = ra.array.ptr(.containers);
+    const keys = ra.array.ptr(.keys);
+    @memset(ctrs[i].get_blocks(ra), @splat(0xFF));
+    @memmove(ctrs[i..], ctrs[i + 1 ..][0..len]);
+    @memmove(keys[i..], keys[i + 1 ..][0..len]);
     ra.array.ptr(.len).* -= 1;
 }
 

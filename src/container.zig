@@ -20,7 +20,7 @@ pub const Container = packed struct(u64) {
         run: []align(C.BLOCK_ALIGN) root.Rle16,
     };
 
-    /// TODO strat for reusing old blocks
+    /// TODO reclaim in shrink_to_fit()
     pub fn deinit(c: *Container, r: Bitmap) void {
         // trace(@src(), "deinit {}", .{c});
         @memset(c.get_blocks(r), @splat(0xFF));
@@ -109,7 +109,7 @@ pub const Container = packed struct(u64) {
             C.MAX_CONTAINERS;
         const newcap = std.math.clamp(grow_capacity(c.cardinality), mincapacity, max);
         const morecap = newcap - c.cardinality;
-        const moreblocks = morecap / C.BLOCK_LEN16;
+        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN16);
 
         const cid = c - r.array.ptr(.containers);
         // trace(@src(), "newcap={} morecap={} moreblocks={} cid={}", .{ newcap, morecap, moreblocks, cid });
@@ -558,16 +558,15 @@ pub const Container = packed struct(u64) {
         return if (idx >= 0) idx else -1;
     }
 
-    /// Check whether `pos' is present in `runs'.
+    /// Check whether `pos` is present in `runs`.
     pub fn run_container_contains(runs: []align(C.BLOCK_ALIGN) root.Rle16, pos: u16) bool {
         var index = misc.interleavedBinarySearch(runs, pos);
         if (index >= 0) return true;
         index = -index - 2; // points to preceding value, possibly -1
         if (index != -1) { // possible match
             const run = runs[@intCast(index)];
-            const offset: i32 = pos - run.value;
-            const le: i32 = run.length;
-            if (offset <= le) return true;
+            const offset = pos - run.value;
+            if (offset <= run.length) return true;
         }
         return false;
     }
@@ -596,7 +595,7 @@ pub const Container = packed struct(u64) {
 
     // return the index of x, if not exsist return -1
     pub fn get_index(c: Container, x: u16, r: Bitmap) i32 {
-        // c = container_unwrap_shared(c, &type); // TODO
+        // c = c.container_unwrap_shared(); // TODO
         return switch (c.typecode) {
             .bitset => c.bitset_container_get_index(x, r),
             .array => c.array_container_get_index(x, r),
@@ -607,7 +606,7 @@ pub const Container = packed struct(u64) {
 
     /// Check whether a value is in a container
     pub fn contains(c: Container, val: u16, r: Bitmap) bool {
-        // c = container_unwrap_shared(c, &typecode); // TODO
+        // c = c.container_unwrap_shared(); // TODO
         return switch (c.typecode) {
             .bitset => bitset_container_get(c.blocks_as(.bitset, r).ptr, val),
             .array => misc.binarySearch2(c.blocks_as(.array, r)[0..c.cardinality], val) >= 0,
@@ -748,7 +747,7 @@ pub const Container = packed struct(u64) {
 
     /// Checks whether a container is not empty, requires a  typecode
     pub fn nonzero_cardinality(c: Container, r: Bitmap) bool {
-        // TODO // c = container_unwrap_shared(c, &typecode);
+        // TODO // c = c.container_unwrap_shared();
         return switch (c.typecode) {
             .bitset => !c.bitset_container_empty(r),
             .array, .run => c.cardinality != 0,
