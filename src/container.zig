@@ -229,7 +229,7 @@ pub const Container = packed struct(u64) {
         if (mindex >= 0) return false; // already there
         mindex = -mindex - 2; // points to preceding value, possibly -1
         const index: u32 = @bitCast(mindex);
-        if (index >= 0) { // possible match
+        if (mindex >= 0) { // possible match
             const offset: i32 = pos - runs[index].value;
             const le: i32 = runs[index].length;
             if (offset <= le) return false; // already there
@@ -258,7 +258,7 @@ pub const Container = packed struct(u64) {
                 }
             }
         }
-        if (index == -1) {
+        if (mindex == -1) {
             // we may need to extend the first run
             if (0 < run.cardinality) {
                 if (runs[0].value == pos + 1) {
@@ -268,9 +268,9 @@ pub const Container = packed struct(u64) {
                 }
             }
         }
-        try r.makeRoomAtIndex(allocator, run, @intCast(index + 1));
-        runs.ptr[index + 1].value = pos;
-        runs.ptr[index + 1].length = 0;
+        try r.makeRoomAtIndex(allocator, run, @intCast(index +% 1));
+        runs.ptr[index +% 1].value = pos;
+        runs.ptr[index +% 1].length = 0;
         return true;
     }
 
