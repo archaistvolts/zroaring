@@ -10,7 +10,9 @@ export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
 fn zig_fuzz_test1(in: []const u8) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer assert(gpa.detectLeaks() == 0);
-    try croaringOracle(in, gpa.allocator());
+    _ = in;
+    unreachable; // TODO
+    // try croaringOracle(in, gpa.allocator());
 }
 
 test "std.HashMap oracle" {
@@ -25,7 +27,7 @@ test "std.HashMap oracle" {
 test "croaring oracle" {
     const Context = struct {
         fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
-            try croaringOracle(smith.in.?, testing.allocator);
+            try croaringOracle(smith, testing.allocator);
         }
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{});
@@ -92,7 +94,7 @@ fn hashMapOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                     if (i != 0) fuzzprint(", ", .{});
                     fuzzprint("{}", .{val});
                 }
-                fuzzprint(" }},\n", .{});
+                fuzzprint(" }} }},\n", .{});
                 _ = try r.add_many(allocator, vals[0..len]);
                 try oracle.ensureUnusedCapacity(allocator, len);
                 for (vals[0..len]) |val| oracle.putAssumeCapacity(val, {});
@@ -128,7 +130,7 @@ fn hashMapOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                     if (i != 0) fuzzprint(", ", .{});
                     fuzzprint("{}", .{val});
                 }
-                fuzzprint(" }},\n", .{});
+                fuzzprint(" }} }},\n", .{});
                 for (vals[0..len]) |val|
                     try std.testing.expectEqual(oracle.contains(val), r.contains(val));
             },
@@ -184,50 +186,47 @@ const FuzzPrng = struct {
 };
 
 // TODO remove, reuse perform_op
-fn croaringOracle(in: []const u8, allocator: mem.Allocator) !void {
+fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     var r = zroaring.Bitmap.empty;
     defer r.deinit(allocator);
 
     const oracle = c.roaring_bitmap_create().?;
     defer c.roaring_bitmap_free(oracle);
 
-    var prng = FuzzPrng.init(in);
-    const random = prng.random();
-
     fuzzprint("\n\n-- init --\n", .{});
 
-    while (!prng.eos()) {
-        const op = random.enumValue(FuzzOp.Tag);
+    while (!smith.eos()) {
+        const op = smith.value(FuzzOp.Tag);
         fuzzprint(".{{ .{t} = ", .{op});
         switch (op) {
             .add => {
-                const val = random.intRangeLessThan(u32, 0, 100_000);
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
                 fuzzprint("{} }},\n", .{val});
                 try r.add(allocator, val);
                 c.roaring_bitmap_add(oracle, val);
             },
             .add_many => {
                 var vals: [8]u32 = undefined;
-                const len = getvals(random, &vals);
+                const len = getvals(smith, &vals);
                 fuzzprint("&.{{ ", .{});
                 for (vals[0..len], 0..) |val, i| {
                     if (i != 0) fuzzprint(", ", .{});
                     fuzzprint("{}", .{val});
                 }
-                fuzzprint(" }},\n", .{});
+                fuzzprint(" }} }},\n", .{});
                 _ = try r.add_many(allocator, vals[0..len]);
                 c.roaring_bitmap_add_many(oracle, len, &vals);
             },
             .add_range_closed => {
-                const start = random.intRangeLessThan(u32, 0, 16000);
-                const val1 = random.intRangeLessThan(u32, start, start + 100);
-                const val2 = random.intRangeLessThan(u32, start + 100, start + 200);
+                const start = smith.valueRangeLessThan(u32, 0, 16000);
+                const val1 = smith.valueRangeLessThan(u32, start, start + 100);
+                const val2 = smith.valueRangeLessThan(u32, start + 100, start + 200);
                 fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
                 try r.add_range_closed(allocator, val1, val2);
                 c.roaring_bitmap_add_range_closed(oracle, val1, val2);
             },
             .remove => {
-                const val = random.intRangeLessThan(u32, 0, 100_000);
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
                 fuzzprint("{} }},\n", .{val});
                 try std.testing.expectEqual(
                     c.roaring_bitmap_remove_checked(oracle, val),
@@ -235,7 +234,7 @@ fn croaringOracle(in: []const u8, allocator: mem.Allocator) !void {
                 );
             },
             .contains => {
-                const val = random.intRangeLessThan(u32, 0, 100_000);
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
                 fuzzprint("{} }},\n", .{val});
                 try std.testing.expectEqual(
                     c.roaring_bitmap_contains(oracle, val),
@@ -244,13 +243,13 @@ fn croaringOracle(in: []const u8, allocator: mem.Allocator) !void {
             },
             .contains_many => { // TODO contains_many
                 var vals: [8]u32 = undefined;
-                const len = getvals(random, &vals);
+                const len = getvals(smith, &vals);
                 fuzzprint("&.{{ ", .{});
                 for (vals[0..len], 0..) |val, i| {
                     if (i != 0) fuzzprint(", ", .{});
                     fuzzprint("{}", .{val});
                 }
-                fuzzprint(" }},\n", .{});
+                fuzzprint(" }} }},\n", .{});
                 for (vals[0..len]) |val|
                     try std.testing.expectEqual(c.roaring_bitmap_contains(oracle, val), r.contains(val));
             },
@@ -327,7 +326,9 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
         },
         // else => std.debug.panic("TODO {t}", .{op}),
     }
+    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr), zr.get_cardinality());
 }
+
 fn perform_ops(ops: []const FuzzOp) !void {
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
@@ -472,9 +473,36 @@ test "crash reproductions" {
         .{ .add_many = &.{ 90915, 43523, 677, 1795, 91917, 77704, 2156, 2123, 17697, 26518, 87440, 95293, 39797, 76339, 60102, 70347, 58901, 22858, 73958, 22727, 46971, 1949 } },
         .{ .add_many = &.{ 53393, 21069, 57726, 19617, 78427, 65705, 2198, 7957, 66342, 85444, 95090, 52246, 30486 } },
     });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 6111, 6209 } },
+        .{ .add_many = &.{ 25060, 63400, 74045, 98806, 36081 } },
+        .{ .add_range_closed = .{ 2476, 2573 } },
+        .{ .add_many = &.{ 22715, 7649, 16716 } },
+        .{ .remove = 51475 },
+        .{ .add_many = &.{ 84217, 31754, 94058, 4, 90104, 7649, 98806 } },
+        .{ .add_range_closed = .{ 6048, 6184 } },
+        .{ .clear = {} },
+        .{ .remove = 63913 },
+        .{ .clear = {} },
+        .{ .get_cardinality = 0 },
+        .{ .add = 51548 },
+        .{ .add_range_closed = .{ 14181, 14276 } },
+        .{ .add_range_closed = .{ 814, 945 } },
+        .{ .remove = 63913 },
+        .{ .add_many = &.{93120} },
+        .{ .add_range_closed = .{ 5677, 5702 } },
+        .{ .get_cardinality = 256 },
+        .{ .get_cardinality = 256 },
+        .{ .add_many = &.{ 27047, 95148, 96415, 27461 } },
+        .{ .get_cardinality = 260 },
+        .{ .add_many = &.{ 16912, 74410, 93120, 59285 } },
+    });
 }
 
-test "crash0" {}
+test "crash0" {
+    //
+}
 
 const std = @import("std");
 const mem = std.mem;

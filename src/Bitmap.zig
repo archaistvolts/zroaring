@@ -266,7 +266,7 @@ pub fn insert_new_kv_at(
 /// returns count of `vals` added
 pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize {
     // TODO estimate how many containers and blocks are needed, preallocate and then use assume capacity api.
-    trace(@src(), "vals {?}..{?}:{}", .{ if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null, vals.len });
+    trace(@src(), "vals={}:{?}..{?}", .{ vals.len, if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null });
     var ret: usize = 0;
     for (vals) |v| {
         ret += @intFromBool(try r.add_checked(allocator, v));
@@ -280,6 +280,8 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
 
 /// returns true when `value` was added to the bitmap, false if already present.
 pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
+    defer assert(r.contains(value));
+
     if (r.is_empty()) {
         @branchHint(.unlikely);
         r.* = try create_with_capacity(allocator, 1);
@@ -300,25 +302,23 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
             }
             r.array.ptr(.containers)[cid] = c2;
         }
-        return oldc.cardinality != r.array.ptr(.containers)[cid].cardinality;
+        return oldc.cardinality != c2.cardinality;
     } else { // key not found, add new array container
         const cid: u32 = @intCast(-mcontaineridx - 1);
-        // trace(@src(), "new container - cid={} {f}", .{ cid, r });
         const blockslen = r.array.ptr(.blockslen).*;
-        const blockscapacity = r.array.ptr(.blockscapacity).*;
         const capacity = r.array.ptr(.capacity).*;
-        var newac: Container = .{
+        if (r.array.ptr(.len).* == capacity) {
+            try r.realloc_array(allocator, capacity + 1, blockslen + 1);
+        }
+
+        try r.insert_new_kv_at(allocator, key, .{
             .blockoffset = @intCast(blockslen),
             .nblocks_minus1 = 0,
             .cardinality = 0,
             .typecode = .array,
-        };
-        if (r.array.ptr(.len).* == capacity) {
-            try r.realloc_array(allocator, capacity + 1, blockscapacity + 1);
-        }
+        }, cid);
+        const newac = &r.array.ptr(.containers)[cid];
         _ = try newac.add(allocator, r, valuelow);
-        assert(newac.typecode == .array); // added 1 value to empty array, must remain an array
-        try r.insert_new_kv_at(allocator, key, newac, cid);
         return true;
     }
 }
@@ -740,9 +740,9 @@ pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void
 }
 
 pub fn contains(r: Bitmap, val: u32) bool {
-    const hb: u16 = @truncate(val >> 16);
+    const key: u16 = @truncate(val >> 16);
     // the next function call involves a binary search and lots of branching.
-    const i = r.get_key_index(hb);
+    const i = r.get_key_index(key);
     if (i < 0) return false;
     // rest might be a tad expensive, possibly involving another round of binary
     // search
@@ -1280,7 +1280,10 @@ pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
     }
 }
 
-/// grow if necessary to new_capacity.  deinit if 0.  modifies `Array.len/capacity`.
+/// ensure new capacity and blockscapacity.  deinit if new capacity is 0.
+/// new capacity or blockscapacity must be greater than existing.
+///
+/// modifies `Array` capacity and blockscapacity.
 pub fn realloc_array(
     r: *Bitmap,
     allocator: mem.Allocator,
@@ -1311,7 +1314,7 @@ pub fn realloc_array(
         return;
     }
 
-    // TODO faster to realloc and move fields. when newsize is larger?
+    // TODO faster to realloc and move fields. when new size is larger?
     const newarray = try Model.create(allocator, newlens);
     r.copy_to(newarray);
     assert(r.array.ptr(.len).* == newarray.ptr(.len).*);
@@ -1320,6 +1323,7 @@ pub fn realloc_array(
     r.array = newarray;
 }
 
+/// ensure the bitmap has room for more containers and more blocks.
 pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_blockslen: u32) !void {
     const len = r.array.ptr(.len).*;
     const capacity = r.array.ptr(.capacity).*;

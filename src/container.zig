@@ -199,18 +199,17 @@ pub const Container = packed struct(u64) {
             }
 
             const ac2 = &r.array.ptr(.containers)[acid];
-            const array1 = ac2.blocks_as(.array, r.*)[0..ac2.cardinality];
+            const array2 = ac2.blocks_as(.array, r.*)[0..ac2.cardinality];
             // trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
 
             const insertidx: u32 = @intCast(-loc - 1);
-            @memmove(array1.ptr + insertidx + 1, array1[insertidx..]);
-            array1[insertidx] = value;
+            @memmove(array2.ptr + insertidx + 1, array2[insertidx..]);
+            array2[insertidx] = value;
             ac2.cardinality += 1;
-            assert_valid(ac2, r.*);
+            ac2.assert_valid(r.*);
             return 1;
-        } else {
-            return -1;
         }
+        return -1;
     }
 
     const Words = @FieldType(Element, "bitset");
@@ -308,25 +307,22 @@ pub const Container = packed struct(u64) {
             .cardinality = 0,
         };
 
-        // copy ac to temporary
+        // copy ac blocks to temporary
         assert(ac.nblocks() == C.BITSET_BLOCKS);
-        var ac1 = ac.*;
+        var tmpc = ac.*;
         const acid = ac - r.array.ptr(.containers);
-        ac1.blockoffset = @intCast(r.array.ptr(.blockslen).*);
-        try r.extend_array(allocator, 1, C.BITSET_BLOCKS);
-        const blocks = ac1.get_blocks(r.*);
+        tmpc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
+        try r.extend_array(allocator, 0, C.BITSET_BLOCKS);
+        const blocks = tmpc.get_blocks(r.*);
         @memcpy(blocks, r.array.ptr(.containers)[acid].get_blocks(r.*));
 
         const words = bc.blocks_as(.bitset, r.*);
         @memset(bc.get_blocks(r.*), @splat(0));
-        for (ac1.blocks_as(.array, r.*)) |v| {
+        for (tmpc.blocks_as(.array, r.*)) |v| {
             bc.bitset_container_set(v, words);
         }
-        // trace(@src(), "bcard/acard={}-{}/{}", .{ bc.compute_cardinality(r), bc.cardinality, ac.cardinality });
         assert(bc.compute_cardinality(r.*) == bc.cardinality);
-
-        r.array.ptr(.blockslen).* = ac1.blockoffset; // recycle ac1
-
+        r.array.ptr(.blockslen).* = tmpc.blockoffset; // recycle tmpc
         return bc;
     }
 
@@ -341,14 +337,13 @@ pub const Container = packed struct(u64) {
             },
             .array => {
                 const add_res = try c.array_container_try_add(allocator, r, value, C.DEFAULT_MAX_SIZE);
+                const c2 = &r.array.ptr(.containers)[cid];
                 if (add_res != -1) {
-                    return r.array.ptr(.containers)[cid];
-                } else {
-                    var bitset = try c.bitset_container_from_array(allocator, r);
-                    assert(bitset.cardinality == r.array.ptr(.containers)[cid].cardinality);
-                    bitset.bitset_container_set(value, r.array.ptr(.containers)[cid].blocks_as(.bitset, r.*));
-                    return bitset;
+                    return c2.*;
                 }
+                var bitset = try c.bitset_container_from_array(allocator, r);
+                bitset.bitset_container_set(value, bitset.blocks_as(.bitset, r.*));
+                return bitset;
             },
             .run => {
                 _ = try c.run_container_add(allocator, value, r);
