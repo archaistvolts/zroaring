@@ -26,6 +26,10 @@ pub const Container = packed struct(u64) {
         r.remove_at_index(@intCast(c - r.array.ptr(.containers)));
     }
 
+    pub fn deinit_blocks(c: Container, r: Bitmap) void {
+        @memset(c.get_blocks(r), @splat(0xFF));
+    }
+
     pub fn slice(c: Container, T: type, blocks: []align(C.BLOCK_ALIGN) Block) []align(C.BLOCK_ALIGN) T {
         return mem.bytesAsSlice(T, mem.sliceAsBytes(blocks[c.blockoffset..][0..c.nblocks()]));
     }
@@ -232,7 +236,12 @@ pub const Container = packed struct(u64) {
         return increment > 0;
     }
 
-    pub fn run_container_add(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
+    pub fn run_container_add(
+        run: *Container,
+        allocator: mem.Allocator,
+        pos: u16,
+        r: *Bitmap,
+    ) !bool {
         const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) return false; // already there
@@ -269,7 +278,7 @@ pub const Container = packed struct(u64) {
         }
         if (mindex == -1) {
             // we may need to extend the first run
-            if (0 < run.cardinality) {
+            if (run.cardinality > 0) {
                 if (runs[0].value == pos + 1) {
                     runs[0].length += 1;
                     runs[0].value -= 1;
@@ -277,9 +286,11 @@ pub const Container = packed struct(u64) {
                 }
             }
         }
+        trace(@src(), "index={} run={}", .{ index, run });
         try r.makeRoomAtIndex(allocator, run, @intCast(index +% 1));
-        runs.ptr[index +% 1].value = pos;
-        runs.ptr[index +% 1].length = 0;
+        const runs2 = run.blocks_as(.run, r.*);
+        runs2[index +% 1].value = pos;
+        runs2[index +% 1].length = 0;
         return true;
     }
 
@@ -321,13 +332,13 @@ pub const Container = packed struct(u64) {
     /// Note: when an array container becomes full, it is converted to a bitset in place.
     pub fn add(c: *Container, allocator: mem.Allocator, r: *Bitmap, value: u16) !Container {
         // TODO // c = c.get_writable_copy_if_shared();
+        const cid = c - r.array.ptr(.containers);
         switch (c.typecode) {
             .bitset => {
                 c.bitset_container_set(value, c.blocks_as(.bitset, r.*));
                 return c.*;
             },
             .array => {
-                const cid = c - r.array.ptr(.containers);
                 const add_res = try c.array_container_try_add(allocator, r, value, C.DEFAULT_MAX_SIZE);
                 if (add_res != -1) {
                     return r.array.ptr(.containers)[cid];
@@ -340,7 +351,7 @@ pub const Container = packed struct(u64) {
             },
             .run => {
                 _ = try c.run_container_add(allocator, value, r);
-                return c.*;
+                return r.array.ptr(.containers)[cid];
             },
             .shared => unreachable,
         }
@@ -629,6 +640,16 @@ pub const Container = packed struct(u64) {
         r: Bitmap,
         c: Container,
 
+        const Rle = struct {
+            rle: ?root.Rle16,
+            pub fn format(rf: Rle, w: *std.Io.Writer) !void {
+                if (rf.rle) |rle| {
+                    const value: u32 = rle.value;
+                    try w.print("{}..{}", .{ value, value + rle.length });
+                } else try w.writeAll("null");
+            }
+        };
+
         pub fn format(f: Fmt, w: *std.Io.Writer) !void {
             const c = f.c;
             if (c == Container.uninit) {
@@ -636,17 +657,23 @@ pub const Container = packed struct(u64) {
                 return;
             }
             switch (c.typecode) {
-                inline .array, .run => |typecode| {
-                    const vals0 = c.blocks_as(typecode, f.r);
+                .array => {
+                    const vals0 = c.blocks_as(.array, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
-                    try w.print("{t} {}:{?}..{?}", .{
-                        typecode,
+                    try w.print("array {}:{?}..{?}", .{
                         vals.len,
                         if (vals.len > 0) vals[0] else null,
                         if (vals.len > 1) vals[vals.len - 1] else null,
                     });
-
-                    // try w.print("{t}={}-{any}", .{ typecode, c.cardinality, vals });
+                },
+                .run => {
+                    const vals0 = c.blocks_as(.run, f.r);
+                    const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
+                    try w.print("run {}:{f},{f}", .{
+                        vals.len,
+                        Rle{ .rle = if (vals.len > 0) vals[0] else null },
+                        Rle{ .rle = if (vals.len > 1) vals[vals.len - 1] else null },
+                    });
                 },
                 .bitset => {
                     try w.print("bitset cardinality={}", .{c.cardinality});

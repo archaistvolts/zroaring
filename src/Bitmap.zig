@@ -13,18 +13,21 @@ pub const Array = extern struct {
     /// blocks capacity. [0, 1<<24]
     blockscapacity: u32,
     magic: root.Magic,
-    /// a bitset of `Flag`s
+    /// a bitset of `Flag`
     flags: u8,
     /// container keys.
     keys: flexible.Array(u16, .capacity) align(C.BLOCK_ALIGN),
     /// container descriptors.
     containers: flexible.Array(Container, .capacity) align(C.BLOCK_ALIGN),
-    /// storage for container data.
+    /// container data stored as blocks.
     blocks: flexible.Array(Block, .blockscapacity),
 };
 
 const Model = flexible.Struct(Array);
-const emptybuf: Model.Buf(.{ .capacity = 0, .blockscapacity = 0 }) align(C.BLOCK_ALIGN) = @splat(0);
+const emptybuf: Model.Buf(.{
+    .capacity = 0,
+    .blockscapacity = 0,
+}) align(C.BLOCK_ALIGN) = @splat(0);
 pub const empty: Bitmap = .{ .array = @ptrCast(@constCast(&emptybuf)) };
 
 pub const Flag = enum(u8) {
@@ -52,8 +55,7 @@ fn zero_init(m: *Model) void {
     @memset(m.slice(.containers), .uninit);
 }
 
-/// Allocates room for at least 16 containers and blocks or more when
-/// container_count > 16.
+/// Allocates room for at minimum 16 containers and blocks
 pub fn create_with_capacity(allocator: mem.Allocator, container_count: u32) !Bitmap {
     const capacity = @max(16, container_count);
     const m = try Model.create(allocator, .{
@@ -294,7 +296,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         if (oldc != c2) {
             // skip deinit of inplace array/bitset conversion
             if (oldc.blockoffset != c2.blockoffset) {
-                @memset(oldc.get_blocks(r.*), @splat(0xFF));
+                oldc.deinit_blocks(r.*);
             }
             r.array.ptr(.containers)[cid] = c2;
         }
@@ -988,7 +990,7 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
     const c = r.array.ptr(.containers)[cid];
     if (c.typecode == .run) {
         const newc = try r.convert_run_to_efficient_container(c, allocator);
-        if (newc != c) r.array.ptr(.containers)[cid].deinit(r.*);
+        if (newc != c) r.array.ptr(.containers)[cid].deinit_blocks(r.*);
         return newc;
     } else if (c.typecode == .array) {
         // it might need to be converted to a run container.
@@ -1030,7 +1032,7 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
         assert(run_start >= 0);
         // now prev is the last seen value
         rc.add_run(@intCast(run_start), @intCast(prev), r.*);
-        c2.deinit(r.*);
+        c2.deinit_blocks(r.*);
         trace(@src(), "rc={}", .{rc});
         return rc;
     } else if (c.typecode == .bitset) { // run conversions on bitset
@@ -1563,7 +1565,7 @@ pub fn remove_at_index(ra: Bitmap, i: u32) void {
     const len = ra.array.ptr(.len).*;
     const ctrs = ra.array.ptr(.containers);
     const keys = ra.array.ptr(.keys);
-    @memset(ctrs[i].get_blocks(ra), @splat(0xFF));
+    ctrs[i].deinit_blocks(ra);
     @memmove(ctrs[i..], ctrs[i + 1 ..][0..len]);
     @memmove(keys[i..], keys[i + 1 ..][0..len]);
     ra.array.ptr(.len).* -= 1;
@@ -1574,7 +1576,6 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
     const runs = run.blocks_as(.run, r)[0..run.cardinality].ptr;
     @memmove(runs + index, (runs + (1 + index))[0 .. run.cardinality - index - 1]);
     run.cardinality -= 1;
-    if (run.cardinality == 0) run.deinit(r);
 }
 
 /// Moves the data so that we can write data at index
@@ -1615,7 +1616,7 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
         const oldCardinality = container.get_cardinality(r.*);
         const container2 = try container.remove(allocator, @truncate(val), r);
         if (container2 != container.*) {
-            @memset(container.get_blocks(r.*), @splat(0xFF));
+            container.deinit_blocks(r.*);
             r.array.ptr(.containers)[iu] = container2;
         }
 
