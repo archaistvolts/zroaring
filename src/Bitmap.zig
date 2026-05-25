@@ -33,7 +33,7 @@ pub const empty: Bitmap = .{ .array = @ptrCast(@constCast(&emptybuf)) };
 pub const Flag = enum(u8) {
     /// copy on write
     cow,
-    /// frozen layout.  see `frozen_size_in_bytes` for notes.
+    /// frozen layout described in `frozen_size_in_bytes`.
     frozen,
 };
 
@@ -583,7 +583,7 @@ fn container_from_run_range(
 
 /// Add all values in range [min, max] to a given container.
 ///
-/// If the returned pointer is different from $container, then a new container
+/// If the returned pointer is different from $c, then a new container
 /// has been created and the caller is responsible for freeing it.
 /// The type of the first container may change. Returns the modified
 /// (and possibly new) container.
@@ -648,7 +648,7 @@ fn container_add_range(
 
             if (run_size_bytes <= bitset_size_bytes) {
                 try r.run_container_add_range_nruns(allocator, c, min, max, nruns_less, nruns_greater);
-                return c.*;
+                return r.array.ptr(.containers)[cid];
             } else {
                 return r.container_from_run_range(allocator, c.*, min, max, blockoffset);
             }
@@ -674,7 +674,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         r.* = try create_with_capacity(allocator, 0);
     }
 
-    trace(@src(), "({},{}) len={}", .{ min, max, r.array.ptr(.len).* });
+    trace(@src(), "[{},{})", .{ min, max });
 
     const min_key = min >> 16;
     const max_key = max >> 16;
@@ -1378,20 +1378,18 @@ pub fn format(r: Bitmap, w: *Io.Writer) !void {
         try w.writeAll("empty");
         return;
     }
-    try w.print("len/cap={}/{} blocks:len/cap={}/{} {B:.1} magic={} flags={}", .{
+    try w.print("Bitmap: len/cap={}/{} blocks:len/cap={}/{} {B:.1}. Containers: ", .{
         r.array.ptr(.len).*,
         r.array.ptr(.capacity).*,
         r.array.ptr(.blockslen).*,
         r.array.ptr(.blockscapacity).*,
         Model.calcSize(r.array.calcLens()),
-        @intFromEnum(r.array.ptr(.magic).*),
-        r.array.ptr(.flags).*,
     });
 
     try w.writeByte('{');
-    for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, k, i| {
+    for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
         if (i != 0) try w.writeByte(',');
-        try w.print("{}:{f}", .{ k, c.fmt(r) });
+        try w.print("{}:{f}", .{ key, c.fmt(r) });
     }
     try w.writeByte('}');
 }
@@ -1582,13 +1580,14 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
 pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
     // This function calls realloc + memmove sequentially to move by one index.
     // Potentially copying the array twice.
-
+    const cindex = run - r.array.ptr(.containers);
     if (run.cardinality + 1 > run.calc_capacity())
         try run.run_container_grow(allocator, run.cardinality + 1, true, r);
 
-    const runs = run.blocks_as(.run, r.*).ptr;
-    @memmove(runs + 1 + index, (runs + index)[0 .. run.cardinality - index]);
-    run.cardinality += 1;
+    const run2 = &r.array.ptr(.containers)[cindex];
+    const runs = run2.blocks_as(.run, r.*).ptr;
+    @memmove(runs + 1 + index, (runs + index)[0 .. run2.cardinality - index]);
+    run2.cardinality += 1;
 }
 
 pub fn clear_retaining_capacity(r: *Bitmap) void {

@@ -170,7 +170,7 @@ pub fn trace(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: an
         term.mode = .escape_codes;
         term.writer.print("src/{s}:{}:{}: ", .{ src.file, src.line, src.column }) catch {};
         term.setColor(.yellow) catch {};
-        term.writer.print("{s}::{s}", .{ src.module, src.fn_name }) catch {};
+        term.writer.print("{s}", .{src.fn_name}) catch {};
         term.setColor(.white) catch {};
         term.writer.print(" : ", .{}) catch {};
         term.writer.print(fmt, args) catch {};

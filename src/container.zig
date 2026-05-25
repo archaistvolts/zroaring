@@ -243,6 +243,7 @@ pub const Container = packed struct(u64) {
         r: *Bitmap,
     ) !bool {
         const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
+        const cindex = run - r.array.ptr(.containers);
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) return false; // already there
         mindex = -mindex - 2; // points to preceding value, possibly -1
@@ -286,11 +287,11 @@ pub const Container = packed struct(u64) {
                 }
             }
         }
-        trace(@src(), "index={} run={}", .{ index, run });
+        // trace(@src(), "index={} cindex={} {f}", .{ mindex, cindex, run.fmt(r.*) });
         try r.makeRoomAtIndex(allocator, run, @intCast(index +% 1));
-        const runs2 = run.blocks_as(.run, r.*);
-        runs2[index +% 1].value = pos;
-        runs2[index +% 1].length = 0;
+        const run2 = &r.array.ptr(.containers)[cindex];
+        const runs2 = run2.blocks_as(.run, r.*);
+        runs2[index +% 1] = .{ .value = pos, .length = 0 };
         return true;
     }
 
@@ -645,7 +646,7 @@ pub const Container = packed struct(u64) {
             pub fn format(rf: Rle, w: *std.Io.Writer) !void {
                 if (rf.rle) |rle| {
                     const value: u32 = rle.value;
-                    try w.print("{}..{}", .{ value, value + rle.length });
+                    try w.print("[{},{}]", .{ value, value + rle.length });
                 } else try w.writeAll("null");
             }
         };
@@ -660,7 +661,7 @@ pub const Container = packed struct(u64) {
                 .array => {
                     const vals0 = c.blocks_as(.array, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
-                    try w.print("array {}:{?}..{?}", .{
+                    try w.print("array values:{} [{?}..{?}]", .{
                         vals.len,
                         if (vals.len > 0) vals[0] else null,
                         if (vals.len > 1) vals[vals.len - 1] else null,
@@ -669,7 +670,7 @@ pub const Container = packed struct(u64) {
                 .run => {
                     const vals0 = c.blocks_as(.run, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
-                    try w.print("run {}:{f},{f}", .{
+                    try w.print("runs:{} {f}..{f}", .{
                         vals.len,
                         Rle{ .rle = if (vals.len > 0) vals[0] else null },
                         Rle{ .rle = if (vals.len > 1) vals[vals.len - 1] else null },
