@@ -1,179 +1,481 @@
-const fuzz = @This();
+//! TODO maybe get rid of hashMapOracle and use croaringOracle everywhere.
+//! It was added to work around fuzzer croaring undefined symbol issues.
 
-// `$ zig build test -Dllvm --fuzz`
-test fuzz { //
-    zig_fuzz_init();
-    defer tmpdir.close(stio.io());
-    const Context = struct {
-        fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
-            zig_fuzz_test(smith.in.?.ptr, smith.in.?.len);
-        }
-    };
-    try testing.fuzz(Context{}, Context.testOne, .{});
+export fn zig_fuzz_init() void {}
+
+export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
+    zig_fuzz_test1(dataptr[0..size]) catch unreachable;
 }
 
-const DataProvider = struct {
-    data: []const u8,
-    // Returns a number in the range [min, max] by consuming bytes from the
-    // input data. The value might not be uniformly distributed in the given
-    // range. If there's no input data left, always returns |min|. |min| must
-    // be less than or equal to |max|.
-    pub fn ConsumeIntegralInRange(fdp: *DataProvider, T: type, min: T, max: T) T {
-        comptime assert(@typeInfo(T) == .int and @sizeOf(T) <= @sizeOf(u64)); // "Unsupported int type
+fn zig_fuzz_test1(in: []const u8) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer assert(gpa.detectLeaks() == 0);
+    try croaringOracle(in, gpa.allocator());
+}
 
-        // Use the biggest type possible to hold the range and the result.
-        const range = @as(u64, max) - min;
-        var result: u64 = 0;
-        var offset: usize = 0;
-        const CHAR_BIT = 8;
-        while (offset < @sizeOf(T) * CHAR_BIT and
-            (range >> @intCast(offset)) > 0 and
-            fdp.data.len != 0)
-        {
-            // Pull bytes off the end of the seed data. Experimentally, this seems to
-            // allow the fuzzer to more easily explore the input space. This makes
-            // sense, since it works by modifying inputs that caused new code to run,
-            // and this data is often used to encode length of data read by
-            // |ConsumeBytes|. Separating out read lengths makes it easier modify the
-            // contents of the data that is actually read.
-            fdp.data.len -= 1;
-            result = (result << CHAR_BIT) | fdp.data.ptr[fdp.data.len];
-            offset += CHAR_BIT;
+test "std.HashMap oracle" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
+            try hashMapOracle(smith, testing.allocator);
         }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{});
+}
 
-        // Avoid division by 0, in case |range + 1| results in overflow.
-        if (range != std.math.maxInt(u64))
-            result = result % (range + 1);
+test "croaring oracle" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
+            try croaringOracle(smith.in.?, testing.allocator);
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{});
+}
 
-        return @intCast(min + result);
+test "std.HashMap oracle crash" {
+    const io = testing.io;
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, ".zig-cache/f/crash", testing.allocator, .unlimited) catch return;
+    defer testing.allocator.free(contents);
+    var smith = testing.Smith{ .in = contents };
+    try hashMapOracle(&smith, testing.allocator);
+}
+
+pub const FuzzOp = union(enum) {
+    add: u32,
+    add_many: []const u32,
+    add_range_closed: [2]u32,
+    remove: u32,
+    contains: u32,
+    contains_many: []const u32,
+    get_cardinality: u64,
+    clear,
+
+    pub const Tag = std.meta.Tag(FuzzOp);
+};
+
+/// provider may be a `*testing.Smith` or a `std.Random`
+fn getvals(provider: anytype, vals: anytype) u8 {
+    const valFn = if (@TypeOf(provider) == *testing.Smith)
+        testing.Smith.valueRangeLessThan
+    else if (@TypeOf(provider) == std.Random)
+        std.Random.intRangeLessThan
+    else
+        unreachable;
+    const len = valFn(provider, u8, 1, vals.len);
+
+    for (0..len) |i| vals[i] = valFn(provider, u32, 0, 100_000);
+    return len;
+}
+
+// TODO remove, reuse perform_op
+fn hashMapOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
+    var r = zroaring.Bitmap.empty;
+    defer r.deinit(allocator);
+    var oracle = std.AutoHashMapUnmanaged(u32, void).empty;
+    defer oracle.deinit(allocator);
+    fuzzprint("\n\n-- init --\n", .{});
+
+    while (!smith.eos()) {
+        const op = smith.value(FuzzOp.Tag);
+        fuzzprint(".{{ .{t} = ", .{op});
+        switch (op) {
+            .add => {
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try r.add(allocator, val);
+                try oracle.put(allocator, val, {});
+            },
+            .add_many => {
+                var vals: [8]u32 = undefined;
+                const len = getvals(smith, &vals);
+                fuzzprint("&.{{ ", .{});
+                for (vals[0..len], 0..) |val, i| {
+                    if (i != 0) fuzzprint(", ", .{});
+                    fuzzprint("{}", .{val});
+                }
+                fuzzprint(" }},\n", .{});
+                _ = try r.add_many(allocator, vals[0..len]);
+                try oracle.ensureUnusedCapacity(allocator, len);
+                for (vals[0..len]) |val| oracle.putAssumeCapacity(val, {});
+            },
+            .add_range_closed => {
+                const start = smith.valueRangeLessThan(u32, 0, 16000);
+                const val1 = smith.valueRangeLessThan(u32, start, start + 100);
+                const val2 = smith.valueRangeLessThan(u32, start + 100, start + 200);
+                fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
+                try r.add_range_closed(allocator, val1, val2);
+                try oracle.ensureUnusedCapacity(allocator, val2 + 1 - val1);
+                var x = val1;
+                while (x <= val2) : (x += 1) oracle.putAssumeCapacity(x, {});
+            },
+            .remove => {
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try std.testing.expectEqual(
+                    oracle.remove(val),
+                    try r.remove_checked(allocator, val),
+                );
+            },
+            .contains => {
+                const val = smith.valueRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try std.testing.expectEqual(oracle.contains(val), r.contains(val));
+            },
+            .contains_many => {
+                var vals: [8]u32 = undefined;
+                const len = getvals(smith, &vals);
+                fuzzprint("&.{{ ", .{});
+                for (vals[0..len], 0..) |val, i| {
+                    if (i != 0) fuzzprint(", ", .{});
+                    fuzzprint("{}", .{val});
+                }
+                fuzzprint(" }},\n", .{});
+                for (vals[0..len]) |val|
+                    try std.testing.expectEqual(oracle.contains(val), r.contains(val));
+            },
+            .clear => {
+                fuzzprint("{{}} }},\n", .{});
+                r.clear_retaining_capacity();
+                oracle.clearRetainingCapacity();
+            },
+            .get_cardinality => {
+                fuzzprint("{} }},\n", .{oracle.count()});
+                try std.testing.expectEqual(oracle.count(), r.get_cardinality());
+            },
+        }
+        // for (r.array.ptr(.containers)[0..r.array.ptr(.len).*]) |c| {
+        //     fuzzprint("{f}\n", .{c.fmt(r)});
+        // }
+        // fuzzprint("counts={},{}\n", .{ oracle.count(), r.cardinality() });
+        try std.testing.expectEqual(oracle.count(), r.cardinality());
+    }
+}
+
+const FuzzPrng = struct {
+    input: []const u8,
+    pos: usize = 0,
+
+    pub fn init(input: []const u8) FuzzPrng {
+        return .{ .input = input };
     }
 
-    pub fn ConsumeVecInRange(
-        fdp: *DataProvider,
-        allocator: mem.Allocator,
-        length: usize,
-        min_value: u32,
-        max_value: u32,
-    ) !std.ArrayList(u32) {
-        var result = std.ArrayList(u32).empty;
-        try result.resize(allocator, length);
-        for (result.items) |*it| {
-            it.* = fdp.ConsumeIntegralInRange(u32, min_value, max_value);
+    pub fn random(self: *FuzzPrng) std.Random {
+        return .{ .ptr = self, .fillFn = fill };
+    }
+
+    pub fn eos(self: FuzzPrng) bool {
+        return self.pos >= self.input.len;
+    }
+
+    fn fill(ptr: *anyopaque, buf: []u8) void {
+        const self: *FuzzPrng = @ptrCast(@alignCast(ptr));
+        const remaining = self.input.len - self.pos;
+        const to_copy = @min(buf.len, remaining);
+
+        if (to_copy > 0) {
+            @memcpy(buf[0..to_copy], self.input[self.pos .. self.pos + to_copy]);
+            self.pos += to_copy;
         }
-        return result;
+
+        // not enough bytes, pad with zeros to avoid uninitialized memory.
+        if (to_copy < buf.len) {
+            @memset(buf[to_copy..], 0);
+        }
     }
 };
 
-var gpa_buf: ?[]u8 = null;
-const gpa_buf_size = 100 * 1024 * 1024; // 100 Mb
-var gpa: mem.Allocator = undefined;
-var gpa_state: std.heap.DebugAllocator(.{}) = undefined;
-var stio = Io.Threaded.init_single_threaded;
-var tmpdir: Io.Dir = undefined;
-fn oom() noreturn {
-    @panic("OOM");
-}
+// TODO remove, reuse perform_op
+fn croaringOracle(in: []const u8, allocator: mem.Allocator) !void {
+    var r = zroaring.Bitmap.empty;
+    defer r.deinit(allocator);
 
-export fn zig_fuzz_init() void {
-    // init alloc_buf
-    assert(gpa_buf == null);
-    gpa_state = .{};
-    gpa = gpa_state.allocator();
-    gpa_buf = gpa.alloc(u8, gpa_buf_size) catch oom();
-    tmpdir = Io.Dir.cwd().openDir(stio.io(), "/tmp", .{}) catch unreachable;
-}
+    const oracle = c.roaring_bitmap_create().?;
+    defer c.roaring_bitmap_free(oracle);
 
-///
-/// A bitmap may contain up to 2**32 elements. Later this function will
-/// output the content to an array where each element uses 32 bits of
-/// storage. That would use 16 GB. Thus this function is bound to run out of
-/// memory.
-///
-/// Even without the full serialization to a 32-bit array, a bitmap may still
-/// use over 512 MB in the normal course of operation: that is to be expected
-/// since it can represent all sets of integers in [0,2**32]. This function
-/// may hold several bitmaps in memory at once, so it can require gigabytes
-/// of memory (without bugs). Hence, unless it has a generous memory
-/// capacity, this function will run out of memory almost certainly.
-///
-/// For sanity, we may limit the range to, say, 10,000,000 which will use 38
-/// MB or so. With such a limited range, if we run out of memory, then we can
-/// almost certain that it has to do with a genuine bug.
-///
-export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
-    zig_fuzz_test1(dataptr[0..size]) catch return;
-}
+    var prng = FuzzPrng.init(in);
+    const random = prng.random();
 
-fn zig_fuzz_test1(data: []const u8) !void {
-    _ = bitmap32(stio.io(), data);
-    const range_start: u32 = 0;
-    const range_end: u32 = 10_000_000;
+    fuzzprint("\n\n-- init --\n", .{});
 
-    //
-    // We are not solely dependent on the range [range_start, range_end) because
-    // ConsumeVecInRange below produce integers in a small range starting at 0.
-    //
-
-    var fdp: DataProvider = .{ .data = data };
-    //
-    // The next line was ConsumeVecInRange(fdp, 500, 0, 1000) but it would pick
-    // 500 values at random from 0, 1000, making almost certain that all of the
-    // values are picked. It seems more useful to pick 500 values in the range
-    // 0,1000.
-    //
-    var fba = std.heap.FixedBufferAllocator.init(gpa_buf.?);
-    const alloc = fba.allocator();
-    const bitmap_data_a = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
-    // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
-    var a: Bitmap = .empty;
-    _ = try a.add_many(alloc, bitmap_data_a.items);
-    _ = try a.run_optimize(alloc);
-    _ = try a.shrink_to_fit(alloc);
-
-    const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
-    // std.debug.print("bitmap_data_b {any}\n", .{bitmap_data_b});
-    var b: Bitmap = .empty;
-    _ = try b.add_many(alloc, bitmap_data_b.items);
-    _ = try b.run_optimize(alloc);
-    _ = try b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
-    _ = try b.add_checked(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
-    const r0 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
-    const r1 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
-    const rmin = @min(r0, r1);
-    const rmax = @max(r0, r1);
-    if (rmin < rmax) try b.add_range(alloc, rmin, rmax);
-    // std.log.debug("{} data_b {any} {f}\n", .{ size, bitmap_data_b.items, b });
-}
-
-fn bitmap32(io: Io, data: []const u8) u8 {
-    // We test that deserialization never fails.
-    const f = tmpdir.openFile(io, "bitmap32", .{}) catch return 0;
-    f.writePositionalAll(io, data, 0) catch return 0;
-    var rbuf: [256]u8 = undefined;
-    var fr = f.reader(io, &rbuf);
-    fr.seekTo(0) catch return 0;
-
-    var bitmap = zroaring.Bitmap.portable_deserialize_file_reader(gpa, &fr) catch return 0;
-    defer bitmap.deinit(gpa);
-    // The bitmap may not be usable if it does not follow the specification.
-    // We can validate the bitmap we recovered to make sure it is proper.
-    var reason_failure: ?[]const u8 = null;
-    if (bitmap.internal_validate(&reason_failure)) {
-        // the bitmap is ok!
-        var cardinality = bitmap.get_cardinality();
-        for (100..1000) |ii| {
-            const i: u32 = @intCast(ii);
-            if (!bitmap.contains(i)) {
-                cardinality += 1;
-                bitmap.add(gpa, i) catch return 0;
-            }
+    while (!prng.eos()) {
+        const op = random.enumValue(FuzzOp.Tag);
+        fuzzprint(".{{ .{t} = ", .{op});
+        switch (op) {
+            .add => {
+                const val = random.intRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try r.add(allocator, val);
+                c.roaring_bitmap_add(oracle, val);
+            },
+            .add_many => {
+                var vals: [8]u32 = undefined;
+                const len = getvals(random, &vals);
+                fuzzprint("&.{{ ", .{});
+                for (vals[0..len], 0..) |val, i| {
+                    if (i != 0) fuzzprint(", ", .{});
+                    fuzzprint("{}", .{val});
+                }
+                fuzzprint(" }},\n", .{});
+                _ = try r.add_many(allocator, vals[0..len]);
+                c.roaring_bitmap_add_many(oracle, len, &vals);
+            },
+            .add_range_closed => {
+                const start = random.intRangeLessThan(u32, 0, 16000);
+                const val1 = random.intRangeLessThan(u32, start, start + 100);
+                const val2 = random.intRangeLessThan(u32, start + 100, start + 200);
+                fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
+                try r.add_range_closed(allocator, val1, val2);
+                c.roaring_bitmap_add_range_closed(oracle, val1, val2);
+            },
+            .remove => {
+                const val = random.intRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try std.testing.expectEqual(
+                    c.roaring_bitmap_remove_checked(oracle, val),
+                    try r.remove_checked(allocator, val),
+                );
+            },
+            .contains => {
+                const val = random.intRangeLessThan(u32, 0, 100_000);
+                fuzzprint("{} }},\n", .{val});
+                try std.testing.expectEqual(
+                    c.roaring_bitmap_contains(oracle, val),
+                    r.contains(val),
+                );
+            },
+            .contains_many => { // TODO contains_many
+                var vals: [8]u32 = undefined;
+                const len = getvals(random, &vals);
+                fuzzprint("&.{{ ", .{});
+                for (vals[0..len], 0..) |val, i| {
+                    if (i != 0) fuzzprint(", ", .{});
+                    fuzzprint("{}", .{val});
+                }
+                fuzzprint(" }},\n", .{});
+                for (vals[0..len]) |val|
+                    try std.testing.expectEqual(c.roaring_bitmap_contains(oracle, val), r.contains(val));
+            },
+            .clear => {
+                fuzzprint("{{}} }},\n", .{});
+                r.clear_retaining_capacity();
+                c.roaring_bitmap_clear(oracle);
+            },
+            .get_cardinality => {
+                fuzzprint("{} }},\n", .{c.roaring_bitmap_get_cardinality(oracle)});
+                try std.testing.expectEqual(c.roaring_bitmap_get_cardinality(oracle), r.get_cardinality());
+            },
         }
-        if (cardinality != bitmap.get_cardinality()) {
-            std.debug.print("bug\n", .{});
-            std.process.exit(1);
-        }
+        // for (r.array.ptr(.containers)[0..r.array.ptr(.len).*]) |c| {
+        //     fuzzprint("{f}\n", .{c.fmt(r)});
+        // }
+        // fuzzprint("counts={},{}\n", .{ oracle.count(), r.cardinality() });
+        try std.testing.expectEqual(c.roaring_bitmap_get_cardinality(oracle), r.cardinality());
     }
-    return 0;
+}
+
+fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
+    if (!@import("build-options").fuzzprint) return;
+    std.debug.print(fmt, args);
+}
+
+const testgpa = testing.allocator;
+
+fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
+    errdefer {
+        fuzzprint("failed op: {}\n", .{op});
+        fuzzprint("{}\n", .{op});
+        fuzzprint("zr={f}\n", .{zr});
+        c.roaring_bitmap_printf(cr);
+    }
+    fuzzprint("op: {}\n", .{op});
+    switch (op) {
+        .add => |x| {
+            c.roaring_bitmap_add(cr, x);
+            try zr.add(testgpa, x);
+        },
+        .add_many => |x| {
+            c.roaring_bitmap_add_many(cr, x.len, x.ptr);
+            _ = try zr.add_many(testgpa, x);
+        },
+        .add_range_closed => |x| {
+            c.roaring_bitmap_add_range_closed(cr, x[0], x[1]);
+            try zr.add_range_closed(testgpa, x[0], x[1]);
+        },
+        .remove => |x| {
+            c.roaring_bitmap_remove(cr, x);
+            try zr.remove(testgpa, x);
+        },
+
+        .contains => |x| {
+            try testing.expectEqual(
+                c.roaring_bitmap_contains(cr, x),
+                zr.contains(x),
+            );
+        },
+        .contains_many => |x| for (x) |v| {
+            try testing.expectEqual(
+                c.roaring_bitmap_contains(cr, v),
+                zr.contains(v),
+            );
+        },
+        .get_cardinality => |x| {
+            try testing.expectEqual(x, c.roaring_bitmap_get_cardinality(cr));
+            try testing.expectEqual(x, zr.get_cardinality());
+        },
+        .clear => {
+            c.roaring_bitmap_clear(cr);
+            zr.clear_retaining_capacity();
+        },
+        // else => std.debug.panic("TODO {t}", .{op}),
+    }
+}
+fn perform_ops(ops: []const FuzzOp) !void {
+    const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
+    defer c.roaring_bitmap_free(cr);
+    var zr: Bitmap = .empty;
+    defer zr.deinit(testgpa);
+
+    for (ops) |op| {
+        try perform_op(op, cr, &zr);
+    }
+}
+
+test "crash reproductions" {
+    // if (!@import("build-options").with_croaring) return;
+
+    try perform_ops(&.{
+        .{ .add_many = &.{ 98128, 17714 } },
+        .{ .add_range_closed = .{ 0, 100 } },
+        .{ .contains = 98128 },
+        .{ .contains = 17714 },
+        .{ .contains = 0 },
+        .{ .contains = 50 },
+        .{ .contains = 100 },
+        .{ .get_cardinality = 103 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 28939 },
+        .{ .add_range_closed = .{ 58, 109 } },
+        .{ .add_range_closed = .{ 15, 158 } },
+        .{ .contains = 65277 },
+    });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 6, 140 } },
+        .{ .remove = 13 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 37022 },
+        .{ .add_range_closed = .{ 0, 169 } },
+        .{ .add = 56276 },
+        .{ .add_range_closed = .{ 79, 196 } },
+    });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 51, 194 } },
+        .{ .add = 10 },
+    });
+
+    try perform_ops(&.{
+        .{ .add_many = &.{ 46535, 45534 } },
+        .{ .add_range_closed = .{ 11, 181 } },
+    });
+
+    try perform_ops(&.{
+        .{ .remove = 87070 },
+        .{ .add_range_closed = .{ 166, 192 } },
+        .{ .add = 0 },
+        .{ .add = 512 },
+        .{ .add = 256 },
+        .{ .add = 167 },
+        .{ .add = 26389 },
+        .{ .add_range_closed = .{ 104, 178 } },
+        .{ .add = 22272 },
+        .{ .add = 0 },
+        .{ .add = 7168 },
+        .{ .add = 512 },
+        .{ .add = 0 },
+        .{ .add = 256 },
+        .{ .add = 194 },
+        .{ .contains = 107 },
+        .{ .contains = 73080 },
+        .{ .add = 28 },
+    });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 39, 139 } },
+        .{ .add_range_closed = .{ 12690, 12753 } },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+    });
+    try perform_ops(&.{
+        .{ .remove = 87070 },
+        .{ .add_range_closed = .{ 166, 192 } },
+        .{ .add = 0 },
+        .{ .add = 512 },
+        .{ .add = 256 },
+        .{ .add = 167 },
+        .{ .add = 26389 },
+        .{ .add_range_closed = .{ 104, 178 } },
+        .{ .add = 22272 },
+        .{ .add = 0 },
+        .{ .add = 7168 },
+        .{ .add = 512 },
+        .{ .add = 0 },
+        .{ .add = 256 },
+        .{ .add = 194 },
+        .{ .add = 28 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 50119 },
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+        .{ .add_range_closed = .{ 10276, 10424 } },
+        .{ .remove = 49098 },
+        .{ .clear = {} },
+        .{ .add = 62568 },
+        .{ .remove = 62568 },
+        .{ .add = 49721 },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 49191 },
+        .{ .add_range_closed = .{ 66, 136 } },
+        .{ .add_range_closed = .{ 13544, 13684 } },
+        .{ .add_range_closed = .{ 14890, 15026 } },
+        .{ .add = 0 },
+        .{ .add_range_closed = .{ 8080, 8142 } },
+        .{ .add_range_closed = .{ 3464, 3609 } },
+        .{ .remove = 92533 },
+        .{ .add = 512 },
+    });
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 6764, 6894 } },
+        .{ .contains_many = &.{ 43686, 23386, 67535, 84970, 44135, 68390, 94982, 76339, 12901, 44250, 29353, 93976, 17703, 95543, 5032, 47250, 17870, 67778, 45322, 21397, 90012, 93871, 27610, 14170, 62707, 61972, 62707, 28038, 25278, 62088 } },
+        .{ .add_range_closed = .{ 13773, 13854 } },
+        .{ .add_range_closed = .{ 6766, 6909 } },
+        .{ .remove = 32168 },
+        .{ .contains = 64566 },
+        .{ .add_many = &.{ 48948, 31144, 22, 49190, 25646, 78018, 10133, 76937, 48583, 30673, 22, 90948, 31107, 23386, 46995, 68047, 16320, 49577, 677, 37978, 47808, 27610, 88520, 70996, 62004, 94019, 43879, 13907, 1949, 28038 } },
+        .{ .add_range_closed = .{ 4099, 4188 } },
+        .{ .add_many = &.{ 82655, 56815, 86334, 62004, 732, 62004, 40661, 47808, 73862, 93192, 38013, 53393, 677, 28543, 85664, 36133, 80365, 42126, 75508, 78529, 4132, 60102 } },
+        .{ .remove = 36559 },
+        .{ .remove = 36559 },
+        .{ .contains = 49133 },
+        .{ .add_range_closed = .{ 4583, 4758 } },
+        .{ .add_range_closed = .{ 36, 170 } },
+        .{ .add_many = &.{ 23232, 66772, 48948, 33025, 56815, 56104, 44748, 52498, 27950, 60102, 42168, 45924, 18860, 22730, 50616, 47654, 12354, 48252, 54560, 23558, 95317, 68095 } },
+        .{ .add_many = &.{ 59501, 37670, 76761, 62233, 60102, 36703, 48923, 79184, 34000, 56232, 14170, 32742, 46325, 54945, 43678, 8533, 25708, 95293, 20267, 52246, 48836, 8505, 11355 } },
+        .{ .add_many = &.{ 68140, 8533, 11355, 89774, 22890, 37126, 48886, 11355, 85535, 53796, 83412, 31153, 62004, 82694, 23047, 31922, 52246, 11355, 11355, 54168, 90585, 55515, 77388, 39683, 33899, 65437 } },
+        .{ .add_many = &.{ 90915, 43523, 677, 1795, 91917, 77704, 2156, 2123, 17697, 26518, 87440, 95293, 39797, 76339, 60102, 70347, 58901, 22858, 73958, 22727, 46971, 1949 } },
+
+        .{ .add_many = &.{ 53393, 21069, 57726, 19617, 78427, 65705, 2198, 7957, 66342, 85444, 95090, 52246, 30486 } },
+    });
 }
 
 const std = @import("std");
@@ -183,3 +485,4 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
+const c = zroaring.c.root;

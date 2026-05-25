@@ -2,7 +2,7 @@
 
 set -xe
 
-zig build -Dfuzz-exe
+zig build -Dfuzz-exe # --verbose
 
 #
 # appease afl warnings

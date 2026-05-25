@@ -188,7 +188,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
 const testio = testing.io;
 
 fn validateAll(allocator: mem.Allocator, cr_f: Io.File) !void {
-    if (!@import("build-options").with_croaring) return;
+    // if (!@import("build-options").with_croaring) return;
     // Basic tests:
     try validateRoundTrip(allocator, testio, .empty, &.{}, false, cr_f);
     try validateRoundTrip(allocator, testio, .single_zero, &.{0}, false, cr_f);
@@ -285,6 +285,7 @@ test validateAll {
 }
 
 test "allocation failures" {
+    if (!@import("build-options").run_slow_tests) return error.SkipZigTest;
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
     const crf = try tmpdir.dir.createFile(testio, "cr_f", .{ .read = true });
@@ -325,192 +326,6 @@ test "without runs" {
 
 test "with runs" {
     try validateTestdata(testing.io, "testdata/bitmapwithruns.bin");
-}
-
-const Op = union(enum) {
-    add: u32,
-    add_many: []const u32,
-    add_range_closed: [2]u32,
-    remove: u32,
-    contains: u32,
-    contains_many: []const u32,
-    get_cardinality: u64,
-    clear,
-};
-
-fn perform_ops(ops: []const Op) !void {
-    const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
-    defer c.roaring_bitmap_free(cr);
-    var zr: Bitmap = .empty;
-    defer zr.deinit(testgpa);
-
-    for (ops) |op| {
-        errdefer {
-            std.debug.print("failed op: {}\n", .{op});
-            std.debug.print("{}\n", .{op});
-            std.debug.print("zr={f}\n", .{zr});
-            c.roaring_bitmap_printf(cr);
-        }
-        std.debug.print("op: {}\n", .{op});
-        std.debug.print("zr={f}\n", .{zr});
-        switch (op) {
-            .add => |x| {
-                c.roaring_bitmap_add(cr, x);
-                try zr.add(testgpa, x);
-            },
-            .add_many => |x| {
-                c.roaring_bitmap_add_many(cr, x.len, x.ptr);
-                _ = try zr.add_many(testgpa, x);
-            },
-            .add_range_closed => |x| {
-                c.roaring_bitmap_add_range_closed(cr, x[0], x[1]);
-                try zr.add_range_closed(testgpa, x[0], x[1]);
-            },
-            .remove => |x| {
-                c.roaring_bitmap_remove(cr, x);
-                try zr.remove(testgpa, x);
-            },
-
-            .contains => |x| {
-                try testing.expectEqual(
-                    c.roaring_bitmap_contains(cr, x),
-                    zr.contains(x),
-                );
-            },
-            .contains_many => |x| for (x) |v| {
-                try testing.expectEqual(
-                    c.roaring_bitmap_contains(cr, v),
-                    zr.contains(v),
-                );
-            },
-            .get_cardinality => |x| {
-                try testing.expectEqual(x, c.roaring_bitmap_get_cardinality(cr));
-                try testing.expectEqual(x, zr.get_cardinality());
-            },
-            .clear => {
-                c.roaring_bitmap_clear(cr);
-                zr.clear_retaining_capacity();
-            },
-            // else => std.debug.panic("TODO {t}", .{op}),
-        }
-    }
-}
-
-test "crash reproductions" {
-    if (!@import("build-options").with_croaring) return;
-
-    try perform_ops(&.{
-        .{ .add_many = &.{ 98128, 17714 } },
-        .{ .add_range_closed = .{ 0, 100 } },
-        .{ .contains = 98128 },
-        .{ .contains = 17714 },
-        .{ .contains = 0 },
-        .{ .contains = 50 },
-        .{ .contains = 100 },
-        .{ .get_cardinality = 103 },
-    });
-
-    try perform_ops(&.{
-        .{ .add = 28939 },
-        .{ .add_range_closed = .{ 58, 109 } },
-        .{ .add_range_closed = .{ 15, 158 } },
-        .{ .contains = 65277 },
-    });
-
-    try perform_ops(&.{
-        .{ .add_range_closed = .{ 6, 140 } },
-        .{ .remove = 13 },
-    });
-
-    try perform_ops(&.{
-        .{ .add = 37022 },
-        .{ .add_range_closed = .{ 0, 169 } },
-        .{ .add = 56276 },
-        .{ .add_range_closed = .{ 79, 196 } },
-    });
-
-    try perform_ops(&.{
-        .{ .add_range_closed = .{ 51, 194 } },
-        .{ .add = 10 },
-    });
-
-    try perform_ops(&.{
-        .{ .add_many = &.{ 46535, 45534 } },
-        .{ .add_range_closed = .{ 11, 181 } },
-    });
-
-    try perform_ops(&.{
-        .{ .remove = 87070 },
-        .{ .add_range_closed = .{ 166, 192 } },
-        .{ .add = 0 },
-        .{ .add = 512 },
-        .{ .add = 256 },
-        .{ .add = 167 },
-        .{ .add = 26389 },
-        .{ .add_range_closed = .{ 104, 178 } },
-        .{ .add = 22272 },
-        .{ .add = 0 },
-        .{ .add = 7168 },
-        .{ .add = 512 },
-        .{ .add = 0 },
-        .{ .add = 256 },
-        .{ .add = 194 },
-        .{ .contains = 107 },
-        .{ .contains = 73080 },
-        .{ .add = 28 },
-    });
-
-    try perform_ops(&.{
-        .{ .add_range_closed = .{ 39, 139 } },
-        .{ .add_range_closed = .{ 12690, 12753 } },
-    });
-
-    try perform_ops(&.{
-        .{ .add = 62568 },
-        .{ .remove = 62568 },
-    });
-    try perform_ops(&.{
-        .{ .remove = 87070 },
-        .{ .add_range_closed = .{ 166, 192 } },
-        .{ .add = 0 },
-        .{ .add = 512 },
-        .{ .add = 256 },
-        .{ .add = 167 },
-        .{ .add = 26389 },
-        .{ .add_range_closed = .{ 104, 178 } },
-        .{ .add = 22272 },
-        .{ .add = 0 },
-        .{ .add = 7168 },
-        .{ .add = 512 },
-        .{ .add = 0 },
-        .{ .add = 256 },
-        .{ .add = 194 },
-        .{ .add = 28 },
-    });
-
-    try perform_ops(&.{
-        .{ .add = 50119 },
-        .{ .add = 62568 },
-        .{ .remove = 62568 },
-        .{ .add_range_closed = .{ 10276, 10424 } },
-        .{ .remove = 49098 },
-        .{ .clear = {} },
-        .{ .add = 62568 },
-        .{ .remove = 62568 },
-        .{ .add = 49721 },
-    });
-
-    try perform_ops(&.{
-        .{ .add = 49191 },
-        .{ .add_range_closed = .{ 66, 136 } },
-        .{ .add_range_closed = .{ 13544, 13684 } },
-        .{ .add_range_closed = .{ 14890, 15026 } },
-        .{ .add = 0 },
-        .{ .add_range_closed = .{ 8080, 8142 } },
-        .{ .add_range_closed = .{ 3464, 3609 } },
-        .{ .remove = 92533 },
-        .{ .add = 512 },
-    });
 }
 
 const std = @import("std");

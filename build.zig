@@ -3,9 +3,9 @@ const afl = @import("afl_kit");
 
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
-    const with_croaring = b.option(bool, "with-croaring", "Don't include src/c/roaring.c in test exe.  Default false.  Use when fuzzing with zig to prevent undefined symbols (issue #31412).") orelse false;
-    options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
-    options.addOption(bool, "with_croaring", with_croaring);
+    options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output.") orelse false);
+    options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "show fuzzer output with crash reproductions.") orelse false);
+    options.addOption(bool, "run_slow_tests", b.option(bool, "run-slow-tests", "perform long running tests such as checkAllocationFailures().") orelse false);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
-    const use_llvm = b.option(bool, "llvm", "use llvm. false by default. needed when fuzzing by zig 0.15.2.") orelse false;
+    const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
     const tests = b.addTest(.{
         .root_module = zrmod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
@@ -31,12 +31,20 @@ pub fn build(b: *std.Build) !void {
 
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
 
-    if (with_croaring) {
-        tests.root_module.addIncludePath(b.path("src"));
-        tests.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
-        tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-        tests.root_module.link_libc = true;
-    }
+    const libcroaring = b.addLibrary(.{
+        .name = "croaring",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    libcroaring.root_module.addIncludePath(b.path("src/c"));
+    libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    libcroaring.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
+    libcroaring.root_module.link_libc = true;
+    b.installArtifact(libcroaring);
+    tests.root_module.linkLibrary(libcroaring);
+
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
@@ -76,9 +84,34 @@ pub fn build(b: *std.Build) !void {
                 },
             }),
         });
+        afl_obj.root_module.linkLibrary(libcroaring);
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
-        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{}).?;
-        b.getInstallStep().dependOn(&b.addInstallBinFile(afl_fuzz, "fuzz-afl").step);
+        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{
+            // "-Lzig-out/lib/",
+            // "-lcroaring",
+        }).?;
+
+        const install_afl_fuzz = b.addInstallBinFile(afl_fuzz, "fuzz-afl");
+        b.getInstallStep().dependOn(&install_afl_fuzz.step);
     }
+
+    const exe = b.addExecutable(.{
+        .name = "main",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .optimize = optimize,
+            .target = target,
+            .imports = &.{
+                .{ .name = "zroaring", .module = zrmod },
+                .{ .name = "build-options", .module = options.createModule() },
+                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+            },
+        }),
+    });
+    b.installArtifact(exe);
+    const exe_run = b.step("run", "run main exe");
+    const run_exe = b.addRunArtifact(exe);
+    if (b.args) |args| run_exe.addArgs(args);
+    exe_run.dependOn(&run_exe.step);
 }
