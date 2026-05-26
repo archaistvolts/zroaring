@@ -1411,7 +1411,7 @@ pub fn format(r: Bitmap, w: *Io.Writer) !void {
     try w.writeByte('}');
 }
 
-pub fn formatLong(r: Bitmap) FmtLong {
+pub fn fmtLong(r: Bitmap) FmtLong {
     return .{ .r = r };
 }
 
@@ -1654,11 +1654,13 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
     if (i >= 0) {
         // TODO // r.unshare_container_at_index(i);
         const iu: u32 = @intCast(i);
-        var container = r.array.ptr(.containers)[iu];
+        const container = &r.array.ptr(.containers)[iu];
+        const oldc = container.*;
         const oldCardinality = container.get_cardinality(r.*);
         const container2 = try container.remove(allocator, @truncate(val), r);
-        if (container2 != container) {
-            container.deinit_blocks(r.*);
+        if (container2 != oldc) {
+            if (oldc.blockoffset != container2.blockoffset)
+                oldc.deinit_blocks(r.*);
             r.array.ptr(.containers)[iu] = container2;
         }
 

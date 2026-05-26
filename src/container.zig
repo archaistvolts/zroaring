@@ -839,7 +839,7 @@ pub const Container = packed struct(u64) {
 
     /// Remove `pos' from `run'. Returns true if `pos' was present.
     fn run_container_remove(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
-        var runs = run.blocks_as(.run, r.*)[0..run.cardinality];
+        const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) {
             const indexu: u32 = @bitCast(mindex);
@@ -854,18 +854,21 @@ pub const Container = packed struct(u64) {
         mindex = -mindex - 2; // points to preceding value, possibly -1
         if (mindex >= 0) { // possible match
             const index: u32 = @bitCast(mindex);
-            const offset: i32 = pos - runs[index].value;
-            const runlength = runs[index].length;
+            const offset = @as(i32, pos) - runs[index].value;
+            const runlength: i32 = runs[index].length;
             if (offset < runlength) {
-                // need to break in two
-                runs[index].length = @intCast(offset - 1);
-                // need to insert
+                // break in two, insert
                 const newvalue = pos + 1;
                 const newlength: i32 = runlength - offset - 1;
+                const cid = run - r.array.ptr(.containers);
                 try r.makeRoomAtIndex(allocator, run, @intCast(mindex + 1));
-                runs.len += 1;
-                runs[index + 1].value = newvalue;
-                runs[index + 1].length = @intCast(newlength);
+                const run2 = r.array.ptr(.containers)[cid];
+                const runs2 = run2.blocks_as(.run, r.*);
+                runs2[index].length = @intCast(offset - 1);
+                runs2.ptr[index + 1] = .{
+                    .value = newvalue,
+                    .length = @intCast(newlength),
+                };
                 return true;
             } else if (offset == runlength) {
                 runs[index].length -= 1;
@@ -909,7 +912,8 @@ pub const Container = packed struct(u64) {
         copy: bool,
         r: *Bitmap,
     ) !void {
-        var capacity = run.calc_capacity();
+        const run_cap = run.calc_capacity();
+        var capacity = run_cap;
         const newCapacity = @max(min, if (capacity == 0)
             0
         else if (capacity < 64)
@@ -919,7 +923,7 @@ pub const Container = packed struct(u64) {
         else
             capacity * 5 / 4);
         capacity = newCapacity;
-        const morecap = capacity - run.calc_capacity();
+        const morecap = capacity - run_cap;
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
 
         if (copy) {
@@ -946,6 +950,7 @@ pub const Container = packed struct(u64) {
     /// memory deallocation
     pub fn remove(c: *Container, allocator: mem.Allocator, val: u16, r: *Bitmap) !Container {
         trace(@src(), "{}", .{val});
+        const cid = c - r.array.ptr(.containers);
         // TODO // c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
             .bitset => {
@@ -954,19 +959,17 @@ pub const Container = packed struct(u64) {
                         return try c.array_container_from_bitset(allocator, r);
                     }
                 }
-                return c.*;
             },
             .array => {
                 _ = c.array_container_remove(val, r.*);
-                return c.*;
             },
             .run => {
                 // per Java, no container type adjustments are done (revisit?)
                 _ = try c.run_container_remove(allocator, val, r);
-                return c.*;
             },
             else => unreachable,
         }
+        return r.array.ptr(.containers)[cid];
     }
 };
 

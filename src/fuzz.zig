@@ -272,6 +272,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 try std.testing.expectEqual(c.roaring_bitmap_get_cardinality(oracle), r.get_cardinality());
             },
             .run_optimize => {
+                fuzzprint("{{}} }},\n", .{});
                 try testing.expectEqual(
                     c.roaring_bitmap_run_optimize(oracle),
                     try r.run_optimize(testgpa),
@@ -297,7 +298,7 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
     errdefer {
         fuzzprint("failed op: {}\n", .{op});
         fuzzprint("{}\n", .{op});
-        fuzzprint("{f}\n", .{zr.formatLong()});
+        fuzzprint("{f}\n", .{zr.fmtLong()});
         c.roaring_bitmap_printf(cr);
     }
     fuzzprint("{}\n", .{op});
@@ -549,6 +550,20 @@ test "crash reproductions" {
         .{ .run_optimize = {} },
         .{ .add_many = &.{ 9606, 35473, 53110, 96833, 56206, 19615, 89556 } },
         .{ .add_range_closed = .{ 6425, 6597 } },
+    });
+
+    try perform_ops(&.{ // break run in two when blockslen==blockscapacity
+        .{ .add_many = &.{ 71302, 41283, 5184, 53083 } },
+        .{ .run_optimize = {} },
+        .{ .get_cardinality = 4 },
+        .{ .add_range_closed = .{ 3356, 3443 } },
+        .{ .add_range_closed = .{ 11478, 11585 } },
+        .{ .add_range_closed = .{ 10140, 10242 } },
+        .{ .add_range_closed = .{ 4020, 4068 } },
+        .{ .add_range_closed = .{ 1593, 1748 } },
+        .{ .get_cardinality = 508 },
+        .{ .run_optimize = {} },
+        .{ .remove = 1680 },
     });
 }
 
