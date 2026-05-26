@@ -537,6 +537,19 @@ test "crash reproductions" {
         .{ .add_many = &.{ 56204, 13694, 95054, 72879 } },
         .{ .run_optimize = {} },
     });
+
+    try perform_ops(&.{ // run_container_add_range_nruns stale ptr
+        .{ .add = 86940 },
+        .{ .add_many = &.{ 78327, 33246, 28925, 27574, 3773, 75436, 90838 } },
+        .{ .contains_many = &.{ 4218, 53202, 73992, 78031 } },
+        .{ .add_range_closed = .{ 12485, 12562 } },
+        .{ .add_range_closed = .{ 1788, 1883 } },
+        .{ .add_many = &.{ 15443, 80245, 46573, 8525, 4618, 57642, 4618 } },
+        .{ .remove = 61611 },
+        .{ .run_optimize = {} },
+        .{ .add_many = &.{ 9606, 35473, 53110, 96833, 56206, 19615, 89556 } },
+        .{ .add_range_closed = .{ 6425, 6597 } },
+    });
 }
 
 test "crash0" {

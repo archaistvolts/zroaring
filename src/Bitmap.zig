@@ -523,14 +523,17 @@ fn run_container_add_range_nruns(
     nruns_greater: u32,
 ) !void {
     const nruns_common = run.cardinality - nruns_less - nruns_greater;
-    const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
     if (nruns_common == 0) {
+        const cid = run - r.array.ptr(.containers);
         try r.makeRoomAtIndex(allocator, run, @truncate(nruns_less));
+        const run2 = r.array.ptr(.containers)[cid];
+        const runs = run2.blocks_as(.run, r.*)[0..run2.cardinality];
         runs.ptr[nruns_less] = .{
             .value = @truncate(min),
             .length = @truncate(max - min),
         };
     } else {
+        const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
         const common_min = runs[nruns_less].value;
         const common_max = runs[nruns_less + nruns_common - 1].value +
             runs[nruns_less + nruns_common - 1].length;
