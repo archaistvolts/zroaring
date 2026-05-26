@@ -1101,34 +1101,41 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
 ///
 /// If a conversion occurs, the caller is responsible to free the original
 /// container and he becomes responsible to free the new one.
-pub fn convert_run_to_efficient_container(r: Bitmap, c: Container, allocator: mem.Allocator) !Container {
-    _ = allocator;
+pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
     assert(c.typecode == .run);
     const size_as_run_container = c.serialized_size_in_bytes();
     const size_as_bitset_container = @sizeOf(root.Bitset);
-    const card = c.compute_cardinality(r);
+    const card = c.compute_cardinality(r.*);
     const size_as_array_container = card * @sizeOf(u16);
     const min_size_non_run = @min(size_as_bitset_container, size_as_array_container);
     if (size_as_run_container <= min_size_non_run) { // no conversion
         return c;
     }
     if (card <= C.DEFAULT_MAX_SIZE) {
-        unreachable; // TODO
-        // // to array
-        // var answer = try ArrayContainer.init_with_capacity(allocator, card);
-        // answer.cardinality = 0;
-        // for (0..c.cardinality) |rlepos| {
-        //     const run_start = c.runs[rlepos].value;
-        //     const run_end = run_start + c.runs[rlepos].length;
+        // to array
+        const nblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
+        var answer: Container = .{
+            .blockoffset = @intCast(r.array.ptr(.blockslen).*),
+            .cardinality = 0,
+            .nblocks_minus1 = @intCast(nblocks - 1),
+            .typecode = .array,
+        };
+        try r.extend_array(allocator, 0, nblocks);
+        r.array.ptr(.blockslen).* += nblocks;
+        const array = answer.blocks_as(.array, r.*);
+        const runs = c.blocks_as(.run, r.*);
+        for (0..c.cardinality) |rlepos| {
+            const run_start: u32 = runs[rlepos].value;
+            const run_end = run_start + runs[rlepos].length;
 
-        //     var run_value = run_start;
-        //     while (run_value < run_end) : (run_value += 1) {
-        //         answer.get_header()[answer.cardinality] = run_value;
-        //         answer.cardinality += 1;
-        //     }
-        // }
-
-        // return .create(allocator, answer);
+            var run_value: u16 = @truncate(run_start);
+            while (run_value <= run_end) : (run_value += 1) {
+                array[answer.cardinality] = run_value;
+                answer.cardinality += 1;
+            }
+        }
+        c.deinit_blocks(r.*);
+        return answer;
     }
     unreachable; // TODO
     // // else to bitset

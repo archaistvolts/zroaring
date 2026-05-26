@@ -348,7 +348,10 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
         },
         // else => std.debug.panic("TODO {t}", .{op}),
     }
-    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr), zr.get_cardinality());
+    try testing.expectEqual(
+        c.roaring_bitmap_get_cardinality(cr),
+        zr.get_cardinality(),
+    );
 }
 
 fn perform_ops(ops: []const FuzzOp) !void {
@@ -526,6 +529,13 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 7557, 7640 } },
         .{ .run_optimize = {} },
         .{ .add_many = &.{ 66305, 6151, 80245, 13872, 7641, 7641 } },
+    });
+
+    try perform_ops(&.{ // run optimize run to array
+        .{ .add_range_closed = .{ 13042, 13044 } },
+        .{ .add = 62034 },
+        .{ .add_many = &.{ 56204, 13694, 95054, 72879 } },
+        .{ .run_optimize = {} },
     });
 }
 
