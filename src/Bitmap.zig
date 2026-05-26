@@ -243,7 +243,7 @@ pub fn deserialize_file_reader(
     assert(freader.logicalPos() == rb.portable_size());
 }
 
-pub fn insert_new_kv_at(
+pub fn insert_new_key_value_at(
     r: *Bitmap,
     allocator: mem.Allocator,
     key: u16,
@@ -251,14 +251,13 @@ pub fn insert_new_kv_at(
     i: u32,
 ) !void {
     try r.extend_array(allocator, 1, 1);
-    const ks = r.array.ptr(.keys);
-    const cs = r.array.ptr(.containers);
     const len = r.array.ptr(.len).*;
-    @memmove(ks + i + 1, ks[i..len]);
-    ks[i] = key;
-    @memmove(cs + i + 1, cs[i..len]);
-    // trace(@src(), "{}", .{c});
-    cs[i] = c;
+    const ks = r.array.ptr(.keys)[0..len];
+    const cs = r.array.ptr(.containers)[0..len];
+    @memmove(ks.ptr + i + 1, ks[i..]);
+    ks.ptr[i] = key;
+    @memmove(cs.ptr + i + 1, cs[i..]);
+    cs.ptr[i] = c;
     r.array.ptr(.len).* += 1;
     r.array.ptr(.blockslen).* += 1;
 }
@@ -281,6 +280,7 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
 /// returns true when `value` was added to the bitmap, false if already present.
 pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     defer assert(r.contains(value));
+    defer r.assert_valid();
 
     if (r.is_empty()) {
         @branchHint(.unlikely);
@@ -311,14 +311,14 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
             try r.realloc_array(allocator, capacity + 1, blockslen + 1);
         }
 
-        try r.insert_new_kv_at(allocator, key, .{
+        try r.insert_new_key_value_at(allocator, key, .{
             .blockoffset = @intCast(blockslen),
             .nblocks_minus1 = 0,
             .cardinality = 0,
             .typecode = .array,
         }, cid);
         const newac = &r.array.ptr(.containers)[cid];
-        _ = try newac.add(allocator, r, valuelow);
+        _ = try newac.add(allocator, r, valuelow); // ignore return. always an array with cardinality 1
         return true;
     }
 }
@@ -948,6 +948,8 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
 /// Returns true if the result has at least one run container.
 /// Additional savings might be possible by calling `shrink_to_fit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
+    r.assert_valid();
+    defer r.assert_valid();
     var answer = false;
     for (0..r.array.ptr(.len).*) |i| {
         // TODO // r.unshare_container_at_index(i); // TODO: this introduces extra cloning!
@@ -1014,26 +1016,26 @@ pub fn convert_run_optimize(r: *Bitmap, cid: u32, allocator: mem.Allocator) !Con
         var prev: i32 = -2;
         var run_start: i32 = -1;
 
-        const c2 = &r.array.ptr(.containers)[cid];
-        const card = c2.cardinality;
+        const ac = &r.array.ptr(.containers)[cid];
+        const card = ac.cardinality;
         rc.cardinality = 0;
         assert(card > 0);
-        const c_qua_array = c2.blocks_as(.array, r.*)[0..c2.cardinality];
+        const array = ac.blocks_as(.array, r.*)[0..ac.cardinality];
         var i: u32 = 0;
         while (i < card) : (i += 1) {
-            const cur_val = c_qua_array[i];
+            const cur_val = array[i];
             if (cur_val != prev + 1) {
                 // new run starts; flush old one, if any
                 if (run_start != -1) rc.add_run(@intCast(run_start), @intCast(prev), r.*);
                 run_start = cur_val;
             }
-            prev = c_qua_array[i];
+            prev = array[i];
         }
         assert(run_start >= 0);
         // now prev is the last seen value
         rc.add_run(@intCast(run_start), @intCast(prev), r.*);
-        c2.deinit_blocks(r.*);
-        trace(@src(), "rc={}", .{rc});
+        ac.deinit_blocks(r.*);
+        r.array.ptr(.blockslen).* += nblocks;
         return rc;
     } else if (c.typecode == .bitset) { // run conversions on bitset
         unreachable; // TODO
@@ -1238,7 +1240,8 @@ pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
             return false;
         }
         if (!c.internal_validate(reason, r)) {
-            trace(@src(), "invalid container at index={} {f}", .{ c - r.array.ptr(.containers), c.fmt(r) });
+            const cid = c - r.array.ptr(.containers);
+            trace(@src(), "invalid container at index={} {f}", .{ cid, c.fmt(r, keys[cid]) });
             // reason should already be set
             if (reason.* == null) {
                 reason.* = "container failed to validate but no reason given";
@@ -1393,10 +1396,39 @@ pub fn format(r: Bitmap, w: *Io.Writer) !void {
     try w.writeByte('{');
     for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
         if (i != 0) try w.writeByte(',');
-        try w.print("{}:{f}", .{ key, c.fmt(r) });
+        try w.print("{}:{f}", .{ key, c.fmt(r, key) });
     }
     try w.writeByte('}');
 }
+
+pub fn formatLong(r: Bitmap) FmtLong {
+    return .{ .r = r };
+}
+
+pub const FmtLong = struct {
+    r: Bitmap,
+    pub fn format(f: FmtLong, w: *Io.Writer) !void {
+        const r = f.r;
+        if (r.is_empty()) {
+            try w.writeAll("empty");
+            return;
+        }
+        try w.print("Bitmap: len/cap={}/{} blocks:len/cap={}/{} {B:.1}. Containers: ", .{
+            r.array.ptr(.len).*,
+            r.array.ptr(.capacity).*,
+            r.array.ptr(.blockslen).*,
+            r.array.ptr(.blockscapacity).*,
+            Model.calcSize(r.array.calcLens()),
+        });
+
+        try w.writeByte('{');
+        for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
+            if (i != 0) try w.writeByte(',');
+            try w.print("{}:{f}", .{ key, c.fmtLong(r, key) });
+        }
+        try w.writeByte('}');
+    }
+};
 
 /// FROZEN SERIALIZATION FORMAT DESCRIPTION
 ///
@@ -1609,16 +1641,13 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
     defer r.assert_valid();
     const key: u16 = @truncate(val >> 16);
     const i = r.get_key_index(key);
-    trace(@src(), "val={} i={}", .{ val, i });
-    // trace(@src(), "{f}", .{r});
-
     if (i >= 0) {
         // TODO // r.unshare_container_at_index(i);
         const iu: u32 = @intCast(i);
-        const container = &r.array.ptr(.containers)[iu];
+        var container = r.array.ptr(.containers)[iu];
         const oldCardinality = container.get_cardinality(r.*);
         const container2 = try container.remove(allocator, @truncate(val), r);
-        if (container2 != container.*) {
+        if (container2 != container) {
             container.deinit_blocks(r.*);
             r.array.ptr(.containers)[iu] = container2;
         }

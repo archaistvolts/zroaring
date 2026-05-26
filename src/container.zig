@@ -38,11 +38,10 @@ pub const Container = packed struct(u64) {
         return @as(u16, c.nblocks_minus1) + 1;
     }
 
-    pub fn is_full(c: Container) bool {
+    pub fn is_at_capacity(c: Container) bool {
         return switch (c.typecode) {
-            .array => c.cardinality == c.nblocks() * C.BLOCK_LEN16,
-            .bitset => c.cardinality == C.MAX_KEY_CARDINALITY,
-            .run => unreachable,
+            .array, .run => c.cardinality == c.calc_capacity(),
+            .bitset => unreachable, // nonsense. bitset is always at capacity.
             .shared => unreachable,
         };
     }
@@ -85,7 +84,8 @@ pub const Container = packed struct(u64) {
         var reason: ?[]const u8 = null;
         if (!c.internal_validate(&reason, r)) {
             trace(@src(), "{s}", .{reason.?});
-            trace(@src(), "{f}", .{c.fmt(r)});
+            const cid = c - r.array.ptr(.containers);
+            trace(@src(), "{f}", .{c.fmt(r, r.array.ptr(.keys)[cid])});
             switch (c.typecode) {
                 .array => trace(@src(), "{any}", .{c.blocks_as(.array, r)[0..c.cardinality]}),
                 .bitset => {},
@@ -143,7 +143,7 @@ pub const Container = packed struct(u64) {
         const morecap = newcap - c.cardinality;
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN16);
 
-        // trace(@src(), "newcap={} morecap={} moreblocks={} cid={}", .{ newcap, morecap, moreblocks, cid });
+        // trace(@src(), "newcap={} morecap={} moreblocks={} c={}", .{ newcap, morecap, moreblocks, c });
         if (preserve) {
             try add_container_blocks(r, allocator, c, moreblocks);
         } else {
@@ -155,7 +155,7 @@ pub const Container = packed struct(u64) {
         switch (c.typecode) {
             .array => {
                 const cid = c - r.array.ptr(.containers);
-                if (c.is_full()) {
+                if (c.is_at_capacity()) {
                     try c.array_container_grow(allocator, r, c.cardinality + 1, true);
                 }
 
@@ -194,15 +194,14 @@ pub const Container = packed struct(u64) {
             return 0;
         } else if (ac.cardinality < maxcard) {
             const acid = ac - r.array.ptr(.containers);
-            if (ac.is_full()) {
+            if (ac.is_at_capacity()) {
                 try ac.array_container_grow(allocator, r, ac.cardinality + 1, true);
             }
 
             const ac2 = &r.array.ptr(.containers)[acid];
             const array2 = ac2.blocks_as(.array, r.*)[0..ac2.cardinality];
-            // trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
-
             const insertidx: u32 = @intCast(-loc - 1);
+            // trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
             @memmove(array2.ptr + insertidx + 1, array2[insertidx..]);
             array2[insertidx] = value;
             ac2.cardinality += 1;
@@ -632,15 +631,20 @@ pub const Container = packed struct(u64) {
     }
 
     pub const fmt = Fmt.init;
+    pub const fmtLong = Fmt.initLong;
     pub const Fmt = struct {
         r: Bitmap,
         c: Container,
+        mode: enum { short, long } = .short,
+        key: u16,
 
         const Rle = struct {
             rle: ?root.Rle16,
+            key: u16,
             pub fn format(rf: Rle, w: *std.Io.Writer) !void {
                 if (rf.rle) |rle| {
-                    const value: u32 = rle.value;
+                    const hi = @as(u32, rf.key) << 16;
+                    const value: u32 = hi | rle.value;
                     try w.print("[{},{}]", .{ value, value + rle.length });
                 } else try w.writeAll("null");
             }
@@ -652,35 +656,54 @@ pub const Container = packed struct(u64) {
                 try w.writeAll("uninit");
                 return;
             }
+            const hi = @as(u32, f.key) << 16;
+            try w.print("{t} @{}-{} #{}:", .{ c.typecode, c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
             switch (c.typecode) {
                 .array => {
                     const vals0 = c.blocks_as(.array, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
-                    try w.print("array values:{} [{?}..{?}]", .{
-                        vals.len,
-                        if (vals.len > 0) vals[0] else null,
-                        if (vals.len > 1) vals[vals.len - 1] else null,
-                    });
+                    switch (f.mode) {
+                        .short => try w.print("[{?}..{?}]", .{
+                            if (vals.len > 0) hi | vals[0] else null,
+                            if (vals.len > 1) hi | vals[vals.len - 1] else null,
+                        }),
+                        .long => {
+                            try w.writeByte('[');
+                            for (vals, 0..) |val, i| {
+                                if (i != 0) try w.writeByte(',');
+                                try w.print("{}", .{hi | val});
+                            }
+                            try w.writeByte(']');
+                        },
+                    }
                 },
                 .run => {
                     const vals0 = c.blocks_as(.run, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
-                    try w.print("runs:{} {f}..{f}", .{
-                        vals.len,
-                        Rle{ .rle = if (vals.len > 0) vals[0] else null },
-                        Rle{ .rle = if (vals.len > 1) vals[vals.len - 1] else null },
-                    });
+                    switch (f.mode) {
+                        .short => try w.print("{f}..{f}", .{
+                            Rle{ .rle = if (vals.len > 0) vals[0] else null, .key = f.key },
+                            Rle{ .rle = if (vals.len > 1) vals[vals.len - 1] else null, .key = f.key },
+                        }),
+                        .long => {
+                            for (vals, 0..) |rle, i| {
+                                if (i != 0) try w.writeByte(',');
+                                try w.print("{f}", .{Rle{ .rle = rle, .key = f.key }});
+                            }
+                        },
+                    }
                 },
-                .bitset => {
-                    try w.print("bitset cardinality={}", .{c.cardinality});
-                },
+                .bitset => {},
                 .shared => {
                     try w.writeAll("TODO: shared");
                 },
             }
         }
-        pub fn init(c: Container, r: Bitmap) Fmt {
-            return .{ .c = c, .r = r };
+        pub fn init(c: Container, r: Bitmap, key: u16) Fmt {
+            return .{ .c = c, .r = r, .key = key, .mode = .short };
+        }
+        pub fn initLong(c: Container, r: Bitmap, key: u16) Fmt {
+            return .{ .c = c, .r = r, .key = key, .mode = .long };
         }
     };
 

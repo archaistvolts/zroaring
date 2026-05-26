@@ -50,6 +50,7 @@ pub const FuzzOp = union(enum) {
     contains_many: []const u32,
     get_cardinality: u64,
     clear,
+    run_optimize,
 
     pub const Tag = std.meta.Tag(FuzzOp);
 };
@@ -143,6 +144,10 @@ fn hashMapOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 fuzzprint("{} }},\n", .{oracle.count()});
                 try std.testing.expectEqual(oracle.count(), r.get_cardinality());
             },
+            .run_optimize => {
+                fuzzprint("{{}} }},\n", .{});
+                _ = try r.run_optimize(testgpa);
+            },
         }
         // for (r.array.ptr(.containers)[0..r.array.ptr(.len).*]) |c| {
         //     fuzzprint("{f}\n", .{c.fmt(r)});
@@ -192,6 +197,10 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
 
     const oracle = c.roaring_bitmap_create().?;
     defer c.roaring_bitmap_free(oracle);
+
+    errdefer {
+        fuzzprint("{f}\n", .{r});
+    }
 
     fuzzprint("\n\n-- init --\n", .{});
 
@@ -262,6 +271,12 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 fuzzprint("{} }},\n", .{c.roaring_bitmap_get_cardinality(oracle)});
                 try std.testing.expectEqual(c.roaring_bitmap_get_cardinality(oracle), r.get_cardinality());
             },
+            .run_optimize => {
+                try testing.expectEqual(
+                    c.roaring_bitmap_run_optimize(oracle),
+                    try r.run_optimize(testgpa),
+                );
+            },
         }
         // for (r.array.ptr(.containers)[0..r.array.ptr(.len).*]) |c| {
         //     fuzzprint("{f}\n", .{c.fmt(r)});
@@ -282,10 +297,10 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
     errdefer {
         fuzzprint("failed op: {}\n", .{op});
         fuzzprint("{}\n", .{op});
-        fuzzprint("zr={f}\n", .{zr});
+        fuzzprint("{f}\n", .{zr.formatLong()});
         c.roaring_bitmap_printf(cr);
     }
-    fuzzprint("op: {}\n", .{op});
+    fuzzprint("{}\n", .{op});
     switch (op) {
         .add => |x| {
             c.roaring_bitmap_add(cr, x);
@@ -300,10 +315,11 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
             try zr.add_range_closed(testgpa, x[0], x[1]);
         },
         .remove => |x| {
-            c.roaring_bitmap_remove(cr, x);
-            try zr.remove(testgpa, x);
+            try testing.expectEqual(
+                c.roaring_bitmap_remove_checked(cr, x),
+                try zr.remove_checked(testgpa, x),
+            );
         },
-
         .contains => |x| {
             try testing.expectEqual(
                 c.roaring_bitmap_contains(cr, x),
@@ -323,6 +339,12 @@ fn perform_op(op: FuzzOp, cr: [*c]c.roaring_bitmap_t, zr: *Bitmap) !void {
         .clear => {
             c.roaring_bitmap_clear(cr);
             zr.clear_retaining_capacity();
+        },
+        .run_optimize => {
+            try testing.expectEqual(
+                c.roaring_bitmap_run_optimize(cr),
+                try zr.run_optimize(testgpa),
+            );
         },
         // else => std.debug.panic("TODO {t}", .{op}),
     }
@@ -497,6 +519,13 @@ test "crash reproductions" {
         .{ .add_many = &.{ 27047, 95148, 96415, 27461 } },
         .{ .get_cardinality = 260 },
         .{ .add_many = &.{ 16912, 74410, 93120, 59285 } },
+    });
+
+    try perform_ops(&.{
+        .{ .add = 26360 },
+        .{ .add_range_closed = .{ 7557, 7640 } },
+        .{ .run_optimize = {} },
+        .{ .add_many = &.{ 66305, 6151, 80245, 13872, 7641, 7641 } },
     });
 }
 
