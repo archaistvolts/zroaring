@@ -521,6 +521,32 @@ test "crash reproductions" {
         .{ .run_optimize = {} },
         .{ .remove = 1680 },
     });
+
+    try perform_ops(&.{ // convert_run_to_efficient_container integer overflow
+        .{ .run_optimize = {} },
+        .{ .contains = 6370 },
+        .{ .add_range_closed = .{ 8404, 8449 } },
+        .{ .get_cardinality = 46 },
+        .{ .add_range_closed = .{ 8349, 8534 } },
+        .{ .run_optimize = {} },
+        .{ .add_range_closed = .{ 8369, 8486 } },
+        .{ .get_cardinality = 186 },
+        .{ .add_range_closed = .{ 4477, 4544 } },
+        .{ .add_many = &.{ 4435, 42585, 13881, 34164, 21153 } },
+        .{ .contains_many = &.{ 50428, 72937, 13881, 35471, 2056, 52358 } },
+        .{ .add_range_closed = .{ 9468, 9585 } },
+        .{ .remove = 9559 },
+        .{ .add_many = &.{ 57594, 84215, 0, 9586, 57594, 3007 } },
+        .{ .run_optimize = {} },
+        .{ .run_optimize = {} },
+        .{ .contains_many = &.{ 9586, 9586, 76212, 6165 } },
+        .{ .remove = 42662 },
+        .{ .add_many = &.{57594} },
+        .{ .remove = 57594 },
+        .{ .add_range_closed = .{ 2639, 2642 } },
+        .{ .add_many = &.{ 4825, 65535 } },
+        .{ .run_optimize = {} },
+    });
 }
 
 test "crash0" {

@@ -1131,9 +1131,9 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: m
             const run_start: u32 = runs[rlepos].value;
             const run_end = run_start + runs[rlepos].length;
 
-            var run_value: u16 = @truncate(run_start);
+            var run_value: u32 = @truncate(run_start);
             while (run_value <= run_end) : (run_value += 1) {
-                array[answer.cardinality] = run_value;
+                array[answer.cardinality] = @intCast(run_value);
                 answer.cardinality += 1;
             }
         }
