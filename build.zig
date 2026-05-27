@@ -33,10 +33,7 @@ pub fn build(b: *std.Build) !void {
 
     const libcroaring = b.addLibrary(.{
         .name = "croaring",
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
     libcroaring.root_module.addIncludePath(b.path("src/c"));
     libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
@@ -84,7 +81,7 @@ pub fn build(b: *std.Build) !void {
                 },
             }),
         });
-        afl_obj.root_module.linkLibrary(libcroaring);
+        // afl_obj.root_module.linkLibrary(libcroaring);
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
         const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{
