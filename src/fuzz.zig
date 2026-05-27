@@ -42,10 +42,12 @@ pub const FuzzOp = union(enum) {
     get_cardinality: u64,
     clear,
     run_optimize,
+    shrink_to_fit,
 
     pub const Tag = std.meta.Tag(FuzzOp);
 };
 
+const MAX_VAL = 1_000_000;
 /// provider may be a `*testing.Smith` or a `std.Random`
 fn fillArray(provider: anytype, vals: anytype) u8 {
     const valFn = if (@TypeOf(provider) == *testing.Smith)
@@ -56,14 +58,13 @@ fn fillArray(provider: anytype, vals: anytype) u8 {
         unreachable;
     const len = valFn(provider, u8, 1, vals.len);
 
-    for (0..len) |i| vals[i] = valFn(provider, u32, 0, 100_000);
+    for (0..len) |i| vals[i] = valFn(provider, u32, 0, MAX_VAL);
     return len;
 }
 
 const HashMapOracle = std.AutoHashMapUnmanaged(u32, void);
 
 fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
-    const N = 100_000;
     var r = zroaring.Bitmap.empty;
     defer r.deinit(allocator);
     var oracle = HashMapOracle.empty;
@@ -71,94 +72,94 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
     try oracle.ensureTotalCapacity(allocator, 1024 * 16);
     var prng = FuzzPrng{ .input = in };
     const random = prng.random();
-
+    const mode: Mode = .fuzzprint;
     fuzzprint("\n\n-- init --\n", .{});
     while (!prng.eos()) {
         const tag = random.enumValue(FuzzOp.Tag);
         switch (tag) {
-            .add => {
-                const val = random.intRangeLessThan(u32, 0, N);
-                try perform_op(.{ .add = val }, &oracle, &r, allocator);
-            },
+            .add => try perform_op(.{
+                .add = random.intRangeLessThan(u32, 0, MAX_VAL),
+            }, &oracle, &r, allocator, mode),
             .add_many => {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(random, &vals);
-                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
+                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator, mode);
             },
             .add_range_closed => {
-                const start = random.intRangeLessThan(u32, 0, 16000);
-                const val1 = random.intRangeLessThan(u32, start, start + 100);
-                const val2 = random.intRangeLessThan(u32, start + 100, start + 200);
-                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
+                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
+                const len = random.intRangeLessThan(u16, 1, 1000);
+                const val1 = random.intRangeLessThan(u32, start, start + len);
+                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
+                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator, mode);
             },
-            .remove => {
-                const val = random.intRangeLessThan(u32, 0, N);
-                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
-            },
-            .contains => {
-                const val = random.intRangeLessThan(u32, 0, N);
-                try perform_op(.{ .contains = val }, &oracle, &r, allocator);
-            },
+            .remove => try perform_op(.{
+                .remove = random.intRangeLessThan(u32, 0, MAX_VAL),
+            }, &oracle, &r, allocator, mode),
+            .contains => try perform_op(.{
+                .contains = random.intRangeLessThan(u32, 0, MAX_VAL),
+            }, &oracle, &r, allocator, mode),
             .contains_many => {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(random, &vals);
-                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
+                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator, mode);
             },
-            .get_cardinality => {
-                const val = oracle.count();
-                try perform_op(.{ .get_cardinality = val }, &oracle, &r, allocator);
-            },
-            .clear => try perform_op(.clear, &oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
+            .get_cardinality => try perform_op(.{
+                .get_cardinality = oracle.count(),
+            }, &oracle, &r, allocator, mode),
+            .clear => try perform_op(.clear, &oracle, &r, allocator, mode),
+            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator, mode),
+            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator, mode),
         }
     }
 }
 
 fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
-    const N = 100_000;
     var r = zroaring.Bitmap.empty;
     defer r.deinit(allocator);
     const oracle = c.roaring_bitmap_create().?;
     defer c.roaring_bitmap_free(oracle);
+    const mode: Mode = .fuzzprint;
 
     fuzzprint("\n\n-- init --\n", .{});
     while (!smith.eos()) {
         const tag = smith.value(FuzzOp.Tag);
         switch (tag) {
             .add => {
-                const val = smith.valueRangeLessThan(u32, 0, N);
-                try perform_op(.{ .add = val }, oracle, &r, allocator);
+                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .add = val }, oracle, &r, allocator, mode);
             },
             .add_many => {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(smith, &vals);
-                try perform_op(.{ .add_many = vals[0..len] }, oracle, &r, allocator);
+                try perform_op(.{ .add_many = vals[0..len] }, oracle, &r, allocator, mode);
             },
             .add_range_closed => {
-                const start = smith.valueRangeLessThan(u32, 0, 16000);
-                const val1 = smith.valueRangeLessThan(u32, start, start + 100);
-                const val2 = smith.valueRangeLessThan(u32, start + 100, start + 200);
-                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, oracle, &r, allocator);
+                const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                const len = smith.valueRangeLessThan(u32, 1, 1000);
+                const val1 = smith.valueRangeLessThan(u32, start, start + len);
+                const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
+                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, oracle, &r, allocator, mode);
             },
             .remove => {
-                const val = smith.valueRangeLessThan(u32, 0, N);
-                try perform_op(.{ .remove = val }, oracle, &r, allocator);
+                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .remove = val }, oracle, &r, allocator, mode);
             },
             .contains => {
-                const val = smith.valueRangeLessThan(u32, 0, N);
-                try perform_op(.{ .contains = val }, oracle, &r, allocator);
+                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .contains = val }, oracle, &r, allocator, mode);
             },
             .contains_many => {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(smith, &vals);
-                try perform_op(.{ .contains_many = vals[0..len] }, oracle, &r, allocator);
+                try perform_op(.{ .contains_many = vals[0..len] }, oracle, &r, allocator, mode);
             },
             .get_cardinality => {
                 const val = c.roaring_bitmap_get_cardinality(oracle);
-                try perform_op(.{ .get_cardinality = val }, oracle, &r, allocator);
+                try perform_op(.{ .get_cardinality = val }, oracle, &r, allocator, mode);
             },
-            .clear => try perform_op(.clear, oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, oracle, &r, allocator),
+            .clear => try perform_op(.clear, oracle, &r, allocator, mode),
+            .run_optimize => try perform_op(.run_optimize, oracle, &r, allocator, mode),
+            .shrink_to_fit => try perform_op(.shrink_to_fit, oracle, &r, allocator, mode),
         }
     }
 }
@@ -196,17 +197,25 @@ const FuzzPrng = struct {
     }
 };
 
-// TODO remove, reuse perform_op
-fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator) !void {
+const Mode = enum { fuzzprint, no_fuzzprint };
+/// oracle must be [*c]c.roaring_bitmap_t or *HashMapOracle.
+fn perform_op(
+    op: FuzzOp,
+    oracle: anytype,
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    comptime mode: Mode,
+) !void {
     const O = @TypeOf(oracle);
     const is_roaring = O == [*c]c.roaring_bitmap_t;
     const is_hashmap = O == *HashMapOracle;
-    assert(is_roaring or is_hashmap);
+    comptime assert(is_roaring or is_hashmap);
+    const print = mode == .fuzzprint;
 
-    fuzzprint(".{{ .{t} = ", .{op});
+    if (print) fuzzprint(".{{ .{t} = ", .{op});
     switch (op) {
         .add => |val| {
-            fuzzprint("{} }},\n", .{val});
+            if (print) fuzzprint("{} }},\n", .{val});
             try r.add(allocator, val);
             if (is_roaring)
                 c.roaring_bitmap_add(oracle, val)
@@ -214,12 +223,12 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
                 try oracle.put(allocator, val, {});
         },
         .add_many => |vals| {
-            fuzzprint("&.{{ ", .{});
+            if (print) fuzzprint("&.{{ ", .{});
             for (vals, 0..) |val, i| {
-                if (i != 0) fuzzprint(", ", .{});
-                fuzzprint("{}", .{val});
+                if (i != 0) if (print) fuzzprint(", ", .{});
+                if (print) fuzzprint("{}", .{val});
             }
-            fuzzprint(" }} }},\n", .{});
+            if (print) fuzzprint(" }} }},\n", .{});
             _ = try r.add_many(allocator, vals);
             if (is_roaring)
                 c.roaring_bitmap_add_many(oracle, vals.len, vals.ptr)
@@ -230,7 +239,7 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
         },
         .add_range_closed => |rg| {
             const val1, const val2 = rg;
-            fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
+            if (print) fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
             try r.add_range_closed(allocator, val1, val2);
             if (is_roaring)
                 c.roaring_bitmap_add_range_closed(oracle, val1, val2)
@@ -241,28 +250,26 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
             }
         },
         .remove => |val| {
-            fuzzprint("{} }},\n", .{val});
+            if (print) fuzzprint("{} }},\n", .{val});
             try std.testing.expectEqual(
                 if (is_roaring) c.roaring_bitmap_remove_checked(oracle, val) else oracle.remove(val),
                 try r.remove_checked(allocator, val),
             );
         },
         .contains => |val| {
-            fuzzprint("{} }},\n", .{val});
+            if (print) fuzzprint("{} }},\n", .{val});
             try std.testing.expectEqual(
                 if (is_roaring) c.roaring_bitmap_contains(oracle, val) else oracle.contains(val),
                 r.contains(val),
             );
         },
-        .contains_many => |vals| { // TODO contains_many
-            // var vals: [8]u32 = undefined;
-            // const len = getvals(smith, &vals);
-            fuzzprint("&.{{ ", .{});
+        .contains_many => |vals| {
+            if (print) fuzzprint("&.{{ ", .{});
             for (vals, 0..) |val, i| {
-                if (i != 0) fuzzprint(", ", .{});
-                fuzzprint("{}", .{val});
+                if (i != 0) if (print) fuzzprint(", ", .{});
+                if (print) fuzzprint("{}", .{val});
             }
-            fuzzprint(" }} }},\n", .{});
+            if (print) fuzzprint(" }} }},\n", .{});
             for (vals) |val| {
                 try std.testing.expectEqual(
                     if (is_roaring)
@@ -274,17 +281,23 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
             }
         },
         .clear => {
-            fuzzprint("{{}} }},\n", .{});
+            if (print) fuzzprint("{{}} }},\n", .{});
             r.clear_retaining_capacity();
-            if (is_roaring) c.roaring_bitmap_clear(oracle) else oracle.clearRetainingCapacity();
+            if (is_roaring)
+                c.roaring_bitmap_clear(oracle)
+            else
+                oracle.clearRetainingCapacity();
         },
         .get_cardinality => |val| {
-            fuzzprint("{} }},\n", .{val});
-            try std.testing.expectEqual(val, if (is_roaring) c.roaring_bitmap_get_cardinality(oracle) else oracle.count());
+            if (print) fuzzprint("{} }},\n", .{val});
+            try std.testing.expectEqual(val, if (is_roaring)
+                c.roaring_bitmap_get_cardinality(oracle)
+            else
+                oracle.count());
             try std.testing.expectEqual(val, r.get_cardinality());
         },
         .run_optimize => {
-            fuzzprint("{{}} }},\n", .{});
+            if (print) fuzzprint("{{}} }},\n", .{});
             const x = try r.run_optimize(allocator);
             if (is_roaring)
                 try testing.expectEqual(
@@ -292,11 +305,13 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
                     x,
                 );
         },
+        .shrink_to_fit => {
+            if (print) fuzzprint("{{}} }},\n", .{});
+            _ = try r.shrink_to_fit(allocator);
+            if (is_roaring)
+                _ = c.roaring_bitmap_shrink_to_fit(oracle);
+        },
     }
-    // for (r.array.ptr(.containers)[0..r.array.ptr(.len).*]) |c| {
-    //     fuzzprint("{f}\n", .{c.fmt(r)});
-    // }
-    // fuzzprint("counts={},{}\n", .{ oracle.count(), r.cardinality() });
     try std.testing.expectEqual(
         if (is_roaring)
             c.roaring_bitmap_get_cardinality(oracle)
@@ -306,22 +321,22 @@ fn perform_op(op: FuzzOp, oracle: anytype, r: *Bitmap, allocator: mem.Allocator)
     );
 }
 
-fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
-    if (!@import("build-options").fuzzprint) return;
-    std.debug.print(fmt, args);
-}
-
-const testgpa = testing.allocator;
-
 fn perform_ops(ops: []const FuzzOp) !void {
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     var zr: Bitmap = .empty;
     defer zr.deinit(testgpa);
 
+    errdefer std.debug.print("{f}\n", .{zr.fmtLong()});
+    fuzzprint("\n\n--  perform ops  --\n", .{});
     for (ops) |op| {
-        try perform_op(op, cr, &zr, testgpa);
+        try perform_op(op, cr, &zr, testgpa, .fuzzprint);
     }
+}
+
+fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
+    if (!@import("build-options").fuzzprint) return;
+    std.debug.print(fmt, args);
 }
 
 test "crash reproductions" {
@@ -569,6 +584,7 @@ const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
 const testing = std.testing;
+const testgpa = testing.allocator;
 const assert = std.debug.assert;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
