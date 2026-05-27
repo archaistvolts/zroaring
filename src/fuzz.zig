@@ -579,6 +579,15 @@ test "crash reproductions" {
         .{ .add = 602334 },
         .{ .add_range_closed = .{ 589467, 589986 } },
     });
+
+    try perform_ops(&.{ // create_range: array unimplemented
+        .{ .add_range_closed = .{ 654535, 655360 } },
+    });
+
+    try perform_ops(&.{ // create range: overflow
+        .{ .add = 74473 },
+        .{ .add_range_closed = .{ 262143, 262845 } },
+    });
 }
 
 test "crash0" {

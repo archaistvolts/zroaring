@@ -341,7 +341,7 @@ fn append_first(r: Bitmap, c: *Container, container_value: anytype) void {
     }
 }
 
-/// The new container consists of a single run [start,stop).
+/// The new container contains the range [start,stop).
 /// It is required that stop>start, the caller is responsible for this check.
 /// It is required that stop <= (1<<16), the caller is responsibe for this
 /// check. The cardinality of the created container is stop - start.
@@ -362,7 +362,16 @@ pub fn create_range(
             });
             return c;
         },
-        .array => unreachable,
+        .array => {
+            var c = try Container.array_container_create_given_capacity(allocator, stop - start, blockoffset, r);
+            const array = c.blocks_as(.array, r.*);
+            var k: u32 = @intCast(start);
+            while (k < stop) : (k += 1) {
+                array[c.cardinality] = @intCast(k);
+                c.cardinality += 1;
+            }
+            return c;
+        },
         .bitset => unreachable,
         .shared => unreachable,
     }
