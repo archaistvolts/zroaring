@@ -575,9 +575,9 @@ fn container_from_run_range(
         bitset_lenrange_cardinality(words.ptr, min, max - min);
     bitset_set_lenrange(words.ptr, min, max - min);
     bitset.cardinality = @intCast(union_cardinality);
-    if (bitset.cardinality <= C.DEFAULT_MAX_SIZE) {
+    if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
         // convert to an array container
-        const array = try bitset.array_container_from_bitset(allocator, r);
+        const array = try bitset.array_container_from_bitset(allocator, blockoffset + bitset.nblocks(), r);
         bitset.deinit(r.*);
         return array;
     }
@@ -647,14 +647,12 @@ fn container_add_range(
                 misc.rle16_count_less(runs[0 .. c.cardinality - nruns_greater], @truncate(min));
             const run_size_bytes =
                 (nruns_less + 1 + nruns_greater) * @sizeOf(root.Rle16);
-            const bitset_size_bytes = @sizeOf(root.Bitset);
 
-            if (run_size_bytes <= bitset_size_bytes) {
+            if (run_size_bytes <= @sizeOf(root.Bitset)) {
                 try r.run_container_add_range_nruns(allocator, c, min, max, nruns_less, nruns_greater);
                 return r.array.ptr(.containers)[cid];
-            } else {
-                return r.container_from_run_range(allocator, c.*, min, max, blockoffset);
             }
+            return r.container_from_run_range(allocator, c.*, min, max, blockoffset);
         },
         else => unreachable,
     }
@@ -668,7 +666,7 @@ fn replace_key_and_container_at_index(r: Bitmap, i: u32, key: u16, c: Container)
 
 /// Add all values in range [min, max]
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    assert_valid(r.*); // TODO
+    assert_valid(r.*);
     defer assert_valid(r.*);
 
     if (min > max) return;
@@ -685,7 +683,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const len = r.array.ptr(.len).*;
     const keys = r.array.ptr(.keys)[0..len];
     var blockoffset: u24 = @intCast(r.array.ptr(.blockslen).*);
-    errdefer {
+    errdefer { // maintain initial lens on error
         r.array.ptr(.len).* = len;
         r.array.ptr(.blockslen).* = blockoffset;
     }
@@ -703,13 +701,15 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     var key = max_key;
     // trace(@src(), "dst={} src={} len={}", .{ dst, src, r.array.ptr(.len).* });
     while (key +% 1 != min_key) : (key -%= 1) { // beware of min_key==0
-        // trace(@src(), "dst={} key={} min_key={} max_key={} len={}", .{ dst, key, min_key, max_key, r.array.ptr(.len).* });
+        // trace(@src(), "dst={} key={} min_key={} max_key={} len={} blockoffset={}", .{ dst, key, min_key, max_key, r.array.ptr(.len).*, blockoffset });
         const container_min = if (min_key == key) min & 0xffff else 0;
         const container_max = if (max_key == key) max & 0xffff else 0xffff;
         var newc: Container = .uninit;
         const srcu: u32 = @bitCast(src);
         if (src >= 0 and r.slice(.keys, .len)[srcu] == key) {
             // TODO // ra.unshare_container_at_index(srcu);
+            const c = &r.array.ptr(.containers)[srcu];
+            const cnblocks = c.nblocks_minus1;
             newc = try r.container_add_range(
                 allocator,
                 &r.array.ptr(.containers)[srcu],
@@ -718,18 +718,21 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
                 blockoffset,
             );
             if (newc != r.array.ptr(.containers)[srcu]) {
-                r.array.ptr(.containers)[srcu].deinit(r.*);
+                if (newc.blockoffset != r.array.ptr(.containers)[srcu].blockoffset)
+                    r.array.ptr(.containers)[srcu].deinit_blocks(r.*);
             }
             src -= 1;
+            blockoffset += newc.nblocks_minus1 - cnblocks;
         } else {
             newc = try r.from_range(allocator, container_min, container_max + 1, 1, blockoffset);
+            blockoffset += newc.nblocks();
         }
-        // trace(@src(), "dst {}, newc {f} newc.card={}", .{ dst, newc.fmt(r.*), newc.compute_cardinality(r.*) });
+        // trace(@src(), "dst {}, newc {f}", .{ dst, newc.fmt(r.*, @intCast(key)) });
         assert(newc != Container.uninit);
         r.replace_key_and_container_at_index(dst, @truncate(key), newc);
         dst -%= 1;
-        blockoffset += newc.nblocks();
     }
+    assert(r.array.ptr(.blockslen).* == blockoffset);
 }
 
 /// Add all values in range [min, max)
@@ -1431,12 +1434,9 @@ pub const FmtLong = struct {
             Model.calcSize(r.array.calcLens()),
         });
 
-        try w.writeByte('{');
         for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
-            if (i != 0) try w.writeByte(',');
-            try w.print("{}:{f}", .{ key, c.fmtLong(r, key) });
+            try w.print("\n{: <2} {: <2}:{f}", .{ i, key, c.fmtLong(r, key) });
         }
-        try w.writeByte('}');
     }
 };
 

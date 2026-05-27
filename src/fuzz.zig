@@ -547,6 +547,18 @@ test "crash reproductions" {
         .{ .add_many = &.{ 4825, 65535 } },
         .{ .run_optimize = {} },
     });
+
+    try perform_ops(&.{ // add_range_closed blockoffset counting bug
+        .{ .add_range_closed = .{ 269193, 269194 } },
+        .{ .add_many = &.{ 573007, 65042, 934201, 955639, 952480, 934201 } },
+        .{ .add_range_closed = .{ 295, 1717 } },
+        .{ .shrink_to_fit = {} },
+        .{ .add_range_closed = .{ 618200, 619690 } },
+        .{ .run_optimize = {} },
+        .{ .add = 65536 },
+        .{ .add_range_closed = .{ 524057, 524674 } },
+        .{ .add_range_closed = .{ 700979, 701862 } },
+    });
 }
 
 test "crash0" {

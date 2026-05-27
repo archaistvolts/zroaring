@@ -657,7 +657,7 @@ pub const Container = packed struct(u64) {
                 return;
             }
             const hi = @as(u32, f.key) << 16;
-            try w.print("{t} @{}-{} #{}:", .{ c.typecode, c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
+            try w.print("{t: <6} #{: <5} @{: <3}-{: <3} n{: <4}:", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
             switch (c.typecode) {
                 .array => {
                     const vals0 = c.blocks_as(.array, f.r);
@@ -935,8 +935,13 @@ pub const Container = packed struct(u64) {
         }
     }
 
-    pub fn array_container_from_bitset(bits: *Container, allocator: mem.Allocator, r: *Bitmap) !Container {
-        var result = try array_container_create_given_capacity(allocator, bits.cardinality, r.array.ptr(.blockslen).*, r);
+    pub fn array_container_from_bitset(
+        bits: *Container,
+        allocator: mem.Allocator,
+        blockoffset: u24,
+        r: *Bitmap,
+    ) !Container {
+        var result = try array_container_create_given_capacity(allocator, bits.cardinality, blockoffset, r);
         result.cardinality = bits.cardinality;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
@@ -956,7 +961,7 @@ pub const Container = packed struct(u64) {
             .bitset => {
                 if (c.bitset_container_remove(val, r.*)) {
                     if (c.cardinality <= C.DEFAULT_MAX_SIZE) {
-                        return try c.array_container_from_bitset(allocator, r);
+                        return try c.array_container_from_bitset(allocator, @intCast(r.array.ptr(.blockslen).*), r);
                     }
                 }
             },
