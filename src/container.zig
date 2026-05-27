@@ -97,6 +97,7 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    /// modify conatiner so it can hold additional moreblocks.
     fn add_container_blocks(
         r: *Bitmap,
         allocator: mem.Allocator,
@@ -121,7 +122,9 @@ pub const Container = packed struct(u64) {
 
         // update blockoffsets of containers with moved blocks
         for (r.slice(.containers, .len)) |*c3| {
-            if (c3.blockoffset <= c2.blockoffset) continue;
+            // consider limiting loop and remove .uninit check w/out a noisy len param.
+            if (c3.blockoffset <= c2.blockoffset or c3.* == Container.uninit)
+                continue;
             c3.blockoffset += @intCast(moreblocks);
         }
     }

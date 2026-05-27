@@ -1339,7 +1339,8 @@ pub fn realloc_array(
     r.array = newarray;
 }
 
-/// ensure the bitmap has room for more containers and more blocks.
+/// ensure the bitmap has room for more containers and more blocks. may modify
+/// `Array` capacity and blockscapacity, nothing else.
 pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_blockslen: u32) !void {
     const len = r.array.ptr(.len).*;
     const capacity = r.array.ptr(.capacity).*;

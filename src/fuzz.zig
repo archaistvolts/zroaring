@@ -574,6 +574,11 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 524057, 524674 } },
         .{ .add_range_closed = .{ 700979, 701862 } },
     });
+
+    try perform_ops(&.{ // add_container_blocks overflow, uninit container bug
+        .{ .add = 602334 },
+        .{ .add_range_closed = .{ 589467, 589986 } },
+    });
 }
 
 test "crash0" {
