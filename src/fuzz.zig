@@ -54,17 +54,14 @@ test "croaring oracle crashes" {
     }
 }
 
-// Order matters.  Used when formatting reproductions.
 pub const FuzzOp = union(enum) {
     add: u32,
     add_many: []const u32,
     add_range_closed: [2]u32,
     remove: u32,
-    // print only tag
     clear,
     run_optimize,
     shrink_to_fit,
-    // don't print.  not part of reproduction.
     contains: u32,
     contains_many: []const u32,
     get_cardinality,
@@ -89,7 +86,7 @@ fn fillArray(provider: anytype, array: anytype) u8 {
     return len;
 }
 
-const HashMapOracle = std.AutoHashMapUnmanaged(u32, void);
+const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
 
 fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
     var r = zroaring.Bitmap.empty;
@@ -116,7 +113,16 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
                 const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
                 try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
             },
-            .remove => try perform_op(.{ .remove = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
+            .remove => { // weighted 10:1 to remove existing values
+                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
+                const val = if (select_found) val: {
+                    const card = oracle.count();
+                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
+                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
+                    break :val oracle.keys()[rank];
+                } else random.intRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
+            },
             .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
             .contains_many => {
                 var vals: [8]u32 = undefined;
@@ -157,14 +163,22 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
                 try perform_op(.{ .add_range_closed = .{ val1, val2 } }, oracle, &r, allocator);
             },
-            .remove => {
-                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+            .remove => { // weighted 10:1 to remove existing values
+                const select_found = smith.boolWeighted(1, 9); // usually true
+                const val = if (select_found) val: {
+                    const card = c.roaring_bitmap_get_cardinality(oracle);
+                    if (card == 0) break :val smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                    const rank = smith.valueRangeLessThan(u32, 0, @truncate(card));
+                    var val: u32 = undefined;
+                    assert(c.roaring_bitmap_select(oracle, rank, &val));
+                    break :val val;
+                } else smith.valueRangeLessThan(u32, 0, MAX_VAL);
+
                 try perform_op(.{ .remove = val }, oracle, &r, allocator);
             },
             .clear => try perform_op(.clear, oracle, &r, allocator),
             .run_optimize => try perform_op(.run_optimize, oracle, &r, allocator),
             .shrink_to_fit => try perform_op(.shrink_to_fit, oracle, &r, allocator),
-            // disable printing, not part of reproduction
             .contains => {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .contains = val }, oracle, &r, allocator);
@@ -239,7 +253,7 @@ fn perform_op(
         .contains,
         .contains_many,
         .get_cardinality,
-        => {},
+        => {}, // don't print, not part of reproduction
     }
     switch (op) {
         .add => |val| {
@@ -280,7 +294,10 @@ fn perform_op(
         .remove => |val| {
             fuzzprint("{} }},\n", .{val});
             try std.testing.expectEqual(
-                if (is_cr) c.roaring_bitmap_remove_checked(oracle, val) else oracle.remove(val),
+                if (is_cr)
+                    c.roaring_bitmap_remove_checked(oracle, val)
+                else
+                    oracle.swapRemove(val),
                 try r.remove_checked(allocator, val),
             );
         },
@@ -292,11 +309,11 @@ fn perform_op(
                 oracle.clearRetainingCapacity();
         },
         .run_optimize => {
-            const x = try r.run_optimize(allocator);
+            const res = try r.run_optimize(allocator);
             if (is_cr)
                 try testing.expectEqual(
                     c.roaring_bitmap_run_optimize(oracle),
-                    x,
+                    res,
                 );
         },
         .shrink_to_fit => {
@@ -304,9 +321,13 @@ fn perform_op(
             if (is_cr)
                 _ = c.roaring_bitmap_shrink_to_fit(oracle);
         },
+        // don't print, not part of reproduction
         .contains => |val| {
             try std.testing.expectEqual(
-                if (is_cr) c.roaring_bitmap_contains(oracle, val) else oracle.contains(val),
+                if (is_cr)
+                    c.roaring_bitmap_contains(oracle, val)
+                else
+                    oracle.contains(val),
                 r.contains(val),
             );
         },
