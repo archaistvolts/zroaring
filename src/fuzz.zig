@@ -604,6 +604,13 @@ test "crash reproductions" {
         .{ .shrink_to_fit = {} },
         .{ .add_range_closed = .{ 102782, 107350 } },
     });
+
+    try perform_ops(&.{ // convert_run_optimize, bitset, update blockslen
+        .{ .add = 21571 },
+        .{ .add_range_closed = .{ 230, 5482 } },
+        .{ .run_optimize = {} },
+        .{ .add_range_closed = .{ 355102, 356802 } },
+    });
 }
 
 test "crash0" {
