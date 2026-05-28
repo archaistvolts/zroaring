@@ -649,6 +649,12 @@ test "crash reproductions" {
         .{ .contains_many = &.{ 94644, 847998, 432807 } },
         .{ .add_range_closed = .{ 87951, 94779 } },
     });
+
+    try perform_ops(&.{ // bitset_set_lenrange: use wrapping math to avoid overflow
+        .{ .add = 29614 },
+        .{ .add = 65536 },
+        .{ .add_range_closed = .{ 63252, 71190 } },
+    });
 }
 
 test "crash0" {

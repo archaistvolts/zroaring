@@ -472,7 +472,7 @@ fn bitset_set_lenrange(words: [*]align(C.BLOCK_ALIGN) u64, start: u32, lenminuso
         words[i + 1] = ~@as(u64, 0);
     }
     words[endword] =
-        temp | (~@as(u64, 0)) >> @truncate(((~start + 1) - lenminusone - 1) % 64);
+        temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
 }
 
 /// The new container consists of a single run [start,stop).
