@@ -611,6 +611,15 @@ test "crash reproductions" {
         .{ .run_optimize = {} },
         .{ .add_range_closed = .{ 355102, 356802 } },
     });
+
+    try perform_ops(&.{ // array_container_grow: use calc_capacity()
+        .{ .add_many = &.{ 129631, 93925 } },
+        .{ .add = 65536 },
+        .{ .add_range_closed = .{ 87, 88 } },
+        .{ .run_optimize = {} },
+        .{ .shrink_to_fit = {} },
+        .{ .add_range_closed = .{ 102782, 103370 } },
+    });
 }
 
 test "crash0" {

@@ -107,9 +107,7 @@ pub const Container = packed struct(u64) {
         // TODO move this logic to extend_array?
         const cid = c - r.array.ptr(.containers);
         const blockslen = r.array.ptr(.blockslen).*;
-        if (blockslen + c.nblocks() + moreblocks >=
-            r.array.ptr(.blockscapacity).*)
-        {
+        if (blockslen + c.nblocks() + moreblocks >= r.array.ptr(.blockscapacity).*) {
             try r.extend_array(allocator, 0, moreblocks);
         }
         // move blocks and update blocks info
@@ -142,11 +140,12 @@ pub const Container = packed struct(u64) {
             C.DEFAULT_MAX_SIZE
         else
             C.MAX_CONTAINERS;
-        const newcap = std.math.clamp(grow_capacity(c.cardinality), mincapacity, max);
-        const morecap = newcap - c.cardinality;
+        const cap = c.calc_capacity();
+        const newcap = std.math.clamp(grow_capacity(cap), mincapacity, max);
+        const morecap = newcap - cap;
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN16);
-
-        // trace(@src(), "newcap={} morecap={} moreblocks={} c={}", .{ newcap, morecap, moreblocks, c });
+        // trace(@src(), "mincapacity={} newcap={} morecap={} moreblocks={}", .{ mincapacity, newcap, morecap, moreblocks });
+        // trace(@src(), "c={}", .{c});
         if (preserve) {
             try add_container_blocks(r, allocator, c, moreblocks);
         } else {
