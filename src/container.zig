@@ -964,11 +964,13 @@ pub const Container = packed struct(u64) {
         blockoffset: u24,
         r: *Bitmap,
     ) !Container {
+        const cid = bits - r.array.ptr(.containers);
         var result = try array_container_create_given_capacity(allocator, bits.cardinality, blockoffset, r);
-        result.cardinality = bits.cardinality;
+        const bits2 = r.array.ptr(.containers)[cid];
+        result.cardinality = bits2.cardinality;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
-        _ = bitset_extract_setbits_u16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
+        _ = bitset_extract_setbits_u16(bits2.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
 
         return result;
     }
