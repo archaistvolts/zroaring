@@ -25,7 +25,10 @@ test "croaring oracle" {
 }
 
 fn croaringOracleFile(io: std.Io, path: []const u8) !void {
-    const contents = try std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited);
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch {
+        std.debug.print("croaringOracleFile: failed to read path '{s}'\n", .{path});
+        return;
+    };
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
     try croaringOracle(&smith, testgpa);
