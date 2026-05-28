@@ -104,8 +104,10 @@ pub const Container = packed struct(u64) {
         c: *Container,
         moreblocks: u32,
     ) !void {
+        assert(moreblocks != 0);
         // TODO move this logic to extend_array?
         const cid = c - r.array.ptr(.containers);
+        // trace(@src(), "moreblocks={} c={}", .{ moreblocks, c });
         const blockslen = r.array.ptr(.blockslen).*;
         if (blockslen + c.nblocks() + moreblocks >= r.array.ptr(.blockscapacity).*) {
             try r.extend_array(allocator, 0, moreblocks);
@@ -113,6 +115,7 @@ pub const Container = packed struct(u64) {
         // move blocks and update blocks info
         const blocks = r.slice(.blocks, .blockscapacity);
         const c2 = &r.array.ptr(.containers)[cid];
+        // trace(@src(), "blocks.len={} c2.blockoffset={} c2.nblocks()={} blockslen={} r.array.ptr(.blockslen)={}", .{ blocks.len, c2.blockoffset, c2.nblocks(), blockslen, r.array.ptr(.blockslen).* });
         const rest = blocks[c2.blockoffset + c2.nblocks() .. blockslen];
         @memmove(rest.ptr + moreblocks, rest);
         c2.nblocks_minus1 += @intCast(moreblocks);
@@ -323,15 +326,17 @@ pub const Container = packed struct(u64) {
         allocator: mem.Allocator,
         r: *Bitmap,
     ) !Container {
-        // copy ac to stack temporary. large stack but this simplifies tricky
+        // copy ac to temporary.
+        //
+        // TODO remove large stack array. allocate in blocks.  as is, this simplifies
         // blockoffset bookeeping when called by container_add_range().
-        var tmpac: [C.DEFAULT_MAX_SIZE / C.BLOCK_LEN16]Block = undefined;
-        comptime assert(@sizeOf(@TypeOf(tmpac)) == @sizeOf(root.Bitset));
+        var tmpac: [C.BITSET_BLOCKS]Block = undefined; // TODO
         const l = misc.numGroupsOfSize(ac.cardinality * @sizeOf(u16), C.BLOCK_SIZE);
         @memcpy(tmpac[0..l], ac.get_blocks(r.*)[0..l]);
 
         const acid = ac - r.array.ptr(.containers);
-        try add_container_blocks(r, allocator, ac, C.BITSET_BLOCKS - ac.nblocks());
+        if (ac.nblocks() < C.BITSET_BLOCKS)
+            try add_container_blocks(r, allocator, ac, C.BITSET_BLOCKS - ac.nblocks());
         const bc = &r.array.ptr(.containers)[acid];
         @memset(bc.get_blocks(r.*), @splat(0));
         const words = bc.blocks_as(.bitset, r.*);
@@ -341,6 +346,7 @@ pub const Container = packed struct(u64) {
             bc.bitset_container_set(v, words);
         }
         bc.typecode = .bitset;
+        assert(bc.cardinality == card);
         return bc.*;
     }
 
@@ -503,7 +509,7 @@ pub const Container = packed struct(u64) {
                 for (1..v.cardinality) |i| {
                     if (prev >= array[i]) {
                         reason.* = "array elements not strictly increasing";
-                        trace(@src(), "array elements: {any}", .{array[0..v.cardinality]});
+                        trace(@src(), "array elements: {any}", .{array[0 .. i + 1]});
                         return false;
                     }
                     prev = array[i];
@@ -742,7 +748,7 @@ pub const Container = packed struct(u64) {
             .shared => unreachable,
         };
         const nblocks0 = c.nblocks();
-        trace(@src(), "nblocksneeded={} nblocks={} src={}\n", .{ nblocksneeded, nblocks0, c });
+        trace(@src(), "nblocksneeded={} nblocks={} src={}", .{ nblocksneeded, nblocks0, c });
 
         if (c.cardinality == 0) {
             c.deinit(r);
@@ -971,6 +977,7 @@ pub const Container = packed struct(u64) {
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
         _ = bitset_extract_setbits_u16(bits2.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
+        r.array.ptr(.blockslen).* += result.nblocks();
 
         return result;
     }

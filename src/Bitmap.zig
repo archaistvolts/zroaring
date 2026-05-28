@@ -408,7 +408,7 @@ pub fn from_range(
     step: u16,
     blockoffset: u32,
 ) !Container {
-    trace(@src(), "{}-{} step {}\n", .{ min, max, step });
+    // trace(@src(), "{}-{} step {}", .{ min, max, step });
     if (step == 0) return .uninit; // being paranoid
     if (step == 1) {
         return try r.range_of_ones(allocator, min, max, blockoffset);
@@ -589,7 +589,7 @@ fn container_from_run_range(
     if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
         // convert to an array container
         const array = try bitset.array_container_from_bitset(allocator, blockoffset + bitset.nblocks(), r);
-        bitset.deinit(r.*);
+        bitset.deinit_blocks(r.*);
         return array;
     }
     return bitset;
