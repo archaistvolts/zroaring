@@ -25,7 +25,7 @@ test "croaring oracle" {
 }
 
 fn croaringOracleFile(io: std.Io, path: []const u8) !void {
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch return;
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited);
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
     try croaringOracle(&smith, testgpa);
@@ -38,13 +38,16 @@ test "croaring oracle crash - current" {
 
 test "croaring oracle crashes" {
     const io = testing.io;
-    var dir = try std.Io.Dir.cwd().openDir(io, "testdata/crashfiles", .{ .iterate = true });
+    const path = "testdata/crashfiles";
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
-        std.debug.print("{t} {s}\n", .{ e.kind, e.name });
         if (e.kind != .file) continue;
-        try croaringOracleFile(io, e.name);
+        var buf: [256]u8 = undefined;
+        var fbs = std.Io.Writer.fixed(&buf);
+        try fbs.print("{s}/{s}", .{ path, e.name });
+        try croaringOracleFile(io, fbs.buffered());
     }
 }
 
