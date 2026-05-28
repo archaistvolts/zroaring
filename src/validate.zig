@@ -156,8 +156,8 @@ fn validateRangeRoundTrip(
 }
 
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
-fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
-    _ = name; // autofix
+fn validateFrozenContains(allocator: mem.Allocator, name: @EnumLiteral(), values: []const u32, run_optimize: bool) !void {
+    misc.trace(@src(), "\n\n--  {s}{s} --\n", .{ @tagName(name), if (run_optimize) " +run_optimize" else "" });
 
     // Build both and serialize frozen
     const cr = c.roaring_bitmap_create();
@@ -267,11 +267,11 @@ fn validateAll(allocator: mem.Allocator, cr_f: Io.File) !void {
     try validateRoundTrip(allocator, testio, .sparse_N, set.keys(), false, cr_f);
 
     // validate frozen_view can read serialized bytes correctly
-    try validateFrozenContains(allocator, "frozen_array", &arr100, false);
-    try validateFrozenContains(allocator, "frozen_bitset", &bitset5000, false);
-    try validateFrozenContains(allocator, "frozen_run_single_chunk", &multi_range, true);
-    try validateFrozenContains(allocator, "frozen_run_with_offsets", &four_chunks_runs, true);
-    try validateFrozenContains(allocator, "frozen_multi_container", &five_containers, false);
+    try validateFrozenContains(allocator, .frozen_array, &arr100, false);
+    try validateFrozenContains(allocator, .frozen_bitset, &bitset5000, false);
+    try validateFrozenContains(allocator, .frozen_run_single_chunk, &multi_range, true);
+    try validateFrozenContains(allocator, .frozen_run_with_offsets, &four_chunks_runs, true);
+    try validateFrozenContains(allocator, .frozen_multi_container, &five_containers, false);
 }
 
 const testgpa = testing.allocator;
