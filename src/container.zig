@@ -22,7 +22,7 @@ pub const Container = packed struct(u64) {
 
     /// TODO reclaim in shrink_to_fit()
     pub fn deinit(c: *Container, r: Bitmap) void {
-        if (c.* == Container.uninit) return;
+        if (c.* == uninit) return;
         r.remove_at_index(@intCast(c - r.array.ptr(.containers)));
     }
 
@@ -121,7 +121,7 @@ pub const Container = packed struct(u64) {
         // update blockoffsets of containers with moved blocks
         for (r.slice(.containers, .len)) |*c3| {
             // consider limiting loop and remove .uninit check w/out a noisy len param.
-            if (c3.blockoffset <= c2.blockoffset or c3.* == Container.uninit)
+            if (c3.blockoffset <= c2.blockoffset or c3.* == uninit)
                 continue;
             c3.blockoffset += @intCast(moreblocks);
         }
@@ -412,7 +412,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn compute_cardinality(v: Container, r: Bitmap) u30 {
-        if (v == Container.uninit) return 0;
+        if (v == uninit) return 0;
         var ret: u30 = undefined;
         switch (v.typecode) {
             .bitset => {
@@ -434,7 +434,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn internal_validate(v: Container, reason: *?[]const u8, r: Bitmap) bool {
-        if (v == Container.uninit) return true; // FIXME
+        if (v == uninit) return true; // FIXME
         if (v.cardinality == 0) {
             reason.* = "container is empty";
             return false;
@@ -675,7 +675,7 @@ pub const Container = packed struct(u64) {
 
         pub fn format(f: Fmt, w: *std.Io.Writer) !void {
             const c = f.c;
-            if (c == Container.uninit) {
+            if (c == uninit) {
                 try w.writeAll("uninit");
                 return;
             }
@@ -1042,21 +1042,21 @@ pub const Container = packed struct(u64) {
             return rc;
         } else if (c.typecode == .bitset) { // run conversions on bitset
             // does bitset need conversion to run?
-            const words = c.blocks_as(.bitset, r.*);
-            const nruns = Container.bitset_container_number_of_runs(words.ptr);
-            const size_as_run_container = Container.run_container_serialized_size_in_bytes(nruns);
+            const nruns = bitset_container_number_of_runs(c.blocks_as(.bitset, r.*).ptr);
+            const size_as_run_container = run_container_serialized_size_in_bytes(nruns);
             if (size_as_run_container >= @sizeOf(root.Bitset)) // no conversion needed.
                 return c;
 
             // bitset to runcontainer (ported from Java RunContainer(BitmapContainer bc, int nbrRuns))
             assert(nruns > 0); // no empty bitmaps
-            var answer = try Container.run_container_create_given_capacity(
+            var answer = try run_container_create_given_capacity(
                 allocator,
                 nruns,
                 r.array.ptr(.blockslen).*,
                 r,
             );
 
+            const words = r.array.ptr(.containers)[cid].blocks_as(.bitset, r.*);
             var long_ctr: u32 = 0;
             var cur_word = words[0];
             while (true) {
@@ -1068,7 +1068,7 @@ pub const Container = packed struct(u64) {
                 }
 
                 if (cur_word == 0) {
-                    c.deinit_blocks(r.*);
+                    r.array.ptr(.containers)[cid].deinit_blocks(r.*);
                     r.array.ptr(.blockslen).* += answer.nblocks();
                     return answer;
                 }
@@ -1088,7 +1088,7 @@ pub const Container = packed struct(u64) {
                 if (cur_word_with_1s == std.math.maxInt(u64)) {
                     run_end = 64 + long_ctr * 64; // exclusive, I guess
                     answer.add_run(@intCast(run_start), @intCast(run_end - 1), r.*);
-                    c.deinit_blocks(r.*);
+                    r.array.ptr(.containers)[cid].deinit_blocks(r.*);
                     r.array.ptr(.blockslen).* += answer.nblocks();
                     return answer;
                 }
