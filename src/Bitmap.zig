@@ -438,20 +438,20 @@ fn bitset_lenrange_cardinality(
     const firstword = start / 64;
     const endword = (start + lenminusone) / 64;
     if (firstword == endword) {
-        return @ctz(words[firstword] &
+        return @popCount(words[firstword] &
             ((~@as(u64, 0)) >>
                 @truncate((63 - lenminusone) % 64)) <<
                 @truncate(start % 64));
     }
-    var answer =
-        @ctz(words[firstword] & ((~@as(u64, 0)) << @truncate(start % 64)));
+    var answer: u64 =
+        @popCount(words[firstword] & ((~@as(u64, 0)) << @truncate(start % 64)));
     for (firstword + 1..endword) |i| {
-        answer += @ctz(words[i]);
+        answer += @popCount(words[i]);
     }
-    answer += @ctz(words[endword] &
+    answer += @popCount(words[endword] &
         (~@as(u64, 0)) >>
             @truncate(((~start + 1) - lenminusone - 1) % 64));
-    return answer;
+    return @intCast(answer);
 }
 
 /// Set all bits in indexes [begin,begin+lenminusone] to true.
@@ -506,6 +506,7 @@ fn array_container_add_range_nvals(
     nvals_greater: u32,
 ) !void {
     const union_cardinality = nvals_less + (max - min + 1) + nvals_greater;
+    // trace(@src(), "union_cardinality={} ac.calc_capacity()={}", .{ union_cardinality, ac.calc_capacity() });
     const acid = ac - r.array.ptr(.containers);
     if (union_cardinality > ac.calc_capacity()) {
         try ac.array_container_grow(allocator, r, union_cardinality, true);
@@ -736,6 +737,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         r.replace_key_and_container_at_index(dst, @truncate(key), newc);
         dst -%= 1;
     }
+    // trace(@src(), "r.array.ptr(.blockslen)={} blockoffset={}", .{ r.array.ptr(.blockslen).*, blockoffset });
     assert(r.array.ptr(.blockslen).* == blockoffset);
 }
 

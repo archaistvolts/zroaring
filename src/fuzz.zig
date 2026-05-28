@@ -620,6 +620,35 @@ test "crash reproductions" {
         .{ .shrink_to_fit = {} },
         .{ .add_range_closed = .{ 102782, 103370 } },
     });
+
+    try perform_ops(&.{ // bitset_lenrange_cardinality: popcount not ctz
+        .{ .add_range_closed = .{ 269193, 269194 } },
+        .{ .clear = {} },
+        .{ .add_many = &.{ 246143, 479398, 519512, 479398, 2304, 93925 } },
+        .{ .add_range_closed = .{ 105168, 109491 } },
+        .{ .add_many = &.{ 976463, 48064 } },
+        .{ .add_range_closed = .{ 222979, 224481 } },
+        .{ .shrink_to_fit = {} },
+        .{ .add_range_closed = .{ 63199, 63735 } },
+        .{ .add_range_closed = .{ 871311, 872258 } },
+        .{ .shrink_to_fit = {} },
+        .{ .add_range_closed = .{ 501983, 503122 } },
+        .{ .add = 65536 },
+        .{ .remove = 224099 },
+        .{ .add_range_closed = .{ 1511, 1512 } },
+        .{ .remove = 981223 },
+        .{ .add_many = &.{830160} },
+        .{ .add_range_closed = .{ 654898, 655635 } },
+        .{ .add_range_closed = .{ 997826, 997827 } },
+        .{ .add_range_closed = .{ 102455, 103396 } },
+    });
+
+    try perform_ops(&.{ // bitset_lenrange_cardinality: u64 to avoid overflow
+        .{ .add = 75944 },
+        .{ .add_range_closed = .{ 86940, 94246 } },
+        .{ .contains_many = &.{ 94644, 847998, 432807 } },
+        .{ .add_range_closed = .{ 87951, 94779 } },
+    });
 }
 
 test "crash0" {
