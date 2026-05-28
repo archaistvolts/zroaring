@@ -280,7 +280,6 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
 
 /// returns true when `value` was added to the bitmap, false if already present.
 pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
-    defer assert(r.contains(value));
     defer r.assert_valid();
 
     if (r.is_empty()) {
@@ -322,6 +321,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         _ = try newac.add(allocator, r, valuelow); // ignore return. always an array with cardinality 1
         return true;
     }
+    assert(r.contains(value));
 }
 
 fn append_first(r: Bitmap, c: *Container, container_value: anytype) void {
