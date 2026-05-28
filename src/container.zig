@@ -923,7 +923,7 @@ pub const Container = packed struct(u64) {
                 outpos += 1;
                 w &= (w - 1);
             }
-            base1 += 64;
+            base1 +%= 64;
         }
         return outpos;
     }
