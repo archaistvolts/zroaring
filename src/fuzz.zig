@@ -685,6 +685,17 @@ test "crash reproductions" {
         .{ .add = 533060 },
         .{ .remove = 164928 },
     });
+
+    try perform_ops(&.{ // Container.remove: skip assert_valid
+        .clear,
+        .{ .add_many = &.{ 188901, 624734, 783759 } },
+        .shrink_to_fit,
+        .{ .add_range_closed = .{ 131424, 134903 } },
+        .{ .add_range_closed = .{ 174930, 175543 } },
+        .{ .add_many = &.{ 511169, 736404, 616057, 136937, 140723, 912071, 624980 } },
+        .shrink_to_fit,
+        .{ .remove = 133236 },
+    });
 }
 
 test "crash0" {

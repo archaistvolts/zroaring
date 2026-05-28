@@ -472,7 +472,7 @@ pub const Container = packed struct(u64) {
                     return false;
                 }
                 if (v.cardinality <= C.DEFAULT_MAX_SIZE) {
-                    reason.* = "cardinality is too small for a bitmap container";
+                    reason.* = "cardinality is too small for a bitset container";
                     return false;
                 }
 
@@ -1108,13 +1108,11 @@ pub const Container = packed struct(u64) {
     /// Remove a value from a container return (possibly different) container.
     /// This function may allocate a new container, and caller is responsible for
     /// memory deallocation
+    ///
+    /// Returned container may not be valid.  caller must ensure bitmap is valid.
     pub fn remove(c: *Container, allocator: mem.Allocator, val: u16, r: *Bitmap) !Container {
         c.assert_valid(r.*);
         const cid = c - r.array.ptr(.containers);
-        defer {
-            const c2 = &r.array.ptr(.containers)[cid];
-            if (c2.cardinality > 0) c2.assert_valid(r.*);
-        }
         trace(@src(), "{}", .{val});
         // TODO // c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
