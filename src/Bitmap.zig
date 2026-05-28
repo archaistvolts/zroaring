@@ -450,7 +450,7 @@ fn bitset_lenrange_cardinality(
     }
     answer += @popCount(words[endword] &
         (~@as(u64, 0)) >>
-            @truncate(((~start + 1) - lenminusone - 1) % 64));
+            @truncate(((~start +% 1) -% lenminusone -% 1) % 64));
     return @intCast(answer);
 }
 

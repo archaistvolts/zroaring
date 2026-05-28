@@ -655,6 +655,16 @@ test "crash reproductions" {
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 63252, 71190 } },
     });
+
+    try perform_ops(&.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
+        .{ .contains = 490419 },
+        .{ .add = 232231 },
+        .{ .contains = 489946 },
+        .{ .add_range_closed = .{ 11141, 11245 } },
+        .{ .remove = 11245 },
+        .{ .add_range_closed = .{ 223401, 231936 } },
+        .{ .add_range_closed = .{ 192113, 199991 } },
+    });
 }
 
 test "crash0" {
