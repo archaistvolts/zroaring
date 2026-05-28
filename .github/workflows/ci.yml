@@ -17,7 +17,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
+      - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all -Drun-slow-tests
 
   lint:
     runs-on: ubuntu-latest
