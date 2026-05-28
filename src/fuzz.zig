@@ -1,34 +1,50 @@
-// -- AFL fuzzing
-
-var arena_impl: std.heap.ArenaAllocator = .{
-    .child_allocator = std.heap.smp_allocator,
-    .state = .{},
-};
-export fn zig_fuzz_init() void {}
-
-export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
-    zig_fuzz_test1(dataptr[0..size]) catch unreachable;
-}
-
-fn zig_fuzz_test1(in: []const u8) !void {
-    _ = arena_impl.reset(.retain_capacity);
-    try hashMapOracle(in, arena_impl.allocator());
-}
-
 test "croaring oracle" {
     const Context = struct {
         fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
             try croaringOracle(smith, testgpa);
         }
     };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    const corpus = try loadCorpus(testing.io);
+    defer {
+        for (corpus) |x| testgpa.free(x);
+        testgpa.free(corpus);
+    }
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = corpus });
+}
+
+fn loadPath(io: std.Io, path: []const u8) ![]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch |e| {
+        std.log.info("loadPath: failed to read path '{s}'", .{path});
+        return e;
+    };
+}
+
+fn loadCorpus(io: std.Io) ![]const []const u8 {
+    var ret: std.ArrayList([]const u8) = .empty;
+    if (loadPath(io, ".zig-cache/f/crash")) |contents| // skip if missing
+        try ret.append(testgpa, contents)
+    else |_| {}
+
+    const path = "testdata/crashfiles";
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var iter = dir.iterate();
+    while (try iter.next(io)) |e| {
+        if (e.kind != .file) continue;
+        var buf: [256]u8 = undefined;
+        var fbs = std.Io.Writer.fixed(&buf);
+        try fbs.print("{s}/{s}", .{ path, e.name });
+
+        if (loadPath(io, fbs.buffered())) |contents| // skip if missing
+            try ret.append(testgpa, contents)
+        else |_| {}
+    }
+
+    return ret.toOwnedSlice(testgpa);
 }
 
 fn croaringOracleFile(io: std.Io, path: []const u8) !void {
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch {
-        std.debug.print("croaringOracleFile: failed to read path '{s}'\n", .{path});
-        return;
-    };
+    const contents = loadPath(io, path) catch return;
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
     try croaringOracle(&smith, testgpa);
@@ -84,57 +100,6 @@ fn fillArray(provider: anytype, array: anytype) u8 {
     const len = valFn(provider, u8, 1, array.len);
     for (0..len) |i| array[i] = valFn(provider, u32, 0, MAX_VAL);
     return len;
-}
-
-const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
-
-fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
-    var r = zroaring.Bitmap.empty;
-    defer r.deinit(allocator);
-    var oracle = HashMapOracle.empty;
-    defer oracle.deinit(allocator);
-    try oracle.ensureTotalCapacity(allocator, 1024 * 16);
-    var prng = FuzzPrng{ .input = in };
-    const random = prng.random();
-    fuzzprint("\n\n// begin hashMapOracle\n", .{});
-    while (!prng.eos()) {
-        const tag = random.enumValue(FuzzOp.Tag);
-        switch (tag) {
-            .add => try perform_op(.{ .add = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .add_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-            .add_range_closed => {
-                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
-                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
-                const val1 = random.intRangeLessThan(u32, start, start + len);
-                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
-                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
-            },
-            .remove => { // weighted 10:1 to remove existing values
-                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
-                const val = if (select_found) val: {
-                    const card = oracle.count();
-                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
-                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
-                    break :val oracle.keys()[rank];
-                } else random.intRangeLessThan(u32, 0, MAX_VAL);
-                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
-            },
-            .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .contains_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
-            .clear => try perform_op(.clear, &oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
-            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
-        }
-    }
 }
 
 fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
@@ -717,6 +682,76 @@ test "crash reproductions" {
 test "crash0" {
     //
 }
+
+// -- AFL fuzzing
+
+var arena_impl: std.heap.ArenaAllocator = .{
+    .child_allocator = std.heap.smp_allocator,
+    .state = .{},
+};
+export fn zig_fuzz_init() void {}
+
+export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
+    zig_fuzz_test1(dataptr[0..size]) catch unreachable;
+}
+
+fn zig_fuzz_test1(in: []const u8) !void {
+    _ = arena_impl.reset(.retain_capacity);
+    try hashMapOracle(in, arena_impl.allocator());
+}
+
+const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
+
+fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
+    var r = zroaring.Bitmap.empty;
+    defer r.deinit(allocator);
+    var oracle = HashMapOracle.empty;
+    defer oracle.deinit(allocator);
+    try oracle.ensureTotalCapacity(allocator, 1024 * 16);
+    var prng = FuzzPrng{ .input = in };
+    const random = prng.random();
+    fuzzprint("\n\n// begin hashMapOracle\n", .{});
+    while (!prng.eos()) {
+        const tag = random.enumValue(FuzzOp.Tag);
+        switch (tag) {
+            .add => try perform_op(.{ .add = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
+            .add_many => {
+                var vals: [8]u32 = undefined;
+                const len = fillArray(random, &vals);
+                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
+            },
+            .add_range_closed => {
+                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
+                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
+                const val1 = random.intRangeLessThan(u32, start, start + len);
+                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
+                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
+            },
+            .remove => { // weighted 10:1 to remove existing values
+                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
+                const val = if (select_found) val: {
+                    const card = oracle.count();
+                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
+                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
+                    break :val oracle.keys()[rank];
+                } else random.intRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
+            },
+            .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
+            .contains_many => {
+                var vals: [8]u32 = undefined;
+                const len = fillArray(random, &vals);
+                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
+            },
+            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
+            .clear => try perform_op(.clear, &oracle, &r, allocator),
+            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
+            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
+        }
+    }
+}
+
+// -- end AFL fuzzing
 
 const std = @import("std");
 const mem = std.mem;
