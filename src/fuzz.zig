@@ -42,6 +42,7 @@ test "croaring oracle crashes" {
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
+        std.debug.print("{t} {s}\n", .{ e.kind, e.name });
         if (e.kind != .file) continue;
         try croaringOracleFile(io, e.name);
     }
@@ -60,7 +61,7 @@ pub const FuzzOp = union(enum) {
     // don't print.  not part of reproduction.
     contains: u32,
     contains_many: []const u32,
-    get_cardinality: u64,
+    get_cardinality,
 
     pub const Tag = std.meta.Tag(FuzzOp);
 };
@@ -92,7 +93,7 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
     try oracle.ensureTotalCapacity(allocator, 1024 * 16);
     var prng = FuzzPrng{ .input = in };
     const random = prng.random();
-    fuzzprint("\n\n", .{});
+    fuzzprint("\n\n// begin hashMapOracle\n", .{});
     while (!prng.eos()) {
         const tag = random.enumValue(FuzzOp.Tag);
         switch (tag) {
@@ -116,7 +117,7 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
                 const len = fillArray(random, &vals);
                 try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
             },
-            .get_cardinality => try perform_op(.{ .get_cardinality = oracle.count() }, &oracle, &r, allocator),
+            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
             .clear => try perform_op(.clear, &oracle, &r, allocator),
             .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
             .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
@@ -130,7 +131,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     const oracle = c.roaring_bitmap_create().?;
     defer c.roaring_bitmap_free(oracle);
 
-    fuzzprint("\n\n", .{});
+    fuzzprint("\n\n// begin croaringOracle\n", .{});
     while (!smith.eos()) {
         const tag = smith.value(FuzzOp.Tag);
         switch (tag) {
@@ -168,8 +169,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 try perform_op(.{ .contains_many = vals[0..len] }, oracle, &r, allocator);
             },
             .get_cardinality => {
-                const val = c.roaring_bitmap_get_cardinality(oracle);
-                try perform_op(.{ .get_cardinality = val }, oracle, &r, allocator);
+                try perform_op(.get_cardinality, oracle, &r, allocator);
             },
         }
     }
@@ -233,7 +233,7 @@ fn perform_op(
         .contains,
         .contains_many,
         .get_cardinality,
-        => fuzzprint("\n", .{}),
+        => {},
     }
     switch (op) {
         .add => |val| {
@@ -272,6 +272,7 @@ fn perform_op(
             }
         },
         .remove => |val| {
+            fuzzprint("{} }},\n", .{val});
             try std.testing.expectEqual(
                 if (is_cr) c.roaring_bitmap_remove_checked(oracle, val) else oracle.remove(val),
                 try r.remove_checked(allocator, val),
@@ -314,12 +315,11 @@ fn perform_op(
                 );
             }
         },
-        .get_cardinality => |val| {
-            try std.testing.expectEqual(val, if (is_cr)
+        .get_cardinality => {
+            try std.testing.expectEqual(if (is_cr)
                 c.roaring_bitmap_get_cardinality(oracle)
             else
-                oracle.count());
-            try std.testing.expectEqual(val, r.get_cardinality());
+                oracle.count(), r.get_cardinality());
         },
     }
     try std.testing.expectEqual(
@@ -353,19 +353,13 @@ test "crash reproductions" {
     try perform_ops(&.{
         .{ .add_many = &.{ 98128, 17714 } },
         .{ .add_range_closed = .{ 0, 100 } },
-        .{ .contains = 98128 },
-        .{ .contains = 17714 },
-        .{ .contains = 0 },
-        .{ .contains = 50 },
-        .{ .contains = 100 },
-        .{ .get_cardinality = 103 },
+        .get_cardinality,
     });
 
     try perform_ops(&.{
         .{ .add = 28939 },
         .{ .add_range_closed = .{ 58, 109 } },
         .{ .add_range_closed = .{ 15, 158 } },
-        .{ .contains = 65277 },
     });
 
     try perform_ops(&.{
@@ -406,8 +400,6 @@ test "crash reproductions" {
         .{ .add = 0 },
         .{ .add = 256 },
         .{ .add = 194 },
-        .{ .contains = 107 },
-        .{ .contains = 73080 },
         .{ .add = 28 },
     });
 
@@ -445,7 +437,7 @@ test "crash reproductions" {
         .{ .remove = 62568 },
         .{ .add_range_closed = .{ 10276, 10424 } },
         .{ .remove = 49098 },
-        .{ .clear = {} },
+        .clear,
         .{ .add = 62568 },
         .{ .remove = 62568 },
         .{ .add = 49721 },
@@ -489,27 +481,27 @@ test "crash reproductions" {
         .{ .remove = 51475 },
         .{ .add_many = &.{ 84217, 31754, 94058, 4, 90104, 7649, 98806 } },
         .{ .add_range_closed = .{ 6048, 6184 } },
-        .{ .clear = {} },
+        .clear,
         .{ .remove = 63913 },
-        .{ .clear = {} },
-        .{ .get_cardinality = 0 },
+        .clear,
+        .get_cardinality,
         .{ .add = 51548 },
         .{ .add_range_closed = .{ 14181, 14276 } },
         .{ .add_range_closed = .{ 814, 945 } },
         .{ .remove = 63913 },
         .{ .add_many = &.{93120} },
         .{ .add_range_closed = .{ 5677, 5702 } },
-        .{ .get_cardinality = 256 },
-        .{ .get_cardinality = 256 },
+        .get_cardinality,
+        .get_cardinality,
         .{ .add_many = &.{ 27047, 95148, 96415, 27461 } },
-        .{ .get_cardinality = 260 },
+        .get_cardinality,
         .{ .add_many = &.{ 16912, 74410, 93120, 59285 } },
     });
 
     try perform_ops(&.{
         .{ .add = 26360 },
         .{ .add_range_closed = .{ 7557, 7640 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .add_many = &.{ 66305, 6151, 80245, 13872, 7641, 7641 } },
     });
 
@@ -517,7 +509,7 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 13042, 13044 } },
         .{ .add = 62034 },
         .{ .add_many = &.{ 56204, 13694, 95054, 72879 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
     });
 
     try perform_ops(&.{ // run_container_add_range_nruns stale ptr
@@ -528,49 +520,48 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 1788, 1883 } },
         .{ .add_many = &.{ 15443, 80245, 46573, 8525, 4618, 57642, 4618 } },
         .{ .remove = 61611 },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .add_many = &.{ 9606, 35473, 53110, 96833, 56206, 19615, 89556 } },
         .{ .add_range_closed = .{ 6425, 6597 } },
     });
 
     try perform_ops(&.{ // break run in two when blockslen==blockscapacity
         .{ .add_many = &.{ 71302, 41283, 5184, 53083 } },
-        .{ .run_optimize = {} },
-        .{ .get_cardinality = 4 },
+        .run_optimize,
+        .get_cardinality,
         .{ .add_range_closed = .{ 3356, 3443 } },
         .{ .add_range_closed = .{ 11478, 11585 } },
         .{ .add_range_closed = .{ 10140, 10242 } },
         .{ .add_range_closed = .{ 4020, 4068 } },
         .{ .add_range_closed = .{ 1593, 1748 } },
-        .{ .get_cardinality = 508 },
-        .{ .run_optimize = {} },
+        .get_cardinality,
+        .run_optimize,
         .{ .remove = 1680 },
     });
 
     try perform_ops(&.{ // convert_run_to_efficient_container integer overflow
-        .{ .run_optimize = {} },
-        .{ .contains = 6370 },
+        .run_optimize,
         .{ .add_range_closed = .{ 8404, 8449 } },
-        .{ .get_cardinality = 46 },
+        .get_cardinality,
         .{ .add_range_closed = .{ 8349, 8534 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .add_range_closed = .{ 8369, 8486 } },
-        .{ .get_cardinality = 186 },
+        .get_cardinality,
         .{ .add_range_closed = .{ 4477, 4544 } },
         .{ .add_many = &.{ 4435, 42585, 13881, 34164, 21153 } },
         .{ .contains_many = &.{ 50428, 72937, 13881, 35471, 2056, 52358 } },
         .{ .add_range_closed = .{ 9468, 9585 } },
         .{ .remove = 9559 },
         .{ .add_many = &.{ 57594, 84215, 0, 9586, 57594, 3007 } },
-        .{ .run_optimize = {} },
-        .{ .run_optimize = {} },
+        .run_optimize,
+        .run_optimize,
         .{ .contains_many = &.{ 9586, 9586, 76212, 6165 } },
         .{ .remove = 42662 },
         .{ .add_many = &.{57594} },
         .{ .remove = 57594 },
         .{ .add_range_closed = .{ 2639, 2642 } },
         .{ .add_many = &.{ 4825, 65535 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
     });
 
     try perform_ops(&.{ // add_range_closed blockoffset counting bug
@@ -579,7 +570,7 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 295, 1717 } },
         .{ .shrink_to_fit = {} },
         .{ .add_range_closed = .{ 618200, 619690 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 524057, 524674 } },
         .{ .add_range_closed = .{ 700979, 701862 } },
@@ -608,7 +599,7 @@ test "crash reproductions" {
         .{ .add_many = &.{ 129631, 93925 } },
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 87, 7994 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .shrink_to_fit = {} },
         .{ .add_range_closed = .{ 102782, 107350 } },
     });
@@ -616,7 +607,7 @@ test "crash reproductions" {
     try perform_ops(&.{ // convert_run_optimize, bitset, update blockslen
         .{ .add = 21571 },
         .{ .add_range_closed = .{ 230, 5482 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .add_range_closed = .{ 355102, 356802 } },
     });
 
@@ -624,14 +615,14 @@ test "crash reproductions" {
         .{ .add_many = &.{ 129631, 93925 } },
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 87, 88 } },
-        .{ .run_optimize = {} },
+        .run_optimize,
         .{ .shrink_to_fit = {} },
         .{ .add_range_closed = .{ 102782, 103370 } },
     });
 
     try perform_ops(&.{ // bitset_lenrange_cardinality: popcount not ctz
         .{ .add_range_closed = .{ 269193, 269194 } },
-        .{ .clear = {} },
+        .clear,
         .{ .add_many = &.{ 246143, 479398, 519512, 479398, 2304, 93925 } },
         .{ .add_range_closed = .{ 105168, 109491 } },
         .{ .add_many = &.{ 976463, 48064 } },
@@ -664,9 +655,7 @@ test "crash reproductions" {
     });
 
     try perform_ops(&.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
-        .{ .contains = 490419 },
         .{ .add = 232231 },
-        .{ .contains = 489946 },
         .{ .add_range_closed = .{ 11141, 11245 } },
         .{ .remove = 11245 },
         .{ .add_range_closed = .{ 223401, 231936 } },
