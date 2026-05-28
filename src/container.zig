@@ -296,36 +296,53 @@ pub const Container = packed struct(u64) {
         return true;
     }
 
-    /// convert ac to a bitset in place.
+    pub fn get_key(c: *Container, r: Bitmap) u16 {
+        return r.array.ptr(.keys)[c - r.array.ptr(.containers)];
+    }
+
+    pub fn bitset_container_number_of_runs(words: [*]align(C.BLOCK_ALIGN) u64) u32 {
+        // TODO: use the fast lower bound, also
+        var num_runs: u32 = 0;
+        var next_word = words[0];
+
+        for (0..C.BITSET_CONTAINER_SIZE_IN_WORDS - 1) |i| {
+            const word = next_word;
+            next_word = words[i + 1];
+            num_runs += @intCast(@popCount((~word) & (word << 1)) + ((word >> 63) & ~next_word));
+        }
+
+        const word = next_word;
+        num_runs += @popCount((~word) & (word << 1));
+        if ((word & 0x8000000000000000) != 0)
+            num_runs += 1;
+        return num_runs;
+    }
+
+    /// convert ac to a bitset.
     pub fn bitset_container_from_array(
         ac: *Container,
         allocator: mem.Allocator,
         r: *Bitmap,
     ) !Container {
-        var bc: Container = .{
-            .typecode = .bitset,
-            .nblocks_minus1 = C.BITSET_BLOCKS - 1,
-            .blockoffset = ac.blockoffset,
-            .cardinality = 0,
-        };
+        // copy ac to stack temporary. large stack but this simplifies tricky
+        // blockoffset bookeeping when called by container_add_range().
+        var tmpac: [C.DEFAULT_MAX_SIZE / C.BLOCK_LEN16]Block = undefined;
+        comptime assert(@sizeOf(@TypeOf(tmpac)) == @sizeOf(root.Bitset));
+        const l = misc.numGroupsOfSize(ac.cardinality * @sizeOf(u16), C.BLOCK_SIZE);
+        @memcpy(tmpac[0..l], ac.get_blocks(r.*)[0..l]);
 
-        // copy ac blocks to temporary
-        assert(ac.nblocks() == C.BITSET_BLOCKS);
-        var tmpc = ac.*;
         const acid = ac - r.array.ptr(.containers);
-        tmpc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
-        try r.extend_array(allocator, 0, C.BITSET_BLOCKS);
-        const blocks = tmpc.get_blocks(r.*);
-        @memcpy(blocks, r.array.ptr(.containers)[acid].get_blocks(r.*));
-
-        const words = bc.blocks_as(.bitset, r.*);
+        try add_container_blocks(r, allocator, ac, C.BITSET_BLOCKS - ac.nblocks());
+        const bc = &r.array.ptr(.containers)[acid];
         @memset(bc.get_blocks(r.*), @splat(0));
-        for (tmpc.blocks_as(.array, r.*)) |v| {
+        const words = bc.blocks_as(.bitset, r.*);
+        const card = bc.cardinality;
+        bc.cardinality = 0;
+        for (misc.asSlice([]align(C.BLOCK_ALIGN) u16, &tmpac)[0..card]) |v| {
             bc.bitset_container_set(v, words);
         }
-        assert(bc.compute_cardinality(r.*) == bc.cardinality);
-        r.array.ptr(.blockslen).* = tmpc.blockoffset; // recycle tmpc
-        return bc;
+        bc.typecode = .bitset;
+        return bc.*;
     }
 
     /// Note: when an array container becomes full, it is converted to a bitset in place.
@@ -343,7 +360,7 @@ pub const Container = packed struct(u64) {
                 if (add_res != -1) {
                     return c2.*;
                 }
-                var bitset = try c.bitset_container_from_array(allocator, r);
+                var bitset = try c2.bitset_container_from_array(allocator, r);
                 bitset.bitset_container_set(value, bitset.blocks_as(.bitset, r.*));
                 return bitset;
             },
@@ -355,10 +372,14 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    pub fn run_container_serialized_size_in_bytes(cardinality: u32) u32 {
+        return @sizeOf(u16) + @sizeOf(root.Rle16) * cardinality;
+    }
+
     pub fn serialized_size_in_bytes(c: Container) u32 {
         return switch (c.typecode) {
             .array => @sizeOf(u16) * c.cardinality,
-            .run => @sizeOf(u16) + @sizeOf(root.Rle16) * c.cardinality,
+            .run => run_container_serialized_size_in_bytes(c.cardinality),
             .bitset => @sizeOf(root.Bitset),
             .shared => unreachable,
         };
@@ -951,6 +972,134 @@ pub const Container = packed struct(u64) {
         _ = bitset_extract_setbits_u16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
 
         return result;
+    }
+
+    fn array_number_of_runs(c: Container, r: Bitmap) u32 {
+        // Can SIMD work here?
+        var nr_runs: u32 = 0;
+        var prev: i32 = -2;
+        const start: [*]u16 = @ptrCast(&r.array.ptr(.blocks)[c.blockoffset]);
+        var p = start;
+        const card = c.cardinality;
+        while (p != start + card) : (p += 1) {
+            if (p[0] != prev + 1) nr_runs += 1;
+            prev = p[0];
+        }
+        return nr_runs;
+    }
+
+    /// once converted, the original container is disposed here.
+    ///
+    // TODO: split into run- array- and bitset- subfunctions for sanity;
+    // a few function calls won't really matter.
+    pub fn convert_run_optimize(cid: u32, allocator: mem.Allocator, r: *Bitmap) !Container {
+        const c = r.array.ptr(.containers)[cid];
+        if (c.typecode == .run) {
+            const newc = try r.convert_run_to_efficient_container(c, allocator);
+            if (newc != c) r.array.ptr(.containers)[cid].deinit_blocks(r.*);
+            return newc;
+        } else if (c.typecode == .array) {
+            // it might need to be converted to a run container.
+            const nruns = c.array_number_of_runs(r.*);
+            const nrunblocks = misc.numGroupsOfSize(nruns * @sizeOf(root.Rle16), C.BLOCK_SIZE);
+            var rc: Container = .{
+                .typecode = .run,
+                .cardinality = @intCast(nruns),
+                .nblocks_minus1 = @intCast(nrunblocks - 1),
+                .blockoffset = @intCast(r.array.ptr(.blockslen).*),
+            };
+            const size_as_run_container = run_container_serialized_size_in_bytes(nruns);
+            const size_as_array_container = c.serialized_size_in_bytes();
+            trace(@src(), "array. arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
+            if (size_as_array_container <= size_as_run_container) {
+                return c;
+            }
+            // convert array to run container
+            try r.extend_array(allocator, 0, nrunblocks);
+
+            var prev: i32 = -2;
+            var run_start: i32 = -1;
+
+            const ac = &r.array.ptr(.containers)[cid];
+            const card = ac.cardinality;
+            rc.cardinality = 0;
+            assert(card > 0);
+            const array = ac.blocks_as(.array, r.*)[0..ac.cardinality];
+            var i: u32 = 0;
+            while (i < card) : (i += 1) {
+                const cur_val = array[i];
+                if (cur_val != prev + 1) {
+                    // new run starts; flush old one, if any
+                    if (run_start != -1) rc.add_run(@intCast(run_start), @intCast(prev), r.*);
+                    run_start = cur_val;
+                }
+                prev = array[i];
+            }
+            assert(run_start >= 0);
+            // now prev is the last seen value
+            rc.add_run(@intCast(run_start), @intCast(prev), r.*);
+            ac.deinit_blocks(r.*);
+            r.array.ptr(.blockslen).* += nrunblocks;
+            return rc;
+        } else if (c.typecode == .bitset) { // run conversions on bitset
+            // does bitset need conversion to run?
+            const words = c.blocks_as(.bitset, r.*);
+            const nruns = Container.bitset_container_number_of_runs(words.ptr);
+            const size_as_run_container = Container.run_container_serialized_size_in_bytes(nruns);
+            if (size_as_run_container >= @sizeOf(root.Bitset)) // no conversion needed.
+                return c;
+
+            // bitset to runcontainer (ported from Java RunContainer(BitmapContainer bc, int nbrRuns))
+            assert(nruns > 0); // no empty bitmaps
+            var answer = try Container.run_container_create_given_capacity(
+                allocator,
+                nruns,
+                r.array.ptr(.blockslen).*,
+                r,
+            );
+
+            var long_ctr: u32 = 0;
+            var cur_word = words[0];
+            while (true) {
+                while (cur_word == 0 and
+                    long_ctr < C.BITSET_CONTAINER_SIZE_IN_WORDS - 1)
+                {
+                    long_ctr += 1;
+                    cur_word = words[long_ctr];
+                }
+
+                if (cur_word == 0) {
+                    c.deinit_blocks(r.*);
+                    return answer;
+                }
+
+                const local_run_start = @ctz(cur_word);
+                const run_start = local_run_start + 64 * long_ctr;
+                var cur_word_with_1s = cur_word | (cur_word - 1);
+
+                var run_end: u32 = 0;
+                while (cur_word_with_1s == std.math.maxInt(u64) and
+                    long_ctr < C.BITSET_CONTAINER_SIZE_IN_WORDS - 1)
+                {
+                    long_ctr += 1;
+                    cur_word_with_1s = words[long_ctr];
+                }
+
+                if (cur_word_with_1s == std.math.maxInt(u64)) {
+                    run_end = 64 + long_ctr * 64; // exclusive, I guess
+                    answer.add_run(@intCast(run_start), @intCast(run_end - 1), r.*);
+                    c.deinit_blocks(r.*);
+                    return answer;
+                }
+                const local_run_end = @ctz(~cur_word_with_1s);
+                run_end = local_run_end + long_ctr * 64;
+                answer.add_run(@intCast(run_start), @intCast(run_end - 1), r.*);
+                cur_word = cur_word_with_1s & (cur_word_with_1s + 1);
+            }
+            return answer;
+        } else {
+            unreachable;
+        }
     }
 
     /// Remove a value from a container return (possibly different) container.

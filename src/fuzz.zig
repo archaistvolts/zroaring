@@ -48,17 +48,19 @@ pub const FuzzOp = union(enum) {
 };
 
 const MAX_VAL = 1_000_000;
+const MAX_RANGE_LEN = 5_000;
+
 /// provider may be a `*testing.Smith` or a `std.Random`
-fn fillArray(provider: anytype, vals: anytype) u8 {
+fn fillArray(provider: anytype, array: anytype) u8 {
     const valFn = if (@TypeOf(provider) == *testing.Smith)
         testing.Smith.valueRangeLessThan
     else if (@TypeOf(provider) == std.Random)
         std.Random.intRangeLessThan
     else
         unreachable;
-    const len = valFn(provider, u8, 1, vals.len);
 
-    for (0..len) |i| vals[i] = valFn(provider, u32, 0, MAX_VAL);
+    const len = valFn(provider, u8, 1, array.len);
+    for (0..len) |i| array[i] = valFn(provider, u32, 0, MAX_VAL);
     return len;
 }
 
@@ -87,7 +89,7 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
             },
             .add_range_closed => {
                 const start = random.intRangeLessThan(u32, 0, MAX_VAL);
-                const len = random.intRangeLessThan(u16, 1, 1000);
+                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
                 const val1 = random.intRangeLessThan(u32, start, start + len);
                 const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
                 try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator, mode);
@@ -135,7 +137,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             },
             .add_range_closed => {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                const len = smith.valueRangeLessThan(u32, 1, 1000);
+                const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
                 const val1 = smith.valueRangeLessThan(u32, start, start + len);
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
                 try perform_op(.{ .add_range_closed = .{ val1, val2 } }, oracle, &r, allocator, mode);
@@ -587,6 +589,20 @@ test "crash reproductions" {
     try perform_ops(&.{ // create range: overflow
         .{ .add = 74473 },
         .{ .add_range_closed = .{ 262143, 262845 } },
+    });
+
+    try perform_ops(&.{ // container_add_range bitset
+        .{ .add = 21571 },
+        .{ .add_range_closed = .{ 230, 5661 } },
+    });
+
+    try perform_ops(&.{ // container_add_range bitset
+        .{ .add_many = &.{ 129631, 93925 } },
+        .{ .add = 65536 },
+        .{ .add_range_closed = .{ 87, 7994 } },
+        .{ .run_optimize = {} },
+        .{ .shrink_to_fit = {} },
+        .{ .add_range_closed = .{ 102782, 107350 } },
     });
 }
 
