@@ -672,6 +672,19 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 223401, 231936 } },
         .{ .add_range_closed = .{ 192113, 199991 } },
     });
+
+    try perform_ops(&.{ // remove_at_index @memmove length bug
+        .{ .add = 956902 },
+        .shrink_to_fit,
+        .{ .add_many = &.{ 547367, 43854 } },
+        .clear,
+        .{ .add_range_closed = .{ 63253, 68554 } },
+        .{ .remove = 8283 },
+        .{ .add = 80434 },
+        .{ .add_many = &.{ 929337, 106248, 347873, 514060, 164928 } },
+        .{ .add = 533060 },
+        .{ .remove = 164928 },
+    });
 }
 
 test "crash0" {

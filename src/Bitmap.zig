@@ -1485,14 +1485,14 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
     return answer + size - newsize;
 }
 
-pub fn remove_at_index(ra: Bitmap, i: u32) void {
-    const len = ra.array.ptr(.len).*;
-    const ctrs = ra.array.ptr(.containers);
-    const keys = ra.array.ptr(.keys);
-    ctrs[i].deinit_blocks(ra);
-    @memmove(ctrs[i..], ctrs[i + 1 ..][0..len]);
-    @memmove(keys[i..], keys[i + 1 ..][0..len]);
-    ra.array.ptr(.len).* -= 1;
+pub fn remove_at_index(r: Bitmap, i: u32) void {
+    const len = r.array.ptr(.len).*;
+    const ctrs = r.array.ptr(.containers);
+    const keys = r.array.ptr(.keys);
+    ctrs[i].deinit_blocks(r);
+    @memmove(ctrs[i..], ctrs[i + 1 ..][0 .. len - i]);
+    @memmove(keys[i..], keys[i + 1 ..][0 .. len - i]);
+    r.array.ptr(.len).* -= 1;
 }
 
 /// Effectively deletes the value at index index, repacking data.
@@ -1529,28 +1529,30 @@ pub fn remove(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
 pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
     r.assert_valid();
     defer r.assert_valid();
+    trace(@src(), "val={}", .{val});
     const key: u16 = @truncate(val >> 16);
     const i = r.get_key_index(key);
     if (i >= 0) {
         // TODO // r.unshare_container_at_index(i);
         const iu: u32 = @intCast(i);
-        const container = &r.array.ptr(.containers)[iu];
-        const oldc = container.*;
-        const oldCardinality = container.get_cardinality(r.*);
-        const container2 = try container.remove(allocator, @truncate(val), r);
-        if (container2 != oldc) {
-            if (oldc.blockoffset != container2.blockoffset)
+        const c = &r.array.ptr(.containers)[iu];
+        const oldc = c.*;
+        const oldcard = c.get_cardinality(r.*);
+        const c2 = try c.remove(allocator, @truncate(val), r);
+        if (c2 != oldc) {
+            if (oldc.blockoffset != c2.blockoffset)
                 oldc.deinit_blocks(r.*);
-            r.array.ptr(.containers)[iu] = container2;
+            r.array.ptr(.containers)[iu] = c2;
         }
 
-        const newCardinality = container2.get_cardinality(r.*);
-        if (newCardinality != 0) {
-            r.array.ptr(.containers)[iu] = container2;
+        const newcard = c2.get_cardinality(r.*);
+        // trace(@src(), "old/newcard={}/{} c2={f}", .{ oldcard, newcard, c2.fmt(r.*, c.get_key(r.*)) });
+        if (newcard != 0) {
+            r.array.ptr(.containers)[iu] = c2;
         } else {
             r.array.ptr(.containers)[iu].deinit(r.*);
         }
-        return oldCardinality != newCardinality;
+        return oldcard != newcard;
     }
     return false;
 }

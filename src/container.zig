@@ -84,15 +84,7 @@ pub const Container = packed struct(u64) {
         var reason: ?[]const u8 = null;
         if (!c.internal_validate(&reason, r)) {
             trace(@src(), "{s}", .{reason.?});
-            const cid = c - r.array.ptr(.containers);
-            trace(@src(), "{f}", .{c.fmt(r, r.array.ptr(.keys)[cid])});
-            switch (c.typecode) {
-                .array => trace(@src(), "{any}", .{c.blocks_as(.array, r)[0..c.cardinality]}),
-                .bitset => {},
-                .run => {},
-                .shared => {},
-            }
-
+            trace(@src(), "{f}", .{c.fmt(r, c.get_key(r))});
             unreachable;
         }
     }
@@ -1117,8 +1109,13 @@ pub const Container = packed struct(u64) {
     /// This function may allocate a new container, and caller is responsible for
     /// memory deallocation
     pub fn remove(c: *Container, allocator: mem.Allocator, val: u16, r: *Bitmap) !Container {
-        trace(@src(), "{}", .{val});
+        c.assert_valid(r.*);
         const cid = c - r.array.ptr(.containers);
+        defer {
+            const c2 = &r.array.ptr(.containers)[cid];
+            if (c2.cardinality > 0) c2.assert_valid(r.*);
+        }
+        trace(@src(), "{}", .{val});
         // TODO // c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
             .bitset => {
