@@ -1029,7 +1029,6 @@ pub const Container = packed struct(u64) {
 
             var prev: i32 = -2;
             var run_start: i32 = -1;
-
             const ac = &r.array.ptr(.containers)[cid];
             const card = ac.cardinality;
             rc.cardinality = 0;
@@ -1079,7 +1078,6 @@ pub const Container = packed struct(u64) {
 
                 if (cur_word == 0) {
                     r.array.ptr(.containers)[cid].deinit_blocks(r.*);
-                    r.array.ptr(.blockslen).* += answer.nblocks();
                     return answer;
                 }
 
@@ -1099,7 +1097,6 @@ pub const Container = packed struct(u64) {
                     run_end = 64 + long_ctr * 64; // exclusive, I guess
                     answer.add_run(@intCast(run_start), @intCast(run_end - 1), r.*);
                     r.array.ptr(.containers)[cid].deinit_blocks(r.*);
-                    r.array.ptr(.blockslen).* += answer.nblocks();
                     return answer;
                 }
                 const local_run_end = @ctz(~cur_word_with_1s);
@@ -1107,7 +1104,6 @@ pub const Container = packed struct(u64) {
                 answer.add_run(@intCast(run_start), @intCast(run_end - 1), r.*);
                 cur_word = cur_word_with_1s & (cur_word_with_1s + 1);
             }
-            r.array.ptr(.blockslen).* += answer.nblocks();
             return answer;
         } else {
             unreachable;

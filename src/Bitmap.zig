@@ -286,6 +286,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         @branchHint(.unlikely);
         r.* = try create_with_capacity(allocator, 1);
     }
+    trace(@src(), "{f}", .{r.fmtLong()});
 
     const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
     const mcontaineridx = misc.binarySearch(r.slice(.keys, .len), key);
@@ -683,6 +684,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     }
 
     trace(@src(), "#{} [{},{})", .{ max - min, min, max });
+    trace(@src(), "{f}", .{r.fmtLong()});
 
     const min_key = min >> 16;
     const max_key = max >> 16;
@@ -952,6 +954,7 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
 /// Additional savings might be possible by calling `shrink_to_fit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     r.assert_valid();
+    trace(@src(), "{f}", .{r.fmtLong()});
     defer r.assert_valid();
     var answer = false;
     for (0..r.array.ptr(.len).*) |i| {
@@ -979,12 +982,12 @@ pub const get_cardinality = cardinality;
 /// container and he becomes responsible to free the new one.
 pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
     assert(c.typecode == .run);
-    const size_as_run_container = c.serialized_size_in_bytes();
-    const size_as_bitset_container = @sizeOf(root.Bitset);
+    const runsize = c.serialized_size_in_bytes();
     const card = c.compute_cardinality(r.*);
-    const size_as_array_container = card * @sizeOf(u16);
-    const min_size_non_run = @min(size_as_bitset_container, size_as_array_container);
-    if (size_as_run_container <= min_size_non_run) { // no conversion
+    const arraysize = card * @sizeOf(u16);
+    const min_size_non_run = @min(@sizeOf(root.Bitset), arraysize);
+    trace(@src(), "arraysize={} runsize={} min_size_non_run={}", .{ arraysize, runsize, min_size_non_run });
+    if (runsize <= min_size_non_run) { // no conversion
         return c;
     }
     if (card <= C.DEFAULT_MAX_SIZE) {
@@ -1244,18 +1247,19 @@ pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_bl
 /// Shifts rightmost $count containers to the left (distance < 0) or
 /// to the right (distance > 0).
 ///
-/// Allocates distance new containers and blocks when distance > 0.
+/// Allocates distance new containers when distance > 0.
 ///
 /// Modifies Bitmap len, adding distance.
 pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i32) !void {
     if (distance > 0) {
-        try r.extend_array(allocator, @bitCast(distance), @bitCast(distance));
+        try r.extend_array(allocator, @bitCast(distance), 0);
     }
-    const srcpos = r.array.ptr(.len).* - count;
+    const len = r.array.ptr(.len);
+    const srcpos = len.* - count;
     const dstpos = srcpos +% @as(u32, @bitCast(distance));
     trace(@src(), "count={} distance={} srcpos={} dstpos={}", .{ count, distance, srcpos, dstpos });
 
-    r.array.ptr(.len).* +%= @bitCast(distance);
+    len.* +%= @bitCast(distance);
 
     const keys = r.slice(.keys, .len);
     @memmove(keys[dstpos..].ptr, keys[srcpos..][0..count]);

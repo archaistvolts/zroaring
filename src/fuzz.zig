@@ -776,6 +776,29 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 720895, 723787 } },
         .{ .add_range_closed = .{ 654236, 733271 } },
     });
+
+    try perform_ops(&.{ // convert_run_optimize: blockslen double increment
+        .{ .add_many = &.{ 624980, 288844, 195140, 851109, 442054, 90431 } },
+        .run_optimize,
+        .{ .add_range_closed = .{ 973441, 976611 } },
+        .{ .remove = 90431 },
+        .{ .add_range_closed = .{ 130468, 135996 } },
+        .{ .add_range_closed = .{ 2856152, 2858382 } },
+        .{ .add_range_closed = .{ 107184, 107384 } },
+        .frozen_serialize,
+        .{ .remove = 107184 },
+        .{ .add_many = &.{ 624980, 50064, 814965, 963343, 50064, 138676, 168443 } },
+        .{ .add_many = &.{ 99204, 299749, 951000, 804571 } },
+        .portable_serialize,
+        .{ .remove = 135567 },
+        .run_optimize,
+        .{ .add_range_closed = .{ 921371, 924952 } },
+        .{ .add_range_closed = .{ 130836, 132565 } },
+        .{ .remove = 974319 },
+        .{ .add_many = &.{50064} },
+        .{ .add_range_closed = .{ 259797, 285999 } },
+        .run_optimize,
+    });
 }
 
 test "crash0" {
