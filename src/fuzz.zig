@@ -78,6 +78,7 @@ pub const FuzzOp = union(enum) {
     clear,
     run_optimize,
     shrink_to_fit,
+    portable_serialize,
     contains: u32,
     contains_many: []const u32,
     get_cardinality,
@@ -144,6 +145,8 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .clear => try perform_op(.clear, oracle, &r, allocator),
             .run_optimize => try perform_op(.run_optimize, oracle, &r, allocator),
             .shrink_to_fit => try perform_op(.shrink_to_fit, oracle, &r, allocator),
+            .portable_serialize => try perform_op(.portable_serialize, oracle, &r, allocator),
+            .get_cardinality => try perform_op(.get_cardinality, oracle, &r, allocator),
             .contains => {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .contains = val }, oracle, &r, allocator);
@@ -152,9 +155,6 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(smith, &vals);
                 try perform_op(.{ .contains_many = vals[0..len] }, oracle, &r, allocator);
-            },
-            .get_cardinality => {
-                try perform_op(.get_cardinality, oracle, &r, allocator);
             },
         }
     }
@@ -214,6 +214,7 @@ fn perform_op(
         .clear,
         .run_optimize,
         .shrink_to_fit,
+        .portable_serialize,
         => fuzzprint(".{t},\n", .{op}),
         .contains,
         .contains_many,
@@ -285,6 +286,21 @@ fn perform_op(
             _ = try r.shrink_to_fit(allocator);
             if (is_cr)
                 _ = c.roaring_bitmap_shrink_to_fit(oracle);
+        },
+        .portable_serialize => {
+            var w = std.Io.Writer.Allocating.init(allocator);
+            defer w.deinit();
+            var runflags: zroaring.RunFlags = undefined;
+            const x = try r.portable_serialize(&w.writer, &runflags);
+            const buf = try allocator.alloc(u8, x);
+            defer allocator.free(buf);
+            if (is_cr) {
+                try testing.expectEqual(
+                    c.roaring_bitmap_portable_serialize(oracle, buf.ptr),
+                    x,
+                );
+                try testing.expectEqualSlices(u8, buf, w.written());
+            }
         },
         // don't print, not part of reproduction
         .contains => |val| {
@@ -737,16 +753,17 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
                 } else random.intRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .remove = val }, &oracle, &r, allocator);
             },
+            .clear => try perform_op(.clear, &oracle, &r, allocator),
+            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
+            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
+            .portable_serialize => try perform_op(.portable_serialize, &oracle, &r, allocator),
+            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
             .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
             .contains_many => {
                 var vals: [8]u32 = undefined;
                 const len = fillArray(random, &vals);
                 try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
             },
-            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
-            .clear => try perform_op(.clear, &oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
-            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
         }
     }
 }
