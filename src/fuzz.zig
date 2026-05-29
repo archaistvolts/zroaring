@@ -771,6 +771,11 @@ test "crash reproductions" {
         .shrink_to_fit,
         .{ .remove = 133236 },
     });
+
+    try perform_ops(&.{
+        .{ .add_range_closed = .{ 720895, 723787 } },
+        .{ .add_range_closed = .{ 654236, 733271 } },
+    });
 }
 
 test "crash0" {

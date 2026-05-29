@@ -352,11 +352,10 @@ pub fn create_range(
     tc: Typecode,
     start: u32,
     stop: u32,
-    blockoffset: u32,
 ) !Container {
     switch (tc) {
         .run => {
-            var c = try Container.run_container_create_given_capacity(allocator, 1, blockoffset, r);
+            var c = try Container.run_container_create_given_capacity(allocator, 1, r);
             r.append_first(&c, Rle16{
                 .value = @truncate(start),
                 .length = @truncate(stop - start - 1),
@@ -364,7 +363,7 @@ pub fn create_range(
             return c;
         },
         .array => {
-            var c = try Container.array_container_create_given_capacity(allocator, stop - start, blockoffset, r);
+            var c = try Container.array_container_create_given_capacity(allocator, stop - start, r);
             const array = c.blocks_as(.array, r.*);
             var k: u32 = @intCast(start);
             while (k < stop) : (k += 1) {
@@ -387,15 +386,14 @@ pub fn range_of_ones(
     allocator: mem.Allocator,
     range_start: u32,
     range_end: u32,
-    blockoffset: u32,
 ) !Container {
     assert(range_end >= range_start);
     const card = range_end - range_start + 1;
     trace(@src(), "{}-{}:{}", .{ range_start, range_end, card });
     return if (card <= 2)
-        try r.create_range(allocator, .array, range_start, range_end, blockoffset)
+        try r.create_range(allocator, .array, range_start, range_end)
     else
-        try r.create_range(allocator, .run, range_start, range_end, blockoffset);
+        try r.create_range(allocator, .run, range_start, range_end);
 }
 
 /// Create a container with all the values between in [min,max) at a
@@ -406,12 +404,11 @@ pub fn from_range(
     min: u32,
     max: u32,
     step: u16,
-    blockoffset: u32,
 ) !Container {
     // trace(@src(), "{}-{} step {}", .{ min, max, step });
     if (step == 0) return .uninit; // being paranoid
     if (step == 1) {
-        return try r.range_of_ones(allocator, min, max, blockoffset);
+        return try r.range_of_ones(allocator, min, max);
     }
     const size = (max - min + step - 1) / step;
     if (size <= C.DEFAULT_MAX_SIZE) { // array container
@@ -479,13 +476,13 @@ fn bitset_set_lenrange(words: [*]align(C.BLOCK_ALIGN) u64, start: u32, lenminuso
 /// It is required that stop>start, the caller is responsability for this check.
 /// It is required that stop <= (1<<16), the caller is responsability for this
 /// check. The cardinality of the created container is stop - start.
-fn run_container_create_range(start: u32, stop: u32, blockoffset: u24, r: Bitmap) !Container {
-    var rc: Container = .{
-        .typecode = .run,
-        .cardinality = @intCast(stop - start),
-        .blockoffset = blockoffset,
-        .nblocks_minus1 = 0,
-    };
+fn run_container_create_range(
+    allocator: mem.Allocator,
+    start: u32,
+    stop: u32,
+    r: *Bitmap,
+) !Container {
+    var rc = try Container.run_container_create_given_capacity(allocator, 1, r);
     r.append_first(&rc, root.Rle16{
         .value = @intCast(start),
         .length = @intCast(stop - start - 1),
@@ -568,10 +565,9 @@ fn container_from_run_range(
     run: Container,
     min: u32,
     max: u32,
-    blockoffset: u24,
 ) !Container {
     // We expect most of the time to end up with a bitset container
-    var bitset = try Container.bitset_container_create(allocator, blockoffset, r);
+    var bitset = try Container.bitset_container_create(allocator, r);
     const words = bitset.blocks_as(.bitset, r.*);
     var union_cardinality: u32 = 0;
     const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
@@ -588,7 +584,7 @@ fn container_from_run_range(
     bitset.cardinality = @intCast(union_cardinality);
     if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
         // convert to an array container
-        const array = try bitset.array_container_from_bitset(allocator, blockoffset + bitset.nblocks(), r);
+        const array = try bitset.array_container_from_bitset(allocator, r);
         bitset.deinit_blocks(r.*);
         return array;
     }
@@ -607,9 +603,8 @@ fn container_add_range(
     c: *Container,
     min: u32,
     max: u32,
-    blockoffset: u24,
 ) !Container {
-    trace(@src(), "{f}", .{r});
+    trace(@src(), "{f}", .{c.fmt(r.*, c.get_key(r.*))});
     const cid = c - r.array.ptr(.containers);
     // NB: when selecting new container type, we perform only inexpensive checks
     switch (c.typecode) {
@@ -622,7 +617,7 @@ fn container_add_range(
                 bitset_lenrange_cardinality(words.ptr, min, max - min);
 
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
-                return run_container_create_range(0, C.MAX_KEY_CARDINALITY, blockoffset, r.*);
+                return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else {
                 bitset_set_lenrange(words.ptr, min, max - min);
                 c.cardinality = @intCast(union_cardinality);
@@ -639,7 +634,7 @@ fn container_add_range(
                 nvals_less + (max - min + 1) + nvals_greater;
             trace(@src(), "array union_cardinality={}", .{union_cardinality});
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
-                return run_container_create_range(0, C.MAX_KEY_CARDINALITY, blockoffset, r.*);
+                return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
                 try r.array_container_add_range_nvals(allocator, c, min, max, nvals_less, nvals_greater);
                 return r.array.ptr(.containers)[cid];
@@ -659,11 +654,12 @@ fn container_add_range(
             const run_size_bytes =
                 (nruns_less + 1 + nruns_greater) * @sizeOf(root.Rle16);
 
+            trace(@src(), "run run_size_bytes={}", .{run_size_bytes});
             if (run_size_bytes <= @sizeOf(root.Bitset)) {
                 try r.run_container_add_range_nruns(allocator, c, min, max, nruns_less, nruns_greater);
                 return r.array.ptr(.containers)[cid];
             }
-            return r.container_from_run_range(allocator, c.*, min, max, blockoffset);
+            return r.container_from_run_range(allocator, c.*, min, max);
         },
         else => unreachable,
     }
@@ -686,14 +682,14 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         r.* = try create_with_capacity(allocator, 0);
     }
 
-    trace(@src(), "[{},{})", .{ min, max });
+    trace(@src(), "#{} [{},{})", .{ max - min, min, max });
 
     const min_key = min >> 16;
     const max_key = max >> 16;
     const num_required_containers = max_key - min_key + 1;
     const len = r.array.ptr(.len).*;
     const keys = r.array.ptr(.keys)[0..len];
-    var blockoffset: u24 = @intCast(r.array.ptr(.blockslen).*);
+    const blockoffset = r.array.ptr(.blockslen).*;
     errdefer { // maintain initial lens on error
         r.array.ptr(.len).* = len;
         r.array.ptr(.blockslen).* = blockoffset;
@@ -720,25 +716,20 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         if (src >= 0 and r.slice(.keys, .len)[srcu] == key) {
             // TODO // ra.unshare_container_at_index(srcu);
             const c = &r.array.ptr(.containers)[srcu];
-            const cnblocks = c.nblocks_minus1;
-            newc = try r.container_add_range(allocator, c, container_min, container_max, blockoffset);
+            newc = try r.container_add_range(allocator, c, container_min, container_max);
             if (newc != r.array.ptr(.containers)[srcu]) {
                 if (newc.blockoffset != r.array.ptr(.containers)[srcu].blockoffset)
                     r.array.ptr(.containers)[srcu].deinit_blocks(r.*);
             }
             src -= 1;
-            blockoffset += newc.nblocks_minus1 - cnblocks;
         } else {
-            newc = try r.from_range(allocator, container_min, container_max + 1, 1, blockoffset);
-            blockoffset += newc.nblocks();
+            newc = try r.from_range(allocator, container_min, container_max + 1, 1);
         }
         // trace(@src(), "dst {}, newc {f}", .{ dst, newc.fmt(r.*, @intCast(key)) });
         assert(newc != Container.uninit);
         r.replace_key_and_container_at_index(dst, @truncate(key), newc);
         dst -%= 1;
     }
-    // trace(@src(), "r.array.ptr(.blockslen)={} blockoffset={}", .{ r.array.ptr(.blockslen).*, blockoffset });
-    assert(r.array.ptr(.blockslen).* == blockoffset);
 }
 
 /// Add all values in range [min, max)
@@ -1133,7 +1124,7 @@ pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
         }
         if (!c.internal_validate(reason, r)) {
             const cid = c - r.array.ptr(.containers);
-            trace(@src(), "invalid container at index={} {f}", .{ cid, c.fmt(r, keys[cid]) });
+            trace(@src(), "invalid container at index={}: {f}", .{ cid, c.fmtLong(r, keys[cid]) });
             // reason should already be set
             if (reason.* == null) {
                 reason.* = "container failed to validate but no reason given";
@@ -1154,7 +1145,7 @@ pub fn assert_valid(r: Bitmap) void {
     var reason: ?[]const u8 = null;
     if (!r.internal_validate(&reason)) {
         trace(@src(), "{s}", .{reason.?});
-        trace(@src(), "{f}", .{r});
+        trace(@src(), "{f}", .{r.fmtLong()});
         for (r.slice(.keys, .len), r.slice(.containers, .len), 0..) |k, c, i| {
             if (false)
                 trace(@src(), "{} {}: {f}", .{ i, k, c.fmt(r) });
@@ -1255,7 +1246,7 @@ pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_bl
 ///
 /// Allocates distance new containers and blocks when distance > 0.
 ///
-/// Modifies Bitmap len and blockslen, adding distance to both.
+/// Modifies Bitmap len, adding distance.
 pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i32) !void {
     if (distance > 0) {
         try r.extend_array(allocator, @bitCast(distance), @bitCast(distance));
@@ -1264,8 +1255,7 @@ pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i3
     const dstpos = srcpos +% @as(u32, @bitCast(distance));
     trace(@src(), "count={} distance={} srcpos={} dstpos={}", .{ count, distance, srcpos, dstpos });
 
-    r.array.ptr(.len).* += @bitCast(distance);
-    r.array.ptr(.blockslen).* += @bitCast(distance);
+    r.array.ptr(.len).* +%= @bitCast(distance);
 
     const keys = r.slice(.keys, .len);
     @memmove(keys[dstpos..].ptr, keys[srcpos..][0..count]);

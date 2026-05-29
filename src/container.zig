@@ -84,7 +84,7 @@ pub const Container = packed struct(u64) {
         var reason: ?[]const u8 = null;
         if (!c.internal_validate(&reason, r)) {
             trace(@src(), "{s}", .{reason.?});
-            trace(@src(), "{f}", .{c.fmt(r, c.get_key(r))});
+            trace(@src(), "{f}", .{c.fmtLong(r, c.get_key(r))});
             unreachable;
         }
     }
@@ -501,7 +501,7 @@ pub const Container = packed struct(u64) {
                 for (1..v.cardinality) |i| {
                     if (prev >= array[i]) {
                         reason.* = "array elements not strictly increasing";
-                        trace(@src(), "array elements: {any}", .{array[0 .. i + 1]});
+                        trace(@src(), "[{}]={} >= [{}]={}", .{ i - 1, prev, i, array[i] });
                         return false;
                     }
                     prev = array[i];
@@ -678,7 +678,7 @@ pub const Container = packed struct(u64) {
                 return;
             }
             const hi = @as(u32, f.key) << 16;
-            try w.print("{t: <6} #{: <5} @{: <3}-{: <3} n{: <4}:", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
+            try w.print("{t: <6} #{: <5} @{: <3} - {: <3} n{: <4}:", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
             switch (c.typecode) {
                 .array => {
                     const vals0 = c.blocks_as(.array, f.r);
@@ -688,12 +688,25 @@ pub const Container = packed struct(u64) {
                             if (vals.len > 0) hi | vals[0] else null,
                             if (vals.len > 1) hi | vals[vals.len - 1] else null,
                         }),
-                        .long => {
-                            try w.writeByte('[');
-                            for (vals, 0..) |val, i| {
-                                if (i != 0) try w.writeByte(',');
-                                try w.print("{}", .{hi | val});
+                        .long => { // format [1,2,3,5,6,7] as [1..3,5..7]
+                            if (vals.len == 0) { // defensive, shouldn't happen
+                                try w.writeAll("[]");
+                                return;
                             }
+
+                            try w.writeByte('[');
+                            try w.print("{}", .{hi | vals[0]});
+                            var run_start = vals[0];
+                            for (vals[1..], 1..vals.len) |v, i| {
+                                if (v != vals[i - 1] + 1) {
+                                    if (vals[i - 1] != run_start)
+                                        try w.print("..{}", .{hi | vals[i - 1]});
+                                    try w.print(",{}", .{hi | v});
+                                    run_start = v;
+                                }
+                            }
+                            if (vals[vals.len - 1] != run_start)
+                                try w.print("..{}", .{hi | vals[vals.len - 1]});
                             try w.writeByte(']');
                         },
                     }
@@ -764,16 +777,16 @@ pub const Container = packed struct(u64) {
     pub fn array_container_create_given_capacity(
         allocator: mem.Allocator,
         card: u32,
-        blockoffset: u32,
         r: *Bitmap,
     ) !Container {
         trace(@src(), "card={}", .{card});
         const numblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
         try r.extend_array(allocator, 1, numblocks);
+        defer r.array.ptr(.blockslen).* += numblocks;
         return .{
             .typecode = .array,
             .cardinality = 0,
-            .blockoffset = @intCast(blockoffset),
+            .blockoffset = @intCast(r.array.ptr(.blockslen).*),
             .nblocks_minus1 = @intCast(numblocks - 1),
         };
     }
@@ -781,30 +794,30 @@ pub const Container = packed struct(u64) {
     pub fn run_container_create_given_capacity(
         allocator: mem.Allocator,
         nruns: u32,
-        blockoffset: u32,
         r: *Bitmap,
     ) !Container {
         trace(@src(), "nruns={}", .{nruns});
         const numblocks = misc.numGroupsOfSize(nruns * @sizeOf(root.Rle16), C.BLOCK_SIZE);
         try r.extend_array(allocator, 1, numblocks);
+        defer r.array.ptr(.blockslen).* += numblocks;
         return .{
             .typecode = .run,
             .cardinality = 0,
-            .blockoffset = @intCast(blockoffset),
+            .blockoffset = @intCast(r.array.ptr(.blockslen).*),
             .nblocks_minus1 = @intCast(numblocks - 1),
         };
     }
 
     pub fn bitset_container_create(
         allocator: mem.Allocator,
-        blockoffset: u32,
         r: *Bitmap,
     ) !Container {
         try r.extend_array(allocator, 1, C.BITSET_BLOCKS);
+        defer r.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
         return .{
             .typecode = .bitset,
             .cardinality = 0,
-            .blockoffset = @intCast(blockoffset),
+            .blockoffset = @intCast(r.array.ptr(.blockslen).*),
             .nblocks_minus1 = C.BITSET_BLOCKS - 1,
         };
     }
@@ -959,18 +972,15 @@ pub const Container = packed struct(u64) {
     pub fn array_container_from_bitset(
         bits: *Container,
         allocator: mem.Allocator,
-        blockoffset: u24,
         r: *Bitmap,
     ) !Container {
         const cid = bits - r.array.ptr(.containers);
-        var result = try array_container_create_given_capacity(allocator, bits.cardinality, blockoffset, r);
+        var result = try array_container_create_given_capacity(allocator, bits.cardinality, r);
         const bits2 = r.array.ptr(.containers)[cid];
         result.cardinality = bits2.cardinality;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
         _ = bitset_extract_setbits_u16(bits2.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
-        r.array.ptr(.blockslen).* += result.nblocks();
-
         return result;
     }
 
@@ -1053,7 +1063,6 @@ pub const Container = packed struct(u64) {
             var answer = try run_container_create_given_capacity(
                 allocator,
                 nruns,
-                r.array.ptr(.blockslen).*,
                 r,
             );
 
@@ -1119,7 +1128,7 @@ pub const Container = packed struct(u64) {
             .bitset => {
                 if (c.bitset_container_remove(val, r.*)) {
                     if (c.cardinality <= C.DEFAULT_MAX_SIZE) {
-                        return try c.array_container_from_bitset(allocator, @intCast(r.array.ptr(.blockslen).*), r);
+                        return try c.array_container_from_bitset(allocator, r);
                     }
                 }
             },
