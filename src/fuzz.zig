@@ -79,15 +79,18 @@ pub const FuzzOp = union(enum) {
     run_optimize,
     shrink_to_fit,
     portable_serialize,
+    frozen_serialize,
+    equals,
+    // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
+    // get_index, // TODO
     contains: u32,
     contains_many: []const u32,
-    get_cardinality,
 
     pub const Tag = std.meta.Tag(FuzzOp);
 };
 
-const MAX_VAL = 1_000_000;
-const MAX_RANGE_LEN = 5_000;
+const MAX_VAL = 10_000_000;
+const MAX_RANGE_LEN = 50_000;
 
 /// provider may be a `*testing.Smith` or a `std.Random`
 fn fillArray(provider: anytype, array: anytype) u8 {
@@ -139,14 +142,14 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                     assert(c.roaring_bitmap_select(oracle, rank, &val));
                     break :val val;
                 } else smith.valueRangeLessThan(u32, 0, MAX_VAL);
-
                 try perform_op(.{ .remove = val }, oracle, &r, allocator);
             },
             .clear => try perform_op(.clear, oracle, &r, allocator),
             .run_optimize => try perform_op(.run_optimize, oracle, &r, allocator),
             .shrink_to_fit => try perform_op(.shrink_to_fit, oracle, &r, allocator),
             .portable_serialize => try perform_op(.portable_serialize, oracle, &r, allocator),
-            .get_cardinality => try perform_op(.get_cardinality, oracle, &r, allocator),
+            .frozen_serialize => try perform_op(.frozen_serialize, oracle, &r, allocator),
+            .equals => try perform_op(.equals, oracle, &r, allocator),
             .contains => {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .contains = val }, oracle, &r, allocator);
@@ -193,7 +196,78 @@ const FuzzPrng = struct {
     }
 };
 
-const Mode = enum { fuzzprint, no_fuzzprint };
+// -- AFL fuzzing
+
+var arena_impl: std.heap.ArenaAllocator = .{
+    .child_allocator = std.heap.smp_allocator,
+    .state = .{},
+};
+export fn zig_fuzz_init() void {}
+
+export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
+    zig_fuzz_test1(dataptr[0..size]) catch unreachable;
+}
+
+fn zig_fuzz_test1(in: []const u8) !void {
+    _ = arena_impl.reset(.retain_capacity);
+    try hashMapOracle(in, arena_impl.allocator());
+}
+
+const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
+
+fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
+    var r = zroaring.Bitmap.empty;
+    defer r.deinit(allocator);
+    var oracle = HashMapOracle.empty;
+    defer oracle.deinit(allocator);
+    try oracle.ensureTotalCapacity(allocator, 1024 * 16);
+    var prng = FuzzPrng{ .input = in };
+    const random = prng.random();
+    fuzzprint("\n\n// begin hashMapOracle\n", .{});
+    while (!prng.eos()) {
+        const tag = random.enumValue(FuzzOp.Tag);
+        switch (tag) {
+            .add => try perform_op(.{ .add = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
+            .add_many => {
+                var vals: [8]u32 = undefined;
+                const len = fillArray(random, &vals);
+                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
+            },
+            .add_range_closed => {
+                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
+                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
+                const val1 = random.intRangeLessThan(u32, start, start + len);
+                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
+                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
+            },
+            .remove => { // weighted 10:1 to remove existing values
+                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
+                const val = if (select_found) val: {
+                    const card = oracle.count();
+                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
+                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
+                    break :val oracle.keys()[rank];
+                } else random.intRangeLessThan(u32, 0, MAX_VAL);
+                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
+            },
+            .clear => try perform_op(.clear, &oracle, &r, allocator),
+            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
+            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
+            .portable_serialize => try perform_op(.portable_serialize, &oracle, &r, allocator),
+            .frozen_serialize => try perform_op(.frozen_serialize, &oracle, &r, allocator),
+            .equals => try perform_op(.equals, &oracle, &r, allocator),
+            .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
+            .contains_many => {
+                var vals: [8]u32 = undefined;
+                const len = fillArray(random, &vals);
+                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
+            },
+        }
+    }
+}
+
+// -- end AFL fuzzing
+
 /// oracle must be [*c]c.roaring_bitmap_t or *HashMapOracle.
 fn perform_op(
     op: FuzzOp,
@@ -215,10 +289,11 @@ fn perform_op(
         .run_optimize,
         .shrink_to_fit,
         .portable_serialize,
+        .frozen_serialize,
+        .equals,
         => fuzzprint(".{t},\n", .{op}),
         .contains,
         .contains_many,
-        .get_cardinality,
         => {}, // don't print, not part of reproduction
     }
     switch (op) {
@@ -302,6 +377,24 @@ fn perform_op(
                 try testing.expectEqualSlices(u8, buf, w.written());
             }
         },
+        .frozen_serialize => {
+            const size = r.frozen_size_in_bytes();
+            const buf = try allocator.alloc(u8, size);
+            defer allocator.free(buf);
+            try r.frozen_serialize(buf);
+            if (is_cr) {
+                try testing.expectEqual(
+                    c.roaring_bitmap_frozen_size_in_bytes(oracle),
+                    size,
+                );
+                // TODO repro and file bug for UB in c.roaring_bitmap_frozen_serialize here
+                // const buf2 = try allocator.alloc(u8, size);
+                // defer allocator.free(buf2);
+                // c.roaring_bitmap_frozen_serialize(oracle, buf2.ptr);
+                // try testing.expectEqualSlices(u8, buf, buf2);
+            }
+        },
+        .equals => try testing.expect(r.equals(r.*)),
         // don't print, not part of reproduction
         .contains => |val| {
             try std.testing.expectEqual(
@@ -323,19 +416,13 @@ fn perform_op(
                 );
             }
         },
-        .get_cardinality => {
-            try std.testing.expectEqual(if (is_cr)
-                c.roaring_bitmap_get_cardinality(oracle)
-            else
-                oracle.count(), r.get_cardinality());
-        },
     }
     try std.testing.expectEqual(
         if (is_cr)
             c.roaring_bitmap_get_cardinality(oracle)
         else
             oracle.count(),
-        r.cardinality(),
+        r.get_cardinality(),
     );
 }
 
@@ -361,7 +448,6 @@ test "crash reproductions" {
     try perform_ops(&.{
         .{ .add_many = &.{ 98128, 17714 } },
         .{ .add_range_closed = .{ 0, 100 } },
-        .get_cardinality,
     });
 
     try perform_ops(&.{
@@ -492,17 +578,13 @@ test "crash reproductions" {
         .clear,
         .{ .remove = 63913 },
         .clear,
-        .get_cardinality,
         .{ .add = 51548 },
         .{ .add_range_closed = .{ 14181, 14276 } },
         .{ .add_range_closed = .{ 814, 945 } },
         .{ .remove = 63913 },
         .{ .add_many = &.{93120} },
         .{ .add_range_closed = .{ 5677, 5702 } },
-        .get_cardinality,
-        .get_cardinality,
         .{ .add_many = &.{ 27047, 95148, 96415, 27461 } },
-        .get_cardinality,
         .{ .add_many = &.{ 16912, 74410, 93120, 59285 } },
     });
 
@@ -536,13 +618,11 @@ test "crash reproductions" {
     try perform_ops(&.{ // break run in two when blockslen==blockscapacity
         .{ .add_many = &.{ 71302, 41283, 5184, 53083 } },
         .run_optimize,
-        .get_cardinality,
         .{ .add_range_closed = .{ 3356, 3443 } },
         .{ .add_range_closed = .{ 11478, 11585 } },
         .{ .add_range_closed = .{ 10140, 10242 } },
         .{ .add_range_closed = .{ 4020, 4068 } },
         .{ .add_range_closed = .{ 1593, 1748 } },
-        .get_cardinality,
         .run_optimize,
         .{ .remove = 1680 },
     });
@@ -550,11 +630,9 @@ test "crash reproductions" {
     try perform_ops(&.{ // convert_run_to_efficient_container integer overflow
         .run_optimize,
         .{ .add_range_closed = .{ 8404, 8449 } },
-        .get_cardinality,
         .{ .add_range_closed = .{ 8349, 8534 } },
         .run_optimize,
         .{ .add_range_closed = .{ 8369, 8486 } },
-        .get_cardinality,
         .{ .add_range_closed = .{ 4477, 4544 } },
         .{ .add_many = &.{ 4435, 42585, 13881, 34164, 21153 } },
         .{ .contains_many = &.{ 50428, 72937, 13881, 35471, 2056, 52358 } },
@@ -698,77 +776,6 @@ test "crash reproductions" {
 test "crash0" {
     //
 }
-
-// -- AFL fuzzing
-
-var arena_impl: std.heap.ArenaAllocator = .{
-    .child_allocator = std.heap.smp_allocator,
-    .state = .{},
-};
-export fn zig_fuzz_init() void {}
-
-export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
-    zig_fuzz_test1(dataptr[0..size]) catch unreachable;
-}
-
-fn zig_fuzz_test1(in: []const u8) !void {
-    _ = arena_impl.reset(.retain_capacity);
-    try hashMapOracle(in, arena_impl.allocator());
-}
-
-const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
-
-fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
-    var r = zroaring.Bitmap.empty;
-    defer r.deinit(allocator);
-    var oracle = HashMapOracle.empty;
-    defer oracle.deinit(allocator);
-    try oracle.ensureTotalCapacity(allocator, 1024 * 16);
-    var prng = FuzzPrng{ .input = in };
-    const random = prng.random();
-    fuzzprint("\n\n// begin hashMapOracle\n", .{});
-    while (!prng.eos()) {
-        const tag = random.enumValue(FuzzOp.Tag);
-        switch (tag) {
-            .add => try perform_op(.{ .add = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .add_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-            .add_range_closed => {
-                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
-                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
-                const val1 = random.intRangeLessThan(u32, start, start + len);
-                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
-                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
-            },
-            .remove => { // weighted 10:1 to remove existing values
-                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
-                const val = if (select_found) val: {
-                    const card = oracle.count();
-                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
-                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
-                    break :val oracle.keys()[rank];
-                } else random.intRangeLessThan(u32, 0, MAX_VAL);
-                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
-            },
-            .clear => try perform_op(.clear, &oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
-            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
-            .portable_serialize => try perform_op(.portable_serialize, &oracle, &r, allocator),
-            .get_cardinality => try perform_op(.get_cardinality, &oracle, &r, allocator),
-            .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .contains_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-        }
-    }
-}
-
-// -- end AFL fuzzing
 
 const std = @import("std");
 const mem = std.mem;
