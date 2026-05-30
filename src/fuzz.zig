@@ -4,7 +4,7 @@ test "croaring oracle" {
             try croaringOracle(smith, testgpa);
         }
     };
-    const corpus = try loadCorpus(testing.io);
+    const corpus = try loadCorpus(testing.io, "testdata/crashfiles");
     defer {
         for (corpus) |x| testgpa.free(x);
         testgpa.free(corpus);
@@ -14,26 +14,27 @@ test "croaring oracle" {
 
 fn loadPath(io: std.Io, path: []const u8) ![]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch |e| {
-        std.log.info("loadPath: failed to read path '{s}'", .{path});
+        std.log.warn("loadPath: failed to read path '{s}'", .{path});
         return e;
     };
 }
 
-fn loadCorpus(io: std.Io) ![]const []const u8 {
+/// loads .zig-cache/f/crash along with files in dirpath
+fn loadCorpus(io: std.Io, dirpath: []const u8) ![]const []const u8 {
     var ret: std.ArrayList([]const u8) = .empty;
+    defer ret.deinit(testgpa);
     if (loadPath(io, ".zig-cache/f/crash")) |contents| // skip if missing
         try ret.append(testgpa, contents)
     else |_| {}
 
-    const path = "testdata/crashfiles";
-    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    var dir = try std.Io.Dir.cwd().openDir(io, dirpath, .{ .iterate = true });
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
         if (e.kind != .file) continue;
         var buf: [256]u8 = undefined;
         var fbs = std.Io.Writer.fixed(&buf);
-        try fbs.print("{s}/{s}", .{ path, e.name });
+        try fbs.print("{s}/{s}", .{ dirpath, e.name });
 
         if (loadPath(io, fbs.buffered())) |contents| // skip if missing
             try ret.append(testgpa, contents)
@@ -51,8 +52,7 @@ fn croaringOracleFile(io: std.Io, path: []const u8) !void {
 }
 
 test "croaring oracle crash - current" {
-    const io = testing.io;
-    try croaringOracleFile(io, ".zig-cache/f/crash");
+    try croaringOracleFile(testing.io, ".zig-cache/f/crash");
 }
 
 test "croaring oracle crashes" {
@@ -163,39 +163,6 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     }
 }
 
-const FuzzPrng = struct {
-    input: []const u8,
-    pos: usize = 0,
-
-    pub fn init(input: []const u8) FuzzPrng {
-        return .{ .input = input };
-    }
-
-    pub fn random(self: *FuzzPrng) std.Random {
-        return .{ .ptr = self, .fillFn = fill };
-    }
-
-    pub fn eos(self: FuzzPrng) bool {
-        return self.pos >= self.input.len;
-    }
-
-    fn fill(ptr: *anyopaque, buf: []u8) void {
-        const self: *FuzzPrng = @ptrCast(@alignCast(ptr));
-        const remaining = self.input.len - self.pos;
-        const to_copy = @min(buf.len, remaining);
-
-        if (to_copy > 0) {
-            @memcpy(buf[0..to_copy], self.input[self.pos .. self.pos + to_copy]);
-            self.pos += to_copy;
-        }
-
-        // not enough bytes, pad with zeros to avoid uninitialized memory.
-        if (to_copy < buf.len) {
-            @memset(buf[to_copy..], 0);
-        }
-    }
-};
-
 // -- AFL fuzzing
 
 var arena_impl: std.heap.ArenaAllocator = .{
@@ -213,6 +180,76 @@ fn zig_fuzz_test1(in: []const u8) !void {
     try hashMapOracle(in, arena_impl.allocator());
 }
 
+const AflSmith = struct {
+    bytes: *Io.Reader,
+
+    // from std.Random.uintLessThan
+    pub fn uintLessThan(smith: *AflSmith, comptime T: type, less_than: T) ?T {
+        comptime assert(@typeInfo(T).int.signedness == .unsigned);
+        const bits = @typeInfo(T).int.bits;
+        assert(0 < less_than);
+        const m = std.math.mulWide(T, smith.int(T) orelse return null, less_than);
+        return @intCast(m >> bits);
+    }
+
+    pub fn int(smith: *AflSmith, T: type) ?T {
+        var ret: T = 0;
+        const buf = mem.asBytes(&ret);
+        for (buf) |*byte| {
+            byte.* = smith.bytes.takeByte() catch return null;
+        }
+        return ret;
+    }
+
+    pub fn intRangeLessThan(smith: *AflSmith, T: type, at_least: T, less_than: T) ?T {
+        comptime assert(@typeInfo(T).int.signedness == .unsigned); // TODO signed
+        return at_least + (smith.uintLessThan(T, less_than - at_least) orelse return null);
+    }
+
+    /// returns or null on eof
+    pub fn nextOp(smith: *AflSmith, vals: []u32, oracle: HashMapOracle) ?FuzzOp {
+        const byte = smith.bytes.takeByte() catch return null;
+        const tag: FuzzOp.Tag = @enumFromInt(byte % @typeInfo(FuzzOp).@"union".fields.len);
+        return switch (tag) {
+            .add => .{ .add = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null },
+            .add_many => {
+                const len = smith.intRangeLessThan(u8, 0, @intCast(vals.len)) orelse return null;
+                for (vals[0..len]) |*v| v.* = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                return .{ .add_many = vals };
+            },
+            .add_range_closed => {
+                const start = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                const len = smith.intRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
+                const val1 = smith.intRangeLessThan(u32, start, start + len) orelse return null;
+                const val2 = smith.intRangeLessThan(u32, start + len, start + len * 2) orelse return null;
+                return .{ .add_range_closed = .{ val1, val2 } };
+            },
+            .remove => { // weighted 10:1 to remove existing values
+                const select_found = (smith.intRangeLessThan(u8, 0, 10) orelse return null) > 0; // usually true
+                const val = if (select_found) val: {
+                    const card = oracle.count();
+                    if (card == 0) break :val smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                    const rank = smith.intRangeLessThan(u32, 0, @truncate(card)) orelse return null;
+                    break :val oracle.keys()[rank];
+                } else smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                return .{ .remove = val };
+            },
+            .clear => .clear,
+            .run_optimize => .run_optimize,
+            .shrink_to_fit => .shrink_to_fit,
+            .portable_serialize => .portable_serialize,
+            .frozen_serialize => .frozen_serialize,
+            .equals => .equals,
+            .contains => .{ .contains = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null },
+            .contains_many => {
+                const len = smith.intRangeLessThan(u8, 0, @intCast(vals.len)) orelse return null;
+                for (vals[0..len]) |*v| v.* = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                return .{ .contains_many = vals };
+            },
+        };
+    }
+};
+
 const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
 
 fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
@@ -221,49 +258,102 @@ fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
     var oracle = HashMapOracle.empty;
     defer oracle.deinit(allocator);
     try oracle.ensureTotalCapacity(allocator, 1024 * 16);
-    var prng = FuzzPrng{ .input = in };
-    const random = prng.random();
+    var fbs = Io.Reader.fixed(in);
+    var smith = AflSmith{ .bytes = &fbs };
+
     fuzzprint("\n\n// begin hashMapOracle\n", .{});
-    while (!prng.eos()) {
-        const tag = random.enumValue(FuzzOp.Tag);
-        switch (tag) {
-            .add => try perform_op(.{ .add = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .add_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .add_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-            .add_range_closed => {
-                const start = random.intRangeLessThan(u32, 0, MAX_VAL);
-                const len = random.intRangeLessThan(u16, 1, MAX_RANGE_LEN);
-                const val1 = random.intRangeLessThan(u32, start, start + len);
-                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
-                try perform_op(.{ .add_range_closed = .{ val1, val2 } }, &oracle, &r, allocator);
-            },
-            .remove => { // weighted 10:1 to remove existing values
-                const select_found = random.intRangeLessThan(u8, 0, 10) > 0; // usually true
-                const val = if (select_found) val: {
-                    const card = oracle.count();
-                    if (card == 0) break :val random.intRangeLessThan(u32, 0, MAX_VAL);
-                    const rank = random.intRangeLessThan(u32, 0, @truncate(card));
-                    break :val oracle.keys()[rank];
-                } else random.intRangeLessThan(u32, 0, MAX_VAL);
-                try perform_op(.{ .remove = val }, &oracle, &r, allocator);
-            },
-            .clear => try perform_op(.clear, &oracle, &r, allocator),
-            .run_optimize => try perform_op(.run_optimize, &oracle, &r, allocator),
-            .shrink_to_fit => try perform_op(.shrink_to_fit, &oracle, &r, allocator),
-            .portable_serialize => try perform_op(.portable_serialize, &oracle, &r, allocator),
-            .frozen_serialize => try perform_op(.frozen_serialize, &oracle, &r, allocator),
-            .equals => try perform_op(.equals, &oracle, &r, allocator),
-            .contains => try perform_op(.{ .contains = random.intRangeLessThan(u32, 0, MAX_VAL) }, &oracle, &r, allocator),
-            .contains_many => {
-                var vals: [8]u32 = undefined;
-                const len = fillArray(random, &vals);
-                try perform_op(.{ .contains_many = vals[0..len] }, &oracle, &r, allocator);
-            },
-        }
+    var vals: [8]u32 = undefined;
+    while (smith.nextOp(&vals, oracle)) |op| {
+        try perform_op(op, &oracle, &r, allocator);
     }
+}
+
+fn fuzzAflCrashFiles(io: Io, path: []const u8) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var iter = dir.iterate();
+    while (try iter.next(io)) |e| {
+        if (e.kind != .file) continue;
+        if (!mem.startsWith(u8, e.name, "id:")) continue;
+        var buf: [256]u8 = undefined;
+        var fbs = std.Io.Writer.fixed(&buf);
+        try fbs.print("{s}/{s}", .{ path, e.name });
+        // std.debug.print("{s}\n", .{fbs.buffered()});
+        if (loadPath(io, fbs.buffered())) |contents| // skip if missing
+        {
+            try zig_fuzz_test1(contents);
+            testgpa.free(contents);
+        } else |_| {}
+    }
+}
+
+test "AFL fuzz crashes" {
+    fuzzAflCrashFiles(testing.io, "afl/output/default/crashes") catch {};
+}
+
+const AflCtx = struct { io: Io, dir: Io.Dir, file_index: *usize };
+
+fn writeOpFile(ctx: AflCtx, ops: []const FuzzOp) !void {
+    const dir = ctx.dir;
+    const io = ctx.io;
+    var filename_buf: [32]u8 = undefined;
+    const filename = try std.fmt.bufPrint(&filename_buf, "in{d:0>3}", .{ctx.file_index.*});
+    ctx.file_index.* += 1;
+
+    const file = try dir.createFile(io, filename, .{});
+    defer file.close(io);
+
+    var bw = file.writer(io, &.{});
+    for (ops) |op| {
+        try writeOp(op, &bw.interface);
+    }
+    try bw.flush();
+}
+
+pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
+    try writer.writeByte(@intFromEnum(op));
+    switch (op) {
+        .add => |val| try writer.writeInt(u32, val, .little),
+        .add_many => |vals| {
+            try writer.writeByte(@intCast(vals.len));
+            for (vals) |v| try writer.writeInt(u32, v, .little);
+        },
+        .add_range_closed => |rg| {
+            const len = rg[1] - rg[0];
+            try writer.writeInt(u32, rg[0], .little);
+            try writer.writeInt(u32, len, .little);
+            try writer.writeInt(u32, rg[0] + len, .little); // simulate val1
+            try writer.writeInt(u32, rg[0] + len * 2, .little); // simulate val2
+        },
+        .remove => |val| {
+            try writer.writeByte(@intCast((val + 1) % 10)); // simulate weighted select_found
+            try writer.writeInt(u32, val, .little);
+        },
+        .contains => |val| try writer.writeInt(u32, val, .little),
+        .contains_many => |vals| {
+            try writer.writeByte(@intCast(vals.len));
+            for (vals) |v| try writer.writeInt(u32, v, .little);
+        },
+        .clear,
+        .run_optimize,
+        .shrink_to_fit,
+        .portable_serialize,
+        .frozen_serialize,
+        .equals,
+        => {},
+    }
+}
+
+// generates a corpus from previously discovered crashing inputs
+test "generate afl input corpus" {
+    if (true) return error.SkipZigTest; // comment out this line and run before fuzzing with AFL
+    const io = testing.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, "afl/input", .{});
+    defer dir.close(io);
+
+    var file_index: usize = 0;
+    const ctx: AflCtx = .{ .dir = dir, .io = io, .file_index = &file_index };
+    try perform_ops(ctx, writeOpFile);
 }
 
 // -- end AFL fuzzing
@@ -426,7 +516,7 @@ fn perform_op(
     );
 }
 
-fn perform_ops(ops: []const FuzzOp) !void {
+fn cr_perform_ops(_: void, ops: []const FuzzOp) !void {
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     var zr: Bitmap = .empty;
@@ -445,40 +535,44 @@ fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
 }
 
 test "crash reproductions" {
-    try perform_ops(&.{
+    try perform_ops({}, cr_perform_ops);
+}
+
+fn perform_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp) anyerror!void) !void {
+    try ops_fn(ctx, &.{
         .{ .add_many = &.{ 98128, 17714 } },
         .{ .add_range_closed = .{ 0, 100 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 28939 },
         .{ .add_range_closed = .{ 58, 109 } },
         .{ .add_range_closed = .{ 15, 158 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 6, 140 } },
         .{ .remove = 13 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 37022 },
         .{ .add_range_closed = .{ 0, 169 } },
         .{ .add = 56276 },
         .{ .add_range_closed = .{ 79, 196 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 51, 194 } },
         .{ .add = 10 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_many = &.{ 46535, 45534 } },
         .{ .add_range_closed = .{ 11, 181 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .remove = 87070 },
         .{ .add_range_closed = .{ 166, 192 } },
         .{ .add = 0 },
@@ -497,16 +591,16 @@ test "crash reproductions" {
         .{ .add = 28 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 39, 139 } },
         .{ .add_range_closed = .{ 12690, 12753 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 62568 },
         .{ .remove = 62568 },
     });
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .remove = 87070 },
         .{ .add_range_closed = .{ 166, 192 } },
         .{ .add = 0 },
@@ -525,7 +619,7 @@ test "crash reproductions" {
         .{ .add = 28 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 50119 },
         .{ .add = 62568 },
         .{ .remove = 62568 },
@@ -537,7 +631,7 @@ test "crash reproductions" {
         .{ .add = 49721 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 49191 },
         .{ .add_range_closed = .{ 66, 136 } },
         .{ .add_range_closed = .{ 13544, 13684 } },
@@ -549,7 +643,7 @@ test "crash reproductions" {
         .{ .add = 512 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 6764, 6894 } },
         .{ .add_range_closed = .{ 13773, 13854 } },
         .{ .add_range_closed = .{ 6766, 6909 } },
@@ -567,7 +661,7 @@ test "crash reproductions" {
         .{ .add_many = &.{ 53393, 21069, 57726, 19617, 78427, 65705, 2198, 7957, 66342, 85444, 95090, 52246, 30486 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 6111, 6209 } },
         .{ .add_many = &.{ 25060, 63400, 74045, 98806, 36081 } },
         .{ .add_range_closed = .{ 2476, 2573 } },
@@ -588,21 +682,21 @@ test "crash reproductions" {
         .{ .add_many = &.{ 16912, 74410, 93120, 59285 } },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add = 26360 },
         .{ .add_range_closed = .{ 7557, 7640 } },
         .run_optimize,
         .{ .add_many = &.{ 66305, 6151, 80245, 13872, 7641, 7641 } },
     });
 
-    try perform_ops(&.{ // run optimize run to array
+    try ops_fn(ctx, &.{ // run optimize run to array
         .{ .add_range_closed = .{ 13042, 13044 } },
         .{ .add = 62034 },
         .{ .add_many = &.{ 56204, 13694, 95054, 72879 } },
         .run_optimize,
     });
 
-    try perform_ops(&.{ // run_container_add_range_nruns stale ptr
+    try ops_fn(ctx, &.{ // run_container_add_range_nruns stale ptr
         .{ .add = 86940 },
         .{ .add_many = &.{ 78327, 33246, 28925, 27574, 3773, 75436, 90838 } },
         .{ .contains_many = &.{ 4218, 53202, 73992, 78031 } },
@@ -615,7 +709,7 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 6425, 6597 } },
     });
 
-    try perform_ops(&.{ // break run in two when blockslen==blockscapacity
+    try ops_fn(ctx, &.{ // break run in two when blockslen==blockscapacity
         .{ .add_many = &.{ 71302, 41283, 5184, 53083 } },
         .run_optimize,
         .{ .add_range_closed = .{ 3356, 3443 } },
@@ -627,7 +721,7 @@ test "crash reproductions" {
         .{ .remove = 1680 },
     });
 
-    try perform_ops(&.{ // convert_run_to_efficient_container integer overflow
+    try ops_fn(ctx, &.{ // convert_run_to_efficient_container integer overflow
         .run_optimize,
         .{ .add_range_closed = .{ 8404, 8449 } },
         .{ .add_range_closed = .{ 8349, 8534 } },
@@ -650,7 +744,7 @@ test "crash reproductions" {
         .run_optimize,
     });
 
-    try perform_ops(&.{ // add_range_closed blockoffset counting bug
+    try ops_fn(ctx, &.{ // add_range_closed blockoffset counting bug
         .{ .add_range_closed = .{ 269193, 269194 } },
         .{ .add_many = &.{ 573007, 65042, 934201, 955639, 952480, 934201 } },
         .{ .add_range_closed = .{ 295, 1717 } },
@@ -662,26 +756,26 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 700979, 701862 } },
     });
 
-    try perform_ops(&.{ // add_container_blocks overflow, uninit container bug
+    try ops_fn(ctx, &.{ // add_container_blocks overflow, uninit container bug
         .{ .add = 602334 },
         .{ .add_range_closed = .{ 589467, 589986 } },
     });
 
-    try perform_ops(&.{ // create_range: array unimplemented
+    try ops_fn(ctx, &.{ // create_range: array unimplemented
         .{ .add_range_closed = .{ 654535, 655360 } },
     });
 
-    try perform_ops(&.{ // create range: overflow
+    try ops_fn(ctx, &.{ // create range: overflow
         .{ .add = 74473 },
         .{ .add_range_closed = .{ 262143, 262845 } },
     });
 
-    try perform_ops(&.{ // container_add_range bitset
+    try ops_fn(ctx, &.{ // container_add_range bitset
         .{ .add = 21571 },
         .{ .add_range_closed = .{ 230, 5661 } },
     });
 
-    try perform_ops(&.{ // container_add_range bitset
+    try ops_fn(ctx, &.{ // container_add_range bitset
         .{ .add_many = &.{ 129631, 93925 } },
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 87, 7994 } },
@@ -690,14 +784,14 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 102782, 107350 } },
     });
 
-    try perform_ops(&.{ // convert_run_optimize, bitset, update blockslen
+    try ops_fn(ctx, &.{ // convert_run_optimize, bitset, update blockslen
         .{ .add = 21571 },
         .{ .add_range_closed = .{ 230, 5482 } },
         .run_optimize,
         .{ .add_range_closed = .{ 355102, 356802 } },
     });
 
-    try perform_ops(&.{ // array_container_grow: use calc_capacity()
+    try ops_fn(ctx, &.{ // array_container_grow: use calc_capacity()
         .{ .add_many = &.{ 129631, 93925 } },
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 87, 88 } },
@@ -706,7 +800,7 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 102782, 103370 } },
     });
 
-    try perform_ops(&.{ // bitset_lenrange_cardinality: popcount not ctz
+    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: popcount not ctz
         .{ .add_range_closed = .{ 269193, 269194 } },
         .clear,
         .{ .add_many = &.{ 246143, 479398, 519512, 479398, 2304, 93925 } },
@@ -728,19 +822,19 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 102455, 103396 } },
     });
 
-    try perform_ops(&.{ // bitset_lenrange_cardinality: u64 to avoid overflow
+    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: u64 to avoid overflow
         .{ .add = 75944 },
         .{ .add_range_closed = .{ 86940, 94246 } },
         .{ .add_range_closed = .{ 87951, 94779 } },
     });
 
-    try perform_ops(&.{ // bitset_set_lenrange: use wrapping math to avoid overflow
+    try ops_fn(ctx, &.{ // bitset_set_lenrange: use wrapping math to avoid overflow
         .{ .add = 29614 },
         .{ .add = 65536 },
         .{ .add_range_closed = .{ 63252, 71190 } },
     });
 
-    try perform_ops(&.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
+    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
         .{ .add = 232231 },
         .{ .add_range_closed = .{ 11141, 11245 } },
         .{ .remove = 11245 },
@@ -748,7 +842,7 @@ test "crash reproductions" {
         .{ .add_range_closed = .{ 192113, 199991 } },
     });
 
-    try perform_ops(&.{ // remove_at_index @memmove length bug
+    try ops_fn(ctx, &.{ // remove_at_index @memmove length bug
         .{ .add = 956902 },
         .shrink_to_fit,
         .{ .add_many = &.{ 547367, 43854 } },
@@ -761,7 +855,7 @@ test "crash reproductions" {
         .{ .remove = 164928 },
     });
 
-    try perform_ops(&.{ // Container.remove: skip assert_valid
+    try ops_fn(ctx, &.{ // Container.remove: skip assert_valid
         .clear,
         .{ .add_many = &.{ 188901, 624734, 783759 } },
         .shrink_to_fit,
@@ -772,12 +866,12 @@ test "crash reproductions" {
         .{ .remove = 133236 },
     });
 
-    try perform_ops(&.{
+    try ops_fn(ctx, &.{
         .{ .add_range_closed = .{ 720895, 723787 } },
         .{ .add_range_closed = .{ 654236, 733271 } },
     });
 
-    try perform_ops(&.{ // convert_run_optimize: blockslen double increment
+    try ops_fn(ctx, &.{ // convert_run_optimize: blockslen double increment
         .{ .add_many = &.{ 624980, 288844, 195140, 851109, 442054, 90431 } },
         .run_optimize,
         .{ .add_range_closed = .{ 973441, 976611 } },
