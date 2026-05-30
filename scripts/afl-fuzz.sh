@@ -1,12 +1,11 @@
 #!/bin/bash
 
-set -xe
+set -e
 
 zig build -Dfuzz-exe # --verbose
 
-#
-# appease afl warnings
-#
+echo "NOTE: sudo required to appease AFL performance warnings"
+
 echo core | sudo tee /proc/sys/kernel/core_pattern &&
   pushd /sys/devices/system/cpu &&
   echo performance | sudo tee cpu*/cpufreq/scaling_governor &&

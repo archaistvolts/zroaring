@@ -8,7 +8,7 @@ const Command = union(enum) {
     pub fn format(c: Command, w: *std.Io.Writer) !void {
         switch (c) {
             .@"api-coverage" => |x| {
-                try w.print("api-coverage --filter='{s}'", .{x.@"--filter"});
+                try w.print("api-coverage --filter {s}", .{x.@"--filter"});
             },
         }
     }
@@ -95,7 +95,9 @@ pub fn main(init: std.process.Init) !void {
                 syms_stats_by_prefix[i][1] += 1; // total
 
                 for (bitmap_syms.keys()) |bsym| {
-                    if (mem.eql(u8, cr_sym, bsym) or mem.eql(u8, cr_sym_suffix, bsym)) {
+                    if (!gop.found_existing and
+                        (mem.eql(u8, cr_sym, bsym) or mem.eql(u8, cr_sym_suffix, bsym)))
+                    {
                         gop.value_ptr.* = .{ bsym, "Bitmap" };
                         gop.found_existing = true;
                         syms_stats_by_prefix[i][0] += 1; // found
@@ -104,8 +106,7 @@ pub fn main(init: std.process.Init) !void {
 
                 for (ctr_syms.keys()) |ctrsym| {
                     if (!gop.found_existing and
-                        mem.eql(u8, cr_sym, ctrsym) or
-                        mem.eql(u8, cr_sym_suffix, ctrsym))
+                        (mem.eql(u8, cr_sym, ctrsym) or mem.eql(u8, cr_sym_suffix, ctrsym)))
                     {
                         gop.value_ptr.* = .{ ctrsym, "Container" };
                         syms_stats_by_prefix[i][0] += 1; // found
