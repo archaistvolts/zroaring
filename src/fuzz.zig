@@ -1,4 +1,4 @@
-test "croaring oracle" {
+test "croaring oracle fuzz" {
     const Context = struct {
         fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
             try croaringOracle(smith, testgpa);
@@ -12,28 +12,27 @@ test "croaring oracle" {
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = corpus });
 }
 
-fn loadPath(io: std.Io, path: []const u8) ![]const u8 {
-    return std.Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch |e| {
-        std.log.warn("loadPath: failed to read path '{s}'", .{path});
-        return e;
+fn loadPath(io: Io, path: []const u8) ![]const u8 {
+    return Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch |e| {
+        std.debug.panic("loadPath: {} path: '{s}'", .{ e, path });
     };
 }
 
 /// loads .zig-cache/f/crash along with files in dirpath
-fn loadCorpus(io: std.Io, dirpath: []const u8) ![]const []const u8 {
+fn loadCorpus(io: Io, dirpath: []const u8) ![]const []const u8 {
     var ret: std.ArrayList([]const u8) = .empty;
     defer ret.deinit(testgpa);
     if (loadPath(io, ".zig-cache/f/crash")) |contents| // skip if missing
         try ret.append(testgpa, contents)
     else |_| {}
 
-    var dir = try std.Io.Dir.cwd().openDir(io, dirpath, .{ .iterate = true });
+    var dir = try Io.Dir.cwd().openDir(io, dirpath, .{ .iterate = true });
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
         if (e.kind != .file) continue;
         var buf: [256]u8 = undefined;
-        var fbs = std.Io.Writer.fixed(&buf);
+        var fbs = Io.Writer.fixed(&buf);
         try fbs.print("{s}/{s}", .{ dirpath, e.name });
 
         if (loadPath(io, fbs.buffered())) |contents| // skip if missing
@@ -44,7 +43,7 @@ fn loadCorpus(io: std.Io, dirpath: []const u8) ![]const []const u8 {
     return ret.toOwnedSlice(testgpa);
 }
 
-fn croaringOracleFile(io: std.Io, path: []const u8) !void {
+fn croaringOracleFile(io: Io, path: []const u8) !void {
     const contents = loadPath(io, path) catch return;
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
@@ -58,13 +57,13 @@ test "croaring oracle crash - current" {
 test "croaring oracle crashes" {
     const io = testing.io;
     const path = "testdata/crashfiles";
-    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
         if (e.kind != .file) continue;
         var buf: [256]u8 = undefined;
-        var fbs = std.Io.Writer.fixed(&buf);
+        var fbs = Io.Writer.fixed(&buf);
         try fbs.print("{s}/{s}", .{ path, e.name });
         try croaringOracleFile(io, fbs.buffered());
     }
@@ -75,6 +74,7 @@ pub const FuzzOp = union(enum) {
     add_many: Many,
     add_range_closed: Two,
     remove: Remove,
+    intersect: BinOp,
     clear: u8,
     run_optimize: u8,
     shrink_to_fit: u8,
@@ -90,6 +90,13 @@ pub const FuzzOp = union(enum) {
     const Two = struct { idx: u8, val: [2]u32 };
     const Many = struct { idx: u8, vals: []const u32 };
     const Remove = struct { idx: u8, pick_existing: u8, val: u32 };
+    /// example: idx = src1 & src2.
+    const BinOp = struct {
+        /// destination index.  name `idx` follows other FuzzOps.
+        idx: u8,
+        src1: u8,
+        src2: u8,
+    };
 
     pub const Tag = std.meta.Tag(FuzzOp);
 };
@@ -132,6 +139,11 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             } }, &oracles, &rs, allocator),
+            .intersect => try perform_op(.{ .intersect = .{
+                .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
+                .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
+                .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
+            } }, &oracles, &rs, allocator),
             .clear => try perform_op(.{ .clear = idx }, &oracles, &rs, allocator),
             .run_optimize => try perform_op(.{ .run_optimize = idx }, &oracles, &rs, allocator),
             .shrink_to_fit => try perform_op(.{ .shrink_to_fit = idx }, &oracles, &rs, allocator),
@@ -172,15 +184,14 @@ fn zig_fuzz_test1(in: []const u8) !void {
 const AflSmith = struct {
     bytes: *Io.Reader,
 
-    // from std.Random.uintLessThan
     pub fn uintLessThan(smith: *AflSmith, comptime T: type, less_than: T) ?T {
         comptime assert(@typeInfo(T).int.signedness == .unsigned);
         assert(0 < less_than);
-        const val = smith.int(T) orelse return null;
+        const val = smith.value(T) orelse return null;
         return val % less_than;
     }
 
-    pub fn int(smith: *AflSmith, T: type) ?T {
+    pub fn value(smith: *AflSmith, T: type) ?T {
         var ret: T = 0;
         const buf = mem.asBytes(&ret);
         for (buf) |*byte| {
@@ -189,34 +200,39 @@ const AflSmith = struct {
         return ret;
     }
 
-    pub fn intRangeLessThan(smith: *AflSmith, T: type, at_least: T, less_than: T) ?T {
+    pub fn valueRangeLessThan(smith: *AflSmith, T: type, at_least: T, less_than: T) ?T {
         comptime assert(@typeInfo(T).int.signedness == .unsigned); // TODO signed
         return at_least + (smith.uintLessThan(T, less_than - at_least) orelse return null);
     }
 
     /// returns or null on eof
-    pub fn nextOp(smith: *AflSmith, vals: []u32) ?FuzzOp {
+    pub fn nextOp(smith: *AflSmith, outvals: []u32) ?FuzzOp {
         const byte = smith.bytes.takeByte() catch return null;
         const tag: FuzzOp.Tag = @enumFromInt(byte % @typeInfo(FuzzOp).@"union".fields.len);
-        const idx = smith.intRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null;
+        const idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null;
         return switch (tag) {
-            .add => .{ .add = .{ .idx = idx, .val = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
+            .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
             .add_many => {
-                const len = smith.intRangeLessThan(u8, 0, @intCast(vals.len + 1)) orelse return null;
-                for (vals[0..len]) |*v| v.* = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
-                return .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
+                const len = smith.valueRangeLessThan(u8, 0, @intCast(outvals.len + 1)) orelse return null;
+                for (outvals[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                return .{ .add_many = .{ .idx = idx, .vals = outvals[0..len] } };
             },
             .add_range_closed => {
-                const start = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
-                const len = smith.intRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
-                const val1 = smith.intRangeLessThan(u32, start, start + len) orelse return null;
-                const val2 = smith.intRangeLessThan(u32, start + len, start + len * 2) orelse return null;
+                const start = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
+                const val1 = smith.valueRangeLessThan(u32, start, start + len) orelse return null;
+                const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2) orelse return null;
                 return .{ .add_range_closed = .{ .idx = idx, .val = .{ val1, val2 } } };
             },
             .remove => .{ .remove = .{
                 .idx = idx,
-                .pick_existing = smith.int(u8) orelse return null,
-                .val = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null,
+                .pick_existing = smith.value(u8) orelse return null,
+                .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null,
+            } },
+            .intersect => .{ .intersect = .{
+                .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
+                .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
+                .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             } },
             .clear => .{ .clear = idx },
             .run_optimize => .{ .run_optimize = idx },
@@ -224,11 +240,11 @@ const AflSmith = struct {
             .portable_serialize => .{ .portable_serialize = idx },
             .frozen_serialize => .{ .frozen_serialize = idx },
             .equals => .{ .equals = idx },
-            .contains => .{ .contains = .{ .idx = idx, .val = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
+            .contains => .{ .contains = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
             .contains_many => {
-                const len = smith.intRangeLessThan(u8, 0, @intCast(vals.len + 1)) orelse return null;
-                for (vals[0..len]) |*v| v.* = smith.intRangeLessThan(u32, 0, MAX_VAL) orelse return null;
-                return .{ .contains_many = .{ .idx = idx, .vals = vals[0..len] } };
+                const len = smith.valueRangeLessThan(u8, 0, @intCast(outvals.len + 1)) orelse return null;
+                for (outvals[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
+                return .{ .contains_many = .{ .idx = idx, .vals = outvals[0..len] } };
             },
         };
     }
@@ -237,30 +253,30 @@ const AflSmith = struct {
 const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
 
 fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
-    var r: [NUM_BITMAPS]Bitmap = @splat(.empty);
-    defer for (&r) |*x| x.deinit(allocator);
-    var oracle: [NUM_BITMAPS]HashMapOracle = @splat(.empty);
-    defer for (&oracle) |*o| o.deinit(allocator);
-    for (&oracle) |*o| try o.ensureTotalCapacity(allocator, 1024 * 16);
+    var rbs: [NUM_BITMAPS]Bitmap = @splat(.empty);
+    defer for (&rbs) |*rb| rb.deinit(allocator);
+    var oracles: [NUM_BITMAPS]HashMapOracle = @splat(.empty);
+    defer for (&oracles) |*o| o.deinit(allocator);
+    for (&oracles) |*o| try o.ensureTotalCapacity(allocator, 1024 * 16);
     var fbs = Io.Reader.fixed(in);
     var smith = AflSmith{ .bytes = &fbs };
 
     fuzzprint("\n\n// begin hashMapOracle\n", .{});
     var vals: [8]u32 = undefined;
     while (smith.nextOp(&vals)) |op| {
-        try perform_op(op, &oracle, &r, allocator);
+        try perform_op(op, &oracles, &rbs, allocator);
     }
 }
 
 fn fuzzAflCrashFiles(io: Io, path: []const u8) !void {
-    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
         if (e.kind != .file) continue;
         if (!mem.startsWith(u8, e.name, "id:")) continue;
         var buf: [256]u8 = undefined;
-        var fbs = std.Io.Writer.fixed(&buf);
+        var fbs = Io.Writer.fixed(&buf);
         try fbs.print("{s}/{s}", .{ path, e.name });
         // std.debug.print("{s}\n", .{fbs.buffered()});
         if (loadPath(io, fbs.buffered())) |contents| // skip if missing
@@ -275,9 +291,9 @@ test "AFL fuzz crashes" {
     fuzzAflCrashFiles(testing.io, "afl/output/default/crashes") catch {};
 }
 
-const AflCtx = struct { io: Io, dir: Io.Dir, file_index: *usize };
+pub const AflCtx = struct { io: Io, dir: Io.Dir, file_index: *usize };
 
-fn writeOpFile(ctx: AflCtx, ops: []const FuzzOp) !void {
+pub fn writeOpFile(ctx: AflCtx, ops: []const FuzzOp) !void {
     const dir = ctx.dir;
     const io = ctx.io;
     var filename_buf: [32]u8 = undefined;
@@ -316,6 +332,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(o.pick_existing);
             try writer.writeInt(u32, o.val, .little);
         },
+        .intersect => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src1 }),
         .contains => |o| try writer.writeInt(u32, o.val, .little),
         .contains_many => |o| {
             try writer.writeByte(@intCast(o.vals.len));
@@ -331,20 +348,9 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
     }
 }
 
-// generates a corpus from previously discovered crashing inputs
-pub fn main(init: std.process.Init.Minimal) !void {
-    const io = init.io;
-    var dir = try std.Io.Dir.cwd().openDir(io, "afl/input", .{});
-    defer dir.close(io);
-
-    var file_index: usize = 0;
-    const ctx: AflCtx = .{ .dir = dir, .io = io, .file_index = &file_index };
-    try perform_crash_ops(ctx, writeOpFile);
-}
-
 // -- end AFL fuzzing
 
-/// oracle must be [*c]c.roaring_bitmap_t or *HashMapOracle.
+/// oracles: either `*[NUM_BITMAPS][*c]c.roaring_bitmap_t` or `*[NUM_BITMAPS]*HashMapOracle`.
 fn perform_op(
     op: FuzzOp,
     oracles: anytype,
@@ -360,6 +366,7 @@ fn perform_op(
         .add_many,
         .add_range_closed,
         .remove,
+        .intersect,
         // TODO adjust to new FuzzOp format throughout, print idx etc.
         => fuzzprint(".{{ .{t} = ", .{op}),
         .clear,
@@ -371,7 +378,7 @@ fn perform_op(
         => fuzzprint(".{t},\n", .{op}),
         .contains,
         .contains_many,
-        => {}, // don't print, not part of reproduction
+        => {}, // no print, not part of reproduction
     }
     switch (op) {
         .add => |o| {
@@ -436,6 +443,32 @@ fn perform_op(
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
+        .intersect => |o| {
+            var res = try rs[o.src1].intersect(allocator, rs[o.src2]);
+            defer res.deinit(allocator);
+
+            if (is_cr) {
+                const cr_res = c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]);
+                if (oracles[o.idx]) |old| c.roaring_bitmap_free(old);
+                oracles[o.idx] = cr_res;
+            } else {
+                var intersection = HashMapOracle.empty;
+                try intersection.ensureTotalCapacity(allocator, 1024);
+
+                // Find matching keys between src1 and src2
+                for (oracles[o.src1].keys()) |key| {
+                    if (oracles[o.src2].contains(key)) {
+                        try intersection.put(allocator, key, {});
+                    }
+                }
+
+                oracles[o.idx].deinit(allocator);
+                oracles[o.idx] = intersection;
+            }
+
+            rs[o.idx].deinit(allocator);
+            rs[o.idx] = try res.clone(allocator);
+        },
         .clear => |idx| {
             rs[idx].clear_retaining_capacity();
             if (is_cr)
@@ -457,7 +490,7 @@ fn perform_op(
                 _ = c.roaring_bitmap_shrink_to_fit(oracles[idx]);
         },
         .portable_serialize => |idx| {
-            var w = std.Io.Writer.Allocating.init(allocator);
+            var w = Io.Writer.Allocating.init(allocator);
             defer w.deinit();
             var runflags: zroaring.RunFlags = undefined;
             const x = try rs[idx].portable_serialize(&w.writer, &runflags);
@@ -544,7 +577,7 @@ test "crash reproductions" {
     try perform_crash_ops({}, cr_perform_ops);
 }
 
-fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp) anyerror!void) !void {
+pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp) anyerror!void) !void {
     try ops_fn(ctx, &.{
         .{ .add_many = .{ .idx = 0, .vals = &.{ 98128, 17714 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 0, 100 } } },
