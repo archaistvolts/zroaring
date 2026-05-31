@@ -23,7 +23,7 @@ pub const Array = extern struct {
     blocks: flexible.Array(Block, .blockscapacity),
 };
 
-const Model = flexible.Struct(Array);
+pub const Model = flexible.Struct(Array);
 const emptybuf: Model.Buf(.{
     .capacity = 0,
     .blockscapacity = 0,
@@ -297,8 +297,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         // trace(@src(), "key found container={f} {any}", .{ c.fmt(r), c.blocks_as(.array, r)[0..card] });
         const c2 = try c.add(allocator, r, valuelow);
         if (oldc != c2) {
-            // skip deinit of inplace array/bitset conversion
-            if (oldc.blockoffset != c2.blockoffset) {
+            if (oldc.blockoffset != c2.blockoffset) { // skip deinit of inplace conversion
                 oldc.deinit_blocks(r.*);
             }
             r.array.ptr(.containers)[cid] = c2;
@@ -322,7 +321,17 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         _ = try newac.add(allocator, r, valuelow); // ignore return. always an array with cardinality 1
         return true;
     }
+
     assert(r.contains(value));
+}
+
+fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
+    try r.extend_array(allocator, 1, 0);
+    const pos = r.array.ptr(.len).*;
+
+    r.array.ptr(.keys)[pos] = key;
+    r.array.ptr(.containers)[pos] = c;
+    r.array.ptr(.len).* += 1;
 }
 
 fn append_first(r: Bitmap, c: *Container, container_value: anytype) void {
@@ -683,7 +692,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         r.* = try create_with_capacity(allocator, 0);
     }
 
-    trace(@src(), "#{} [{},{})", .{ max - min, min, max });
+    trace(@src(), "[{},{})#{}", .{ min, max, max - min });
     trace(@src(), "{f}", .{r.fmtLong()});
 
     const min_key = min >> 16;
@@ -1551,9 +1560,62 @@ pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
     return false;
 }
 
-fn deserializeTestdataPortable(io: Io, f: Io.File) !Bitmap {
-    var rbuf: [256]u8 = undefined;
-    return try portable_deserialize(testing.allocator, io, f, &rbuf);
+pub fn is_cow(x1: Bitmap) bool {
+    return (x1.array.ptr(.flags).* & 1 << @intFromEnum(Flag.cow)) != 0;
+}
+
+pub fn set_copy_on_write(x1: Bitmap, cow: bool) void {
+    x1.array.ptr(.flags).* |= (@as(u8, @intFromBool(cow)) << @intFromEnum(Flag.cow));
+}
+
+fn advance_until(ra: Bitmap, x: u16, pos: u32) u32 {
+    return misc.advanceUntil(ra.slice(.keys, .len), pos, x);
+}
+
+pub fn clone(r: Bitmap, allocator: mem.Allocator) !Bitmap {
+    const lens = r.array.calcLens();
+    const buflen = Bitmap.Model.calcSize(lens);
+    const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, buflen);
+    const ret: Bitmap = .{ .array = .initBuffer(buf, lens) };
+    r.copy_to(ret.array);
+    return ret;
+}
+
+pub const @"and" = intersect;
+// there should be some SIMD optimizations possible here
+pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    var answer = try create_with_capacity(allocator, @max(length1, length2));
+    answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
+    defer answer.assert_valid();
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+
+    while (pos1 < length1 and pos2 < length2) {
+        const s1 = x1.array.ptr(.keys)[pos1];
+        const s2 = x2.array.ptr(.keys)[pos2];
+
+        if (s1 == s2) {
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            const c2 = x2.array.ptr(.containers)[pos2];
+            var c = try c1.intersect(allocator, c2, x1, x2, &answer);
+
+            if (c.nonzero_cardinality(x1)) {
+                try answer.append(allocator, s1, c);
+            } else {
+                c.deinit(x1); // otherwise: memory leak!
+            }
+            pos1 += 1;
+            pos2 += 1;
+        } else if (s1 < s2) { // s1 < s2
+            pos1 = x1.advance_until(s2, pos1);
+        } else { // s1 > s2
+            pos2 = x2.advance_until(s1, pos2);
+        }
+    }
+    return answer;
 }
 
 fn validateTestdataFile(rb: Bitmap) !void {
@@ -1579,20 +1641,20 @@ test Bitmap {
         const filepath = "testdata/bitmapwithoutruns.bin";
         const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
         defer f.close(testio);
-        var rb = try deserializeTestdataPortable(testio, f);
+        var rbuf: [256]u8 = undefined;
+        var rb = try portable_deserialize(testing.allocator, testio, f, &rbuf);
         defer rb.deinit(testing.allocator);
         try testing.expectEqual(.SERIAL_COOKIE_NO_RUNCONTAINER, rb.array.ptr(.magic).*);
-        // try testing.expectEqual(8 * 256 + 220 + @as(u32, rb.header.nblocks()), rb.blocks.items.len); // 8 bitsets, 220 array blocks
         try validateTestdataFile(rb);
     }
     { // "with runs"
         const filepath = "testdata/bitmapwithruns.bin";
         const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
         defer f.close(testio);
-        var rb = try deserializeTestdataPortable(testio, f);
+        var rbuf: [256]u8 = undefined;
+        var rb = try portable_deserialize(testing.allocator, testio, f, &rbuf);
         defer rb.deinit(testing.allocator);
         try testing.expectEqual(.SERIAL_COOKIE, rb.array.ptr(.magic).*);
-        // try testing.expectEqual(5 * 256 + 220 + 3 + @as(u32, rb.header.nblocks()), rb.blocks.items.len); // 5 bitsets, 220 array blocks, 3 run blocks
         try validateTestdataFile(rb);
     }
 }

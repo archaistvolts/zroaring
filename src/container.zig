@@ -1139,6 +1139,193 @@ pub const Container = packed struct(u64) {
         }
         return r.array.ptr(.containers)[cid];
     }
+
+    /// Compute the intersection between src_1 and src_2 and write the result
+    /// to *dst. If the return function is true, the result is a bitset_container_t
+    /// otherwise is a array_container_t.
+    fn bitset_bitset_container_intersection(
+        src_1: Container,
+        allocator: mem.Allocator,
+        src_2: Container,
+        x1: Bitmap,
+        x2: Bitmap,
+        dst: *Bitmap,
+    ) !Container {
+        const newCardinality = bitset_container_and_justcard(src_1, src_2);
+        if (newCardinality > C.DEFAULT_MAX_SIZE) {
+            var bc = try bitset_container_create(allocator, dst);
+            _ = bitset_container_and_nocard(src_1, src_2, &bc);
+            bc.cardinality = newCardinality;
+            return bc;
+        }
+        var ac = try array_container_create_given_capacity(allocator, newCardinality, dst);
+        ac.cardinality = newCardinality;
+        _ = bitset_extract_intersection_setbits_uint16(
+            src_1.blocks_as(.bitset, x1),
+            src_2.blocks_as(.bitset, x2),
+            C.BITSET_CONTAINER_SIZE_IN_WORDS,
+            ac.blocks_as(.array, dst.*),
+            0,
+        );
+
+        return ac;
+    }
+
+    /// Same as bitset_bitset_container_intersection except that if the output
+    /// is to be a bitset container, then src_1 is modified and no allocation
+    /// is made. If the output is to be an array container, then caller is
+    /// responsible to free the container. In all cases, the result is in *dst.
+    fn bitset_bitset_container_intersection_inplace(
+        src_1: Container,
+        src_2: Container,
+        r: Bitmap,
+    ) Container {
+        const newCardinality = bitset_container_and_justcard(src_1, src_2);
+        if (newCardinality > C.DEFAULT_MAX_SIZE) {
+            var bc = src_1;
+            bitset_container_and_nocard(src_1, src_2, src_1);
+            bc.cardinality = newCardinality;
+            return bc;
+        }
+        var ac = try array_container_create_given_capacity(newCardinality);
+        ac.cardinality = newCardinality;
+        bitset_extract_intersection_setbits_uint16(src_1.words, src_2.words, C.BITSET_CONTAINER_SIZE_IN_WORDS, ac.blocks_as(.array, r), 0);
+
+        return ac; // not a bitset
+    }
+
+    /// computes the intersection of array1 and array2 and return the result in dst.
+    fn array_container_intersection(
+        array1: Container,
+        allocator: mem.Allocator,
+        array2: Container,
+        x1: Bitmap,
+        x2: Bitmap,
+        dst: *Bitmap,
+    ) !Container {
+        const card_1 = array1.cardinality;
+        const card_2 = array2.cardinality;
+        const min_card = @min(card_1, card_2);
+        const threshold = 64; // subject to tuning
+        const numblocks = misc.numGroupsOfSize(min_card * @sizeOf(u16), C.BLOCK_SIZE);
+        var out: Container = .{
+            .typecode = .array,
+            .cardinality = 0,
+            .blockoffset = @intCast(dst.array.ptr(.blockslen).*),
+            .nblocks_minus1 = @intCast(numblocks - 1),
+        };
+
+        try out.array_container_grow(allocator, dst, out.calc_capacity(), false);
+
+        if (card_1 * threshold < card_2) {
+            out.cardinality = @intCast(misc.intersect_skewed_uint16(
+                array1.blocks_as(.array, x1)[0..card_1],
+                array2.blocks_as(.array, x2)[0..card_2],
+                out.blocks_as(.array, dst.*),
+            ));
+        } else if (card_2 * threshold < card_1) {
+            out.cardinality = @intCast(misc.intersect_skewed_uint16(
+                array2.blocks_as(.array, x2)[0..card_2],
+                array1.blocks_as(.array, x1)[0..card_1],
+                out.blocks_as(.array, dst.*),
+            ));
+        } else {
+            // TODO if avx2 use intersect_vector16()
+            out.cardinality = @intCast(misc.intersect_uint16(
+                array1.blocks_as(.array, x1)[0..card_1],
+                array2.blocks_as(.array, x2)[0..card_2],
+                out.blocks_as(.array, dst.*),
+            ));
+        }
+        return out;
+    }
+
+    /// Compute intersection between two containers, generate a new container.
+    /// This allocates new memory, caller is responsible for deallocation.
+    pub fn intersect(
+        c1: Container,
+        allocator: mem.Allocator,
+        c2: Container,
+        x1: Bitmap,
+        x2: Bitmap,
+        dst: *Bitmap,
+    ) !Container {
+        // TODO // c1 = container_unwrap_shared(c1);
+        // TODO // c2 = container_unwrap_shared(c2);
+        trace(@src(), "c1={}", .{c1});
+        trace(@src(), "c2={}", .{c2});
+        switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.bitset, .bitset) => {
+                return bitset_bitset_container_intersection(c1, allocator, c2, x1, x2, dst);
+            },
+            else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
+            misc.pair(.array, .array) => {
+                return c1.array_container_intersection(allocator, c2, x1, x2, dst);
+            },
+            //     misc.pair(.run, .run) => {
+            //         var result = run_container_create();
+            //         run_container_intersection(c1, c2, result);
+            //         return convert_run_to_efficient_container_and_free(result);
+            //     },
+            //     misc.pair(.bitset, .array) => {
+            //         var result = array_container_create();
+            //         array_bitset_container_intersection(c2, c1, &result);
+
+            //         return result;
+            //     },
+            //     misc.pair(.array, .bitset) => {
+            //         var result = array_container_create();
+            //         array_bitset_container_intersection(c1, c2, &result);
+            //         return result;
+            //     },
+            //     misc.pair(.bitset, .run) => {
+            //         return run_bitset_container_intersection(c2, c1, &result);
+            //     },
+            //     misc.pair(.run, .bitset) => {
+            //         return run_bitset_container_intersection(c1, c2, &result);
+            //     },
+            //     misc.pair(.array, .run) => {
+            //         var result = array_container_create();
+            //         return array_run_container_intersection(c1, c2, &result);
+            //         return result;
+            //     },
+            //     misc.pair(.run, .array) => {
+            //         var result = array_container_create();
+
+            //         return array_run_container_intersection(c2, c1, &result);
+            //     },
+            //     else => unreachable,
+        }
+    }
+
+    /// Check whether the container spans the whole chunk (cardinality = 1<<16).
+    /// This check can be done in constant time (inexpensive).
+    fn run_container_is_full(run: Container, r: Bitmap) bool {
+        const vl = run.blocks_as(.run, r)[0];
+        return (run.cardinality == 1) and (vl.value == 0) and (vl.length == 0xFFFF);
+    }
+
+    fn bitset_extract_intersection_setbits_uint16(
+        words1: []align(C.BLOCK_ALIGN) const u64,
+        words2: []align(C.BLOCK_ALIGN) const u64,
+        length: usize,
+        out: []align(C.BLOCK_ALIGN) u16,
+        base: u16,
+    ) usize {
+        var outpos: u32 = 0;
+        var base1 = base;
+        for (0..length) |i| {
+            var w = words1[i] & words2[i];
+            while (w != 0) {
+                const r = @ctz(w);
+                out[outpos] = @truncate(r + base1);
+                outpos += 1;
+                w &= (w - 1);
+            }
+            base1 += 64;
+        }
+        return outpos;
+    }
 };
 
 const std = @import("std");
