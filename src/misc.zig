@@ -380,7 +380,7 @@ test numGroupsOfSize {
 
 /// an int with t1 in lo, t2 in hi bits
 pub fn pair(t1: root.Typecode, t2: root.Typecode) u16 {
-    return @as(u16, @intFromEnum(t2)) << 8 | @intFromEnum(t1);
+    return @as(u16, @intFromEnum(t1)) << 8 | @intFromEnum(t2);
 }
 
 /// an int with t1 in lo, t2 in hi bits

@@ -1228,22 +1228,17 @@ pub const Container = packed struct(u64) {
         ac1: Container,
         allocator: mem.Allocator,
         ac2: Container,
+        dst: *Container,
         x1: Bitmap,
         x2: Bitmap,
         dstr: *Bitmap,
-    ) !Container {
+    ) !void {
         const card1 = ac1.cardinality;
         const card2 = ac2.cardinality;
         const min_card = @min(card1, card2);
         const threshold = 64; // subject to tuning
-        const numblocks = misc.numGroupsOfSize(min_card * @sizeOf(u16), C.BLOCK_SIZE);
-        var dst: Container = .{
-            .typecode = .array,
-            .cardinality = 0,
-            .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
-            .nblocks_minus1 = @intCast(numblocks - 1),
-        };
-        try dst.array_container_grow(allocator, dstr, dst.calc_capacity(), false);
+        if (min_card < dst.calc_capacity())
+            try dst.array_container_grow(allocator, dstr, dst.calc_capacity(), false);
 
         if (card1 * threshold < card2) {
             dst.cardinality = @intCast(misc.intersect_skewed_uint16(
@@ -1267,22 +1262,22 @@ pub const Container = packed struct(u64) {
                 dst.blocks_as(.array, dstr.*),
             ));
         }
-        return dst;
     }
 
     /// Copy one container into another. We assume that they are distinct.
     fn array_container_copy(
         src: Container,
+        allocator: mem.Allocator,
         dst: *Container,
         srcarray: [*]align(C.BLOCK_ALIGN) const u16,
-        dstarray: [*]align(C.BLOCK_ALIGN) const u16,
-    ) void {
+        dstr: *Bitmap,
+    ) !void {
         const cardinality = src.cardinality;
-        if (cardinality > dst.capacity) {
-            array_container_grow(dst, cardinality, false);
+        if (cardinality > dst.calc_capacity()) {
+            try array_container_grow(dst, allocator, dstr, cardinality, false);
         }
         dst.cardinality = cardinality;
-        @memcpy(dstarray[0..cardinality], srcarray);
+        @memcpy(dst.blocks_as(.array, dstr.*)[0..cardinality], srcarray);
     }
 
     /// returns the computed intersection of src_1 and src_2
@@ -1392,46 +1387,46 @@ pub const Container = packed struct(u64) {
     /// dst. It is allowed for dst to be equal to src_1. We assume that dst is a
     /// valid container.
     fn array_run_container_intersection(
-        src_1: Container,
+        src1: Container,
         allocator: mem.Allocator,
-        src_2: Container,
+        src2: Container,
+        dst: *Container,
         x1: Bitmap,
         x2: Bitmap,
-        dst: *Bitmap,
+        dstr: *Bitmap,
     ) !void {
-        _ = allocator;
-        _ = x2;
-        if (run_container_is_full(src_2)) {
-            if (dst.* != src_1) array_container_copy(src_1, dst, src_1.blocks_as(.array, x1), dst.blocks_as(.array, dst));
+        if (run_container_is_full(src2, x2)) {
+            if (dst.* != src1)
+                try src1.array_container_copy(allocator, dst, src1.blocks_as(.array, x1).ptr, dstr);
             return;
         }
-        if (dst.capacity < src_1.cardinality) {
-            array_container_grow(dst, src_1.cardinality, false);
+        if (dst.calc_capacity() < src1.cardinality) {
+            try array_container_grow(dst, allocator, dstr, src1.cardinality, false);
         }
-        if (src_2.cardinality == 0) {
+        if (src2.cardinality == 0) {
             return;
         }
         var rlepos: u32 = 0;
-        var arraypos: i32 = 0;
-        const src2_runs = src_2.blocks_as(.run, x1);
-        var rle = src2_runs[rlepos];
-        var newcard: i32 = 0;
-        while (arraypos < src_1.cardinality) {
-            const arrayval = src_1.array[arraypos];
-            while (rle.value + rle.length <
-                arrayval)
-            { // this will frequently be false
+        var arraypos: u32 = 0;
+        const src2runs = src2.blocks_as(.run, x1);
+        var rle = src2runs[rlepos];
+        var newcard: u30 = 0;
+        const src1array = src1.blocks_as(.array, x1);
+        const dstarray = dst.blocks_as(.array, dstr.*);
+        while (arraypos < src1.cardinality) {
+            const arrayval = src1array[arraypos];
+            while (rle.value +% rle.length < arrayval) { // this will frequently be false
                 rlepos += 1;
-                if (rlepos == src_2.cardinality) {
+                if (rlepos == src2.cardinality) {
                     dst.cardinality = newcard;
                     return; // we are done
                 }
-                rle = src2_runs[rlepos];
+                rle = src2runs[rlepos];
             }
             if (rle.value > arrayval) {
-                arraypos = misc.advanceUntil(src_1.array, arraypos, src_1.cardinality, rle.value);
+                arraypos = misc.advanceUntil(src1array[0..src1.cardinality], arraypos, rle.value);
             } else {
-                dst.array[newcard] = arrayval;
+                dstarray[newcard] = arrayval;
                 newcard += 1;
                 arraypos += 1;
             }
@@ -1515,23 +1510,30 @@ pub const Container = packed struct(u64) {
         c2: Container,
         x1: Bitmap,
         x2: Bitmap,
-        dst: *Bitmap,
+        dstr: *Bitmap,
     ) !Container {
         // TODO // c1 = container_unwrap_shared(c1);
         // TODO // c2 = container_unwrap_shared(c2);
         trace(@src(), "c1={}", .{c1});
         trace(@src(), "c2={}", .{c2});
         switch (misc.pair(c1.typecode, c2.typecode)) {
-            misc.pair(.bitset, .bitset) => {
-                return bitset_bitset_container_intersection(c1, allocator, c2, x1, x2, dst);
-            },
             else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
+            misc.pair(.bitset, .bitset) => {
+                return bitset_bitset_container_intersection(c1, allocator, c2, x1, x2, dstr);
+            },
             misc.pair(.array, .array) => {
-                return try c1.array_container_intersection(allocator, c2, x1, x2, dst);
+                var dst: Container = .{
+                    .typecode = .array,
+                    .cardinality = 0,
+                    .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
+                    .nblocks_minus1 = undefined,
+                };
+                try c1.array_container_intersection(allocator, c2, &dst, x1, x2, dstr);
+                return dst;
             },
             misc.pair(.run, .run) => {
-                const result = try c1.run_container_intersection(allocator, c2, x1, x2, dst);
-                return try result.convert_run_to_efficient_container_and_free(allocator, dst);
+                const result = try c1.run_container_intersection(allocator, c2, x1, x2, dstr);
+                return try result.convert_run_to_efficient_container_and_free(allocator, dstr);
             },
             //     misc.pair(.bitset, .array) => {
             //         var result = array_container_create();
@@ -1550,16 +1552,26 @@ pub const Container = packed struct(u64) {
             //     misc.pair(.run, .bitset) => {
             //         return run_bitset_container_intersection(c1, c2, &result);
             //     },
-            //     misc.pair(.array, .run) => {
-            //         var result = array_container_create();
-            //         return array_run_container_intersection(c1, c2, &result);
-            //         return result;
-            //     },
-            //     misc.pair(.run, .array) => {
-            //         var result = array_container_create();
-
-            //         return array_run_container_intersection(c2, c1, &result);
-            //     },
+            misc.pair(.array, .run) => {
+                var ret: Container = .{
+                    .typecode = .array,
+                    .cardinality = 0,
+                    .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
+                    .nblocks_minus1 = undefined,
+                };
+                try c1.array_run_container_intersection(allocator, c2, &ret, x1, x2, dstr);
+                return ret;
+            },
+            misc.pair(.run, .array) => {
+                var ret: Container = .{
+                    .typecode = .array,
+                    .cardinality = 0,
+                    .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
+                    .nblocks_minus1 = undefined,
+                };
+                try c2.array_run_container_intersection(allocator, c1, &ret, x2, x1, dstr);
+                return ret;
+            },
             //     else => unreachable,
         }
     }

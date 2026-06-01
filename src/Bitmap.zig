@@ -1547,12 +1547,12 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
         if (key1 == key2) {
             const c1 = x1.array.ptr(.containers)[pos1];
             const c2 = x2.array.ptr(.containers)[pos2];
-            var c = try c1.intersect(allocator, c2, x1, x2, &answer);
+            const c = try c1.intersect(allocator, c2, x1, x2, &answer);
 
             if (c.nonzero_cardinality(answer)) {
                 try answer.append(allocator, key1, c);
             } else {
-                c.deinit(answer); // otherwise: memory leak!
+                c.deinit_blocks(answer); // otherwise: memory leak!
             }
             pos1 += 1;
             pos2 += 1;
