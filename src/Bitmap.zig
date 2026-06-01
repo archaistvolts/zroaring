@@ -55,7 +55,7 @@ fn zero_init(m: *Model) void {
     @memset(m.slice(.containers), .uninit);
 }
 
-/// Allocates room for at minimum 16 containers and blocks
+/// Allocates room for container_count containers and blocks, with minimum of 16.
 pub fn create_with_capacity(allocator: mem.Allocator, container_count: u32) !Bitmap {
     const capacity = @max(16, container_count);
     const m = try Model.create(allocator, .{
@@ -328,7 +328,6 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
 fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
     try r.extend_array(allocator, 1, 0);
     const pos = r.array.ptr(.len).*;
-
     r.array.ptr(.keys)[pos] = key;
     r.array.ptr(.containers)[pos] = c;
     r.array.ptr(.len).* += 1;
@@ -985,59 +984,6 @@ pub fn cardinality(r: Bitmap) u64 {
 }
 pub const get_cardinality = cardinality;
 
-/// Converts a run container to either an array or a bitset, IF it saves space.
-///
-/// If a conversion occurs, the caller is responsible to free the original
-/// container and he becomes responsible to free the new one.
-pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
-    assert(c.typecode == .run);
-    const runsize = c.serialized_size_in_bytes();
-    const card = c.compute_cardinality(r.*);
-    const arraysize = card * @sizeOf(u16);
-    const min_size_non_run = @min(@sizeOf(root.Bitset), arraysize);
-    trace(@src(), "arraysize={} runsize={} min_size_non_run={}", .{ arraysize, runsize, min_size_non_run });
-    if (runsize <= min_size_non_run) { // no conversion
-        return c;
-    }
-    if (card <= C.DEFAULT_MAX_SIZE) {
-        // to array
-        const nblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
-        var answer: Container = .{
-            .blockoffset = @intCast(r.array.ptr(.blockslen).*),
-            .cardinality = 0,
-            .nblocks_minus1 = @intCast(nblocks - 1),
-            .typecode = .array,
-        };
-        try r.extend_array(allocator, 0, nblocks);
-        r.array.ptr(.blockslen).* += nblocks;
-        const array = answer.blocks_as(.array, r.*);
-        const runs = c.blocks_as(.run, r.*);
-        for (0..c.cardinality) |rlepos| {
-            const run_start: u32 = runs[rlepos].value;
-            const run_end = run_start + runs[rlepos].length;
-
-            var run_value: u32 = @truncate(run_start);
-            while (run_value <= run_end) : (run_value += 1) {
-                array[answer.cardinality] = @intCast(run_value);
-                answer.cardinality += 1;
-            }
-        }
-        c.deinit_blocks(r.*);
-        return answer;
-    }
-    unreachable; // TODO
-    // // else to bitset
-    // var answer = try BitsetContainer.create(allocator);
-
-    // for (0..c.cardinality) |rlepos| {
-    //     const start = c.runs[rlepos].value;
-    //     const end = start + c.runs[rlepos].length;
-    //     BitsetContainer.set_range(answer.words, start, end + 1);
-    // }
-    // answer.cardinality = card;
-    // return .create(allocator, answer);
-}
-
 /// Whether you want to use flag: copy-on-write or frozen.
 /// Saves memory and avoids copies, but needs more care in a threaded context.
 /// Most users should ignore this flag.
@@ -1589,30 +1535,31 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     var answer = try create_with_capacity(allocator, @max(length1, length2));
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
+    trace(@src(), "x1={f}", .{x1});
+    trace(@src(), "x2={f}", .{x2});
 
     var pos1: u32 = 0;
     var pos2: u32 = 0;
-
     while (pos1 < length1 and pos2 < length2) {
-        const s1 = x1.array.ptr(.keys)[pos1];
-        const s2 = x2.array.ptr(.keys)[pos2];
+        const key1 = x1.array.ptr(.keys)[pos1];
+        const key2 = x2.array.ptr(.keys)[pos2];
 
-        if (s1 == s2) {
-            const c1 = &x1.array.ptr(.containers)[pos1];
+        if (key1 == key2) {
+            const c1 = x1.array.ptr(.containers)[pos1];
             const c2 = x2.array.ptr(.containers)[pos2];
             var c = try c1.intersect(allocator, c2, x1, x2, &answer);
 
-            if (c.nonzero_cardinality(x1)) {
-                try answer.append(allocator, s1, c);
+            if (c.nonzero_cardinality(answer)) {
+                try answer.append(allocator, key1, c);
             } else {
-                c.deinit(x1); // otherwise: memory leak!
+                c.deinit(answer); // otherwise: memory leak!
             }
             pos1 += 1;
             pos2 += 1;
-        } else if (s1 < s2) { // s1 < s2
-            pos1 = x1.advance_until(s2, pos1);
+        } else if (key1 < key2) { // s1 < s2
+            pos1 = x1.advance_until(key2, pos1);
         } else { // s1 > s2
-            pos2 = x2.advance_until(s1, pos2);
+            pos2 = x2.advance_until(key1, pos2);
         }
     }
     return answer;

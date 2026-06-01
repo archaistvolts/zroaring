@@ -30,6 +30,11 @@ pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
 pub const BITSET_UNKNOWN_CARDINALITY = MAX_VALUE_CARDINALITY - 1; // 0xffff_ffff
 
+pub const HAS_AVX2 = switch (builtin.cpu.arch) {
+    .x86_64, .x86 => std.Target.x86.featureSetHas(builtin.cpu.features, .avx2),
+    else => false,
+};
+
 comptime {
     assert(DEFAULT_MAX_SIZE == @divExact(MAX_KEY_CARDINALITY, 16));
     assert(MAX_KEY_CARDINALITY == 1 << 16);
@@ -38,3 +43,4 @@ comptime {
 const std = @import("std");
 const assert = std.debug.assert;
 const root = @import("root.zig");
+const builtin = @import("builtin");
