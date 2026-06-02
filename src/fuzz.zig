@@ -281,14 +281,17 @@ fn fuzzAflCrashFiles(io: Io, path: []const u8) !void {
         // std.debug.print("{s}\n", .{fbs.buffered()});
         if (loadPath(io, fbs.buffered())) |contents| // skip if missing
         {
+            defer testgpa.free(contents);
             try zig_fuzz_test1(contents);
-            testgpa.free(contents);
         } else |_| {}
     }
 }
 
 test "AFL fuzz crashes" {
-    fuzzAflCrashFiles(testing.io, "afl/output/default/crashes") catch {};
+    fuzzAflCrashFiles(testing.io, "afl/output/default/crashes") catch |e| switch (e) {
+        error.FileNotFound => {}, // allows test to pass on CI
+        else => return e,
+    };
 }
 
 pub const AflCtx = struct { io: Io, dir: Io.Dir, file_index: *usize };
@@ -444,6 +447,7 @@ fn perform_op(
             );
         },
         .intersect => |o| {
+            fuzzprint(".{{ {}, {}, {} }} }},\n", .{ o.idx, o.src1, o.src2 });
             var res = try rs[o.src1].intersect(allocator, rs[o.src2]);
             defer res.deinit(allocator);
 
