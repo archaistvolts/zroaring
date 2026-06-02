@@ -42,9 +42,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(libcroaring);
     tests.root_module.linkLibrary(libcroaring);
 
-    const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_tests.step);
+    b.step("test", "Run tests").dependOn(&b.addRunArtifact(tests).step);
     b.installArtifact(tests);
 
     const lib = b.addLibrary(.{ .root_module = zrmod, .name = "zroaring" });
@@ -111,4 +109,19 @@ pub fn build(b: *std.Build) !void {
     const run_exe = b.addRunArtifact(exe);
     if (b.args) |args| run_exe.addArgs(args);
     exe_run.dependOn(&run_exe.step);
+
+    const gen_corpus = b.addExecutable(.{
+        .name = "gen-afl-corpus",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz-gen.zig"),
+            .target = target,
+            .imports = &.{
+                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                .{ .name = "build-options", .module = options.createModule() },
+            },
+        }),
+    });
+    b.installArtifact(gen_corpus);
+    b.step("gen-afl-corpus", "Generate afl/input/ corpus files.")
+        .dependOn(&b.addRunArtifact(gen_corpus).step);
 }
