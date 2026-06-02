@@ -361,6 +361,46 @@ pub fn intersect_uint16(
     }
 }
 
+pub const pshufb =
+    if (@import("builtin").zig_backend == .stage2_llvm)
+        struct {
+            extern fn @"llvm.x86.avx2.pshuf.b"(a: Block, b: Block) Block;
+            const pshufb = @"llvm.x86.avx2.pshuf.b";
+        }.pshufb
+    else if (C.IS_X86)
+        pshufb_x86
+    else
+        unreachable; // TODO non-llvm, non-x86
+
+inline fn pshufb_x86(a: Block, b: Block) Block {
+    return asm ("vpshufb %[mask], %[src], %[ret]"
+        : [ret] "=x" (-> Block),
+        : [src] "x" (a),
+          [mask] "x" (b),
+    );
+}
+
+/// computes absolute differences of u8s and sums them into 64-bit blocks
+pub const psadbw =
+    if (@import("builtin").zig_backend == .stage2_llvm)
+        struct {
+            extern fn @"llvm.x86.avx2.psad.bw"(a: Block, b: Block) @Vector(4, u64);
+            extern fn @"llvm.x86.avx2.pshuf.b"(a: Block, b: Block) Block;
+            const psadbw = @"llvm.x86.avx2.psad.bw";
+        }.psadbw
+    else if (C.IS_X86)
+        psadbw_x86
+    else
+        unreachable; // TODO non-llvm, non-x86
+
+inline fn psadbw_x86(a: Block, b: Block) root.Block64 {
+    return asm ("vpsadbw %[src2], %[src1], %[ret]"
+        : [ret] "=x" (-> root.Block64),
+        : [src1] "x" (a),
+          [src2] "x" (b),
+    );
+}
+
 /// number of groups of size in num. `size=8 | 0=>0, [1,8]=>1, [9,16]=>2` etc.
 ///
 /// align num forward to size and divide by size.
@@ -421,3 +461,4 @@ const std = @import("std");
 const testing = std.testing;
 const root = @import("root.zig");
 const C = root.constants;
+const Block = root.Block;

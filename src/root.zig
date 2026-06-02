@@ -10,6 +10,7 @@ pub const Bitmap = @import("Bitmap.zig");
 pub const Word = u64;
 pub const Bitset = [1024]Word;
 pub const Block = @Vector(constants.BLOCK_SIZE, u8);
+pub const Block64 = @Vector(constants.BLOCK_LEN64, u64);
 pub const constants = @import("constants.zig");
 pub const container = @import("container.zig");
 pub const Container = container.Container;

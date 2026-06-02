@@ -17,23 +17,27 @@ pub const BITSET_BLOCKS = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Block));
 pub const BITSET_CONTAINER_SIZE_IN_WORDS = @typeInfo(root.Bitset).array.len;
 /// length of a block of u16s, 16 with avx2.
 pub const BLOCK_LEN16 = @divExact(BLOCK_SIZE, @sizeOf(u16));
-/// length of a block of Rle16s, 8 with avx2.
-pub const BLOCK_LEN32 = @divExact(BLOCK_SIZE, @sizeOf(root.Rle16));
+/// length of a block of u32s (or Rle16s), 8 with avx2.
+pub const BLOCK_LEN32 = @divExact(BLOCK_SIZE, @sizeOf(u32));
+/// length of a block of u64s, 4 with avx2.
+pub const BLOCK_LEN64 = @divExact(BLOCK_SIZE, @sizeOf(u64));
 pub const MAX_CONTAINER_BLOCKS = BITSET_BLOCKS;
 /// Bitmap.blocks should never actually get this big.
 pub const MAX_BLOCKS = MAX_CONTAINERS * MAX_CONTAINER_BLOCKS; // 1<<16 * 1<<8 = 1<<24
-/// blocks needed by an `Array`.  1.
-// pub const HEADER_BLOCKS = @divExact(@sizeOf(root.Array), @sizeOf(root.Block));
 
 pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
-pub const BITSET_UNKNOWN_CARDINALITY = MAX_VALUE_CARDINALITY - 1; // 0xffff_ffff
+pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u30);
 
-pub const HAS_AVX2 = switch (builtin.cpu.arch) {
-    .x86_64, .x86 => std.Target.x86.featureSetHas(builtin.cpu.features, .avx2),
+pub const IS_X86 = switch (builtin.cpu.arch) {
+    .x86_64, .x86 => true,
     else => false,
 };
+pub const HAS_AVX2 = if (IS_X86)
+    std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)
+else
+    false;
 
 comptime {
     assert(DEFAULT_MAX_SIZE == @divExact(MAX_KEY_CARDINALITY, 16));

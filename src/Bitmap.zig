@@ -1359,7 +1359,7 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
                 break :blk if (c.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
                     (c.cardinality - 1)
                 else
-                    (c.compute_cardinality() - 1);
+                    (c.compute_cardinality(r) - 1);
             },
             .run => blk: {
                 var w = fixedw(mem.sliceAsBytes(run_zone[0..c.cardinality]));
