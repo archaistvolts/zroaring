@@ -28,7 +28,7 @@ pub const MAX_BLOCKS = MAX_CONTAINERS * MAX_CONTAINER_BLOCKS; // 1<<16 * 1<<8 = 
 pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
-pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u30);
+pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(root.Container.Cardinality);
 
 pub const IS_X86 = builtin.cpu.arch.isX86();
 pub const HAS_AVX2 = if (IS_X86)

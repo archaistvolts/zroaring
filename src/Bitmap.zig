@@ -233,7 +233,7 @@ pub fn deserialize_file_reader(
     for (rb.slice(.keys, .len), rb.slice(.containers, .len)) |*k, *c| { // TODO maybe read N key_cards at a time, less looping here
         const kc = try r.takeStruct(root.KeyCard, .little);
         k.* = kc.key;
-        c.cardinality = @as(u30, kc.cardinality_minus1) + 1;
+        c.cardinality = @as(Cardinality, kc.cardinality_minus1) + 1;
     }
 
     // skip file offsets
@@ -1624,3 +1624,4 @@ const Any = root.container.Any;
 const Container = root.container.Container;
 const Block = root.Block;
 const Rle16 = root.Rle16;
+const Cardinality = Container.Cardinality;

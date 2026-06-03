@@ -2,17 +2,19 @@
 ///
 /// Describes storage of an array, bitset or run container.
 pub const Container = packed struct(u64) {
-    /// cached container cardinality or nruns.
-    cardinality: u30,
+    /// cached container cardinality or nruns. u30 (or u29 when -Dcpu=baseline)
+    cardinality: Cardinality,
     /// a `Container` offset into Bitmap blocks.  [0, C.MAX_BLOCKS).
-    blockoffset: u24,
+    blockoffset: BlockOffset,
     /// number of blocks in the array, bitset or run container minus one.
     /// 0..255 => 1..256
-    nblocks_minus1: u8,
+    nblocks_minus1: BlockIndex,
     typecode: root.Typecode,
 
     pub const uninit: Container = @bitCast(@as(u64, std.math.maxInt(u64)));
-    pub const Cardinality = @FieldType(Container, "cardinality");
+    pub const Cardinality = @Int(.unsigned, 64 - @bitSizeOf(BlockOffset) - @bitSizeOf(BlockIndex) - @bitSizeOf(Typecode));
+    pub const BlockOffset = std.math.IntFittingRange(0, C.MAX_BLOCKS - 1);
+    pub const BlockIndex = std.math.IntFittingRange(0, C.BITSET_BLOCKS - 1);
     pub const Element = union(root.Typecode) {
         shared: void,
         bitset: []align(C.BLOCK_ALIGN) u64,
@@ -453,9 +455,9 @@ pub const Container = packed struct(u64) {
         };
     }
 
-    pub fn compute_cardinality(v: Container, r: Bitmap) u30 {
+    pub fn compute_cardinality(v: Container, r: Bitmap) Cardinality {
         if (v == uninit) return 0;
-        var ret: u30 = undefined;
+        var ret: Cardinality = undefined;
         switch (v.typecode) {
             .bitset => {
                 ret = 0;
@@ -1253,13 +1255,13 @@ pub const Container = packed struct(u64) {
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u30 {
+            ) Cardinality {
                 _ = src1;
                 _ = src2;
                 _ = dstc;
                 _ = dst;
                 unreachable;
-                // var sum: u30 = 0;
+                // var sum: Cardinality = 0;
                 // var i: usize = 0;
                 // while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 2) {
                 //     const word1 = opsymbol(words1[i], words2[i]);
@@ -1274,7 +1276,7 @@ pub const Container = packed struct(u64) {
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u30 {
+            ) Cardinality {
                 _ = dstc;
                 _ = dst;
                 if (true) unreachable;
@@ -1290,7 +1292,7 @@ pub const Container = packed struct(u64) {
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u30 {
+            ) Cardinality {
                 return if (C.HAS_AVX2)
                     _avx2_bitset_container_op_nocard(src1, src2, dstc, dst)
                 else
@@ -1309,8 +1311,8 @@ pub const Container = packed struct(u64) {
             fn _scalar_bitset_container_op_justcard(
                 words1: [*]align(C.BLOCK_ALIGN) const u64,
                 words2: [*]align(C.BLOCK_ALIGN) const u64,
-            ) u30 {
-                var sum: u30 = 0;
+            ) Cardinality {
+                var sum: Cardinality = 0;
                 var i: usize = 0;
                 while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 2) {
                     const word1 = avx_intrinsic(words1[i], words2[i]);
@@ -1323,7 +1325,7 @@ pub const Container = packed struct(u64) {
             fn _avx2_bitset_container_op_justcard(
                 data1: [*]align(C.BLOCK_ALIGN) const u64,
                 data2: [*]align(C.BLOCK_ALIGN) const u64,
-            ) u30 {
+            ) Cardinality {
                 return @intCast(avx2_harley_seal_popcount_op(
                     @ptrCast(data1),
                     @ptrCast(data2),
@@ -1478,7 +1480,7 @@ pub const Container = packed struct(u64) {
                 words2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u30 {
+            ) Cardinality {
                 for (0..C.BITSET_CONTAINER_SIZE_IN_WORDS) |i| {
                     dst[i] = avx_intrinsic(words1[i], words2[i]);
                 }
@@ -1491,7 +1493,7 @@ pub const Container = packed struct(u64) {
                 words2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u30 {
+            ) Cardinality {
                 const innerloop = 8;
                 var blocks1: [*]const root.Block64 = @ptrCast(words1);
                 var blocks2: [*]const root.Block64 = @ptrCast(words2);
@@ -1521,7 +1523,7 @@ pub const Container = packed struct(u64) {
     fn bitset_container_and_justcard(
         src1: [*]align(C.BLOCK_ALIGN) const u64,
         src2: [*]align(C.BLOCK_ALIGN) const u64,
-    ) u30 {
+    ) Cardinality {
         return @intCast(op_methods(.And).bitset_container_op_justcard(src1, src2));
     }
 
@@ -1532,7 +1534,7 @@ pub const Container = packed struct(u64) {
         data2: [*]align(C.BLOCK_ALIGN) const u64,
         dstc: *Container,
         dst: [*]align(C.BLOCK_ALIGN) u64,
-    ) u30 {
+    ) Cardinality {
         return op_methods(.And).bitset_container_op_nocard(data1, data2, dstc, dst);
     }
 
@@ -1779,7 +1781,7 @@ pub const Container = packed struct(u64) {
     ) !void {
         if (dst.calc_capacity() < src1.cardinality)
             try array_container_grow(dst, allocator, dstr, src1.cardinality, false);
-        var newcard: u30 = 0; // dst could be src1
+        var newcard: Cardinality = 0; // dst could be src1
         const origcard = src1.cardinality;
         const src1array = src1.blocks_as(.array, x1);
         const dstarray = dst.blocks_as(.array, dstr.*);
@@ -1825,7 +1827,7 @@ pub const Container = packed struct(u64) {
     fn _avx2_run_container_cardinality(
         run: Container,
         runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
-    ) u30 {
+    ) Cardinality {
         const n_runs = run.cardinality;
 
         // by initializing with n_runs, we omit counting the +1 for each pair.
@@ -1854,7 +1856,7 @@ pub const Container = packed struct(u64) {
     fn _scalar_run_container_cardinality(
         run: Container,
         runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
-    ) u30 {
+    ) Cardinality {
         const n_runs = run.cardinality;
         // by initializing with n_runs, we omit counting the +1 for each pair.
         var sum = n_runs;
@@ -1864,7 +1866,7 @@ pub const Container = packed struct(u64) {
         return sum;
     }
 
-    fn run_container_cardinality(run: Container, runs: [*]align(C.BLOCK_ALIGN) root.Rle16) u30 {
+    fn run_container_cardinality(run: Container, runs: [*]align(C.BLOCK_ALIGN) root.Rle16) Cardinality {
         // Empirically AVX-512 is not always faster than AVX2
         // TODO? _avx512_run_container_cardinality;
         return if (C.HAS_AVX2)
@@ -1895,8 +1897,8 @@ pub const Container = packed struct(u64) {
     /// Get the number of bits set (force computation)
     fn _scalar_bitset_container_compute_cardinality(
         words: [*]align(C.BLOCK_ALIGN) u64,
-    ) u30 {
-        var sum: u30 = 0;
+    ) Cardinality {
+        var sum: Cardinality = 0;
         var i: u32 = 0;
         while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 4) {
             sum += @popCount(words[i]);
@@ -1908,7 +1910,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Get the number of bits set (force computation)
-    fn bitset_container_compute_cardinality(words: [*]align(C.BLOCK_ALIGN) u64) u30 {
+    fn bitset_container_compute_cardinality(words: [*]align(C.BLOCK_ALIGN) u64) Cardinality {
         // TODO avx512_vpopcount
         const x = words[0..C.BITSET_CONTAINER_SIZE_IN_WORDS];
         if (C.HAS_AVX2) {
@@ -2024,7 +2026,7 @@ pub const Container = packed struct(u64) {
         var arraypos: u32 = 0;
         const src2runs = src2.blocks_as(.run, x2);
         var rle = src2runs[rlepos];
-        var newcard: u30 = 0;
+        var newcard: Cardinality = 0;
         const src1array = src1.blocks_as(.array, x1);
         const dstarray = dst.blocks_as(.array, dstr.*);
         while (arraypos < src1.cardinality) {
