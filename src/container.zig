@@ -158,6 +158,40 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    pub fn run_container_grow(
+        rc: *Container,
+        allocator: mem.Allocator,
+        min: u32,
+        copy: bool,
+        r: *Bitmap,
+    ) !void {
+        const run_cap = rc.calc_capacity();
+        var capacity = run_cap;
+        const newCapacity = @max(min, if (capacity == 0)
+            0
+        else if (capacity < 64)
+            capacity * 2
+        else if (capacity < 1024)
+            capacity * 3 / 2
+        else
+            capacity * 5 / 4);
+        capacity = newCapacity;
+        const morecap = capacity - run_cap;
+        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
+
+        if (copy) {
+            try add_container_blocks(r, allocator, rc, moreblocks);
+        } else if (rc.* == uninit) {
+            rc.* = try run_container_create_given_capacity(allocator, capacity, r);
+        } else {
+            rc.deinit_blocks(r.*);
+            try r.extend_array(allocator, 0, moreblocks);
+            rc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
+            rc.nblocks_minus1 += @intCast(moreblocks);
+            r.array.ptr(.blockslen).* += rc.nblocks();
+        }
+    }
+
     pub fn append(c: *Container, allocator: mem.Allocator, r: *Bitmap, value: u16) !void {
         switch (c.typecode) {
             .array => {
@@ -571,7 +605,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Get the value of the ith bit.
-    pub fn bitset_container_get(words: [*]root.Word, pos: u16) bool {
+    pub fn bitset_container_get(words: [*]align(C.BLOCK_ALIGN) root.Word, pos: u16) bool {
         const word = words[pos >> 6];
         return (word >> @truncate(pos & 63)) & 1 != 0;
     }
@@ -775,22 +809,25 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn calc_capacity(c: Container) u32 {
-        return @as(u32, c.nblocks()) *
-            @as(u32, switch (c.typecode) {
-                .bitset => C.BLOCK_SIZE,
-                .array => C.BLOCK_LEN16,
-                .run => C.BLOCK_LEN32,
-                .shared => unreachable,
-            });
+        return if (c == uninit)
+            0
+        else
+            @as(u32, c.nblocks()) *
+                @as(u32, switch (c.typecode) {
+                    .bitset => C.BLOCK_SIZE,
+                    .array => C.BLOCK_LEN16,
+                    .run => C.BLOCK_LEN32,
+                    .shared => unreachable,
+                });
     }
 
     pub fn array_container_create_given_capacity(
         allocator: mem.Allocator,
-        card: u32,
+        capacity: u32,
         r: *Bitmap,
     ) !Container {
-        trace(@src(), "card={}", .{card});
-        const numblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
+        trace(@src(), "capacity={}", .{capacity});
+        const numblocks = misc.numGroupsOfSize(capacity * @sizeOf(u16), C.BLOCK_SIZE);
         try r.extend_array(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
         return .{
@@ -803,11 +840,11 @@ pub const Container = packed struct(u64) {
 
     pub fn run_container_create_given_capacity(
         allocator: mem.Allocator,
-        nruns: u32,
+        nruns_capacity: u32,
         r: *Bitmap,
     ) !Container {
-        trace(@src(), "nruns={}", .{nruns});
-        const numblocks = misc.numGroupsOfSize(nruns * @sizeOf(root.Rle16), C.BLOCK_SIZE);
+        trace(@src(), "nruns={}", .{nruns_capacity});
+        const numblocks = misc.numGroupsOfSize(nruns_capacity * @sizeOf(root.Rle16), C.BLOCK_SIZE);
         try r.extend_array(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
         return .{
@@ -947,38 +984,6 @@ pub const Container = packed struct(u64) {
             base1 +%= 64;
         }
         return outpos;
-    }
-
-    pub fn run_container_grow(
-        rc: *Container,
-        allocator: mem.Allocator,
-        min: u32,
-        copy: bool,
-        r: *Bitmap,
-    ) !void {
-        const run_cap = rc.calc_capacity();
-        var capacity = run_cap;
-        const newCapacity = @max(min, if (capacity == 0)
-            0
-        else if (capacity < 64)
-            capacity * 2
-        else if (capacity < 1024)
-            capacity * 3 / 2
-        else
-            capacity * 5 / 4);
-        capacity = newCapacity;
-        const morecap = capacity - run_cap;
-        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
-
-        if (copy) {
-            try add_container_blocks(r, allocator, rc, moreblocks);
-        } else {
-            rc.deinit_blocks(r.*);
-            try r.extend_array(allocator, 0, moreblocks);
-            rc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
-            rc.nblocks_minus1 += @intCast(moreblocks);
-            r.array.ptr(.blockslen).* += rc.nblocks();
-        }
     }
 
     pub fn array_container_from_bitset(
@@ -1544,38 +1549,38 @@ pub const Container = packed struct(u64) {
     /// to *dst. If the return function is true, the result is a bitset_container_t
     /// otherwise is a array_container_t.
     fn bitset_bitset_container_intersection(
-        src1: Container,
+        dst: *Container,
         allocator: mem.Allocator,
-        src2: Container,
+        dstr: *Bitmap,
+        src1: Container,
         x1: Bitmap,
+        src2: Container,
         x2: Bitmap,
-        dst: *Bitmap,
-    ) !Container {
+    ) !void {
         const newCardinality = bitset_container_and_justcard(
             src1.blocks_as(.bitset, x1).ptr,
             src2.blocks_as(.bitset, x2).ptr,
         );
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
-            var bc = try bitset_container_create(allocator, dst);
+            dst.* = try bitset_container_create(allocator, dstr);
             _ = bitset_container_and_nocard(
                 src1.blocks_as(.bitset, x1).ptr,
                 src2.blocks_as(.bitset, x2).ptr,
-                &bc,
-                bc.blocks_as(.bitset, dst.*).ptr,
+                dst,
+                dst.blocks_as(.bitset, dstr.*).ptr,
             );
-            bc.cardinality = newCardinality;
-            return bc;
+            dst.cardinality = newCardinality;
+            return;
         }
-        var ac = try array_container_create_given_capacity(allocator, newCardinality, dst);
-        ac.cardinality = newCardinality;
+        if (newCardinality == 0) return;
+        dst.* = try array_container_create_given_capacity(allocator, newCardinality, dstr);
+        dst.cardinality = newCardinality;
         _ = bitset_extract_intersection_setbits_uint16(
             src1.blocks_as(.bitset, x1),
             src2.blocks_as(.bitset, x2),
-            ac.blocks_as(.array, dst.*),
+            dst.blocks_as(.array, dstr.*),
             0,
         );
-
-        return ac;
     }
 
     /// Same as bitset_bitset_container_intersection except that if the output
@@ -1603,47 +1608,52 @@ pub const Container = packed struct(u64) {
 
     /// computes the intersection of array1 and array2 and return the result in dst.
     fn array_container_intersection(
-        ac1: Container,
+        dst: *Container,
         allocator: mem.Allocator,
-        ac2: Container,
-        dst: *?Container,
-        x1: Bitmap,
-        x2: Bitmap,
         dstr: *Bitmap,
+        ac1: Container,
+        x1: Bitmap,
+        ac2: Container,
+        x2: Bitmap,
     ) !void {
         const card1 = ac1.cardinality;
         const card2 = ac2.cardinality;
         const min_card = @min(card1, card2);
         const threshold = 64; // subject to tuning
-        if (dst.* == null) {
-            dst.* = try array_container_create_given_capacity(allocator, min_card, dstr);
-        } else if (dst.*.?.calc_capacity() < min_card)
-            try dst.*.?.array_container_grow(allocator, dstr, min_card, false);
 
-        dst.*.?.nblocks_minus1 = @intCast(misc.numGroupsOfSize(min_card, C.BLOCK_LEN16) - 1);
+        if (dst.calc_capacity() < min_card)
+            try dst.array_container_grow(allocator, dstr, min_card, false);
+
+        dst.nblocks_minus1 = @intCast(misc.numGroupsOfSize(min_card, C.BLOCK_LEN16) - 1);
 
         if (card1 * threshold < card2) {
-            dst.*.?.cardinality = @intCast(misc.intersect_skewed_uint16(
+            dst.cardinality = @intCast(misc.intersect_skewed_uint16(
                 ac1.blocks_as(.array, x1)[0..card1],
                 ac2.blocks_as(.array, x2)[0..card2],
-                dst.*.?.blocks_as(.array, dstr.*),
+                dst.blocks_as(.array, dstr.*),
             ));
         } else if (card2 * threshold < card1) {
-            dst.*.?.cardinality = @intCast(misc.intersect_skewed_uint16(
+            dst.cardinality = @intCast(misc.intersect_skewed_uint16(
                 ac2.blocks_as(.array, x2)[0..card2],
                 ac1.blocks_as(.array, x1)[0..card1],
-                dst.*.?.blocks_as(.array, dstr.*),
+                dst.blocks_as(.array, dstr.*),
             ));
         } else {
             if (C.HAS_AVX2) {
-                trace(@src(), "TODO use intersect_vector16() when HAS_AVX2", .{});
+                // TODO use intersect_vector16() when HAS_AVX2
             }
-            dst.*.?.cardinality = @intCast(misc.intersect_uint16(
+            dst.cardinality = @intCast(misc.intersect_uint16(
                 ac1.blocks_as(.array, x1)[0..card1],
                 ac2.blocks_as(.array, x2)[0..card2],
-                dst.*.?.blocks_as(.array, dstr.*),
+                dst.blocks_as(.array, dstr.*),
             ));
         }
+
+        if (dst.cardinality == 0)
+            dst.deinit_blocks(dstr.*)
+        else
+            dst.assert_valid(dstr.*);
+        // if (ac1.equals(ac2, x1, x2)) assert(dst.equals(ac1, dstr.*, x1));
     }
 
     /// Copy one container into another. We assume that they are distinct.
@@ -1664,30 +1674,30 @@ pub const Container = packed struct(u64) {
 
     /// returns the computed intersection of src1 and src2
     fn run_container_intersection(
-        src1: Container,
+        dst: *Container,
         allocator: mem.Allocator,
-        src2: Container,
-        x1: Bitmap,
-        x2: Bitmap,
         dstr: *Bitmap,
-    ) !Container {
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) !void {
         const if1 = run_container_is_full(src1, x1);
         const if2 = run_container_is_full(src2, x2);
-        var dst = try run_container_create_given_capacity(allocator, 1, dstr);
         if (if1 or if2) {
             if (if1) {
-                try src2.run_container_copy(allocator, &dst, src2.blocks_as(.run, x2).ptr, dstr);
-                return dst;
+                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run, x2).ptr, dstr);
+                return;
             }
             if (if2) {
-                try src1.run_container_copy(allocator, &dst, src1.blocks_as(.run, x1).ptr, dstr);
-                return dst;
+                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run, x1).ptr, dstr);
+                return;
             }
         }
         // TODO: this could be a lot more efficient, could use SIMD optimizations
         const neededcapacity = src1.cardinality + src2.cardinality;
         if (dst.calc_capacity() < neededcapacity)
-            try run_container_grow(&dst, allocator, neededcapacity, false, dstr);
+            try run_container_grow(dst, allocator, neededcapacity, false, dstr);
         dst.cardinality = 0;
         var rlepos: u32 = 0;
         var xrlepos: u32 = 0;
@@ -1747,7 +1757,6 @@ pub const Container = packed struct(u64) {
                 dst.cardinality += 1;
             }
         }
-        return dst;
     }
 
     /// Copy one container into another. We assume that they are distinct.
@@ -1765,19 +1774,56 @@ pub const Container = packed struct(u64) {
         @memcpy(dst.blocks_as(.run, dstr.*)[0..n_runs], srcruns);
     }
 
+    /// Compute the intersection of src1 and src2 and write the result to dst.
+    fn array_bitset_container_intersection(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) !void {
+        if (dst.calc_capacity() < src1.cardinality)
+            try array_container_grow(dst, allocator, dstr, src1.cardinality, false);
+        var newcard: u30 = 0; // dst could be src1
+        const origcard = src1.cardinality;
+        const src1array = src1.blocks_as(.array, x1);
+        const dstarray = dst.blocks_as(.array, dstr.*);
+        for (0..origcard) |i| {
+            const key = src1array[i];
+            // this branchless approach is much faster...
+            dstarray[newcard] = key;
+
+            newcard += @intFromBool(bitset_container_get(src2.blocks_as(.bitset, x2).ptr, key));
+            // we could do it this way instead...
+            // if (bitset_container_contains(src2, key)) {
+            //     dst.array[newcard++] = key;
+            // }
+            // but if the result is unpredictible, the processor generates
+            // many mispredicted branches.
+            // Difference can be huge (from 3 cycles when predictible all the way
+            // to 16 cycles when unpredictible.
+            // See
+            // https://github.com/lemire/Code-used-on-Daniel-Lemire-s-blog/blob/master/extra/bitset/c/arraybitsetintersection.c
+        }
+        dst.cardinality = newcard;
+    }
+
     /// Compute the intersection of src1 and src2 and write the result to
     /// dst. It is allowed for dst to be equal to src1. We assume that dst is a
     /// valid container.
     fn array_run_container_intersection(
-        src1: Container,
-        allocator: mem.Allocator,
-        src2: Container,
         dst: *Container,
-        x1: Bitmap,
-        x2: Bitmap,
+        allocator: mem.Allocator,
         dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
     ) !void {
-        defer dst.nblocks_minus1 = @intCast(misc.numGroupsOfSize(dst.cardinality, C.BLOCK_LEN32));
+        assert(src1.cardinality > 0 and src2.cardinality > 0);
+        dst.nblocks_minus1 = @intCast(misc.numGroupsOfSize(src1.cardinality, C.BLOCK_LEN16) - 1);
         if (run_container_is_full(src2, x2)) {
             if (dst.* != src1)
                 try src1.array_container_copy(allocator, dst, src1.blocks_as(.array, x1).ptr, dstr);
@@ -1831,9 +1877,11 @@ pub const Container = packed struct(u64) {
         const arraysize = card * @sizeOf(u16);
         const min_size_non_run = @min(@sizeOf(root.Bitset), arraysize);
         trace(@src(), "arraysize={} runsize={} min_size_non_run={}", .{ arraysize, runsize, min_size_non_run });
-        if (runsize <= min_size_non_run) { // no conversion
+        if (c.cardinality == 0 or runsize <= min_size_non_run) { // no conversion
             return c;
         }
+        assert(card != 0);
+
         if (card <= C.DEFAULT_MAX_SIZE) {
             // to array
             const cnblocks = misc.numGroupsOfSize(card * @sizeOf(u16), C.BLOCK_SIZE);
@@ -1896,33 +1944,32 @@ pub const Container = packed struct(u64) {
     ) !Container {
         // TODO // c1 = container_unwrap_shared(c1);
         // TODO // c2 = container_unwrap_shared(c2);
-        trace(@src(), "c1={}", .{c1});
-        trace(@src(), "c2={}", .{c2});
+
+        var result: Container = .uninit;
+        trace(@src(), "c1=    {}", .{c1});
+        trace(@src(), "c2=    {}", .{c2});
+        defer trace(@src(), "result={}", .{result});
         switch (misc.pair(c1.typecode, c2.typecode)) {
             else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
             misc.pair(.bitset, .bitset) => {
-                return bitset_bitset_container_intersection(c1, allocator, c2, x1, x2, dstr);
+                try bitset_bitset_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
             },
             misc.pair(.array, .array) => {
-                var dst: ?Container = null;
-                try c1.array_container_intersection(allocator, c2, &dst, x1, x2, dstr);
-                return dst.?;
+                result = try array_container_create_given_capacity(allocator, @min(c1.cardinality, c2.cardinality), dstr);
+                try array_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
             },
             misc.pair(.run, .run) => {
-                const result = try c1.run_container_intersection(allocator, c2, x1, x2, dstr);
+                try run_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
                 return try result.convert_run_to_efficient_container_and_free(allocator, dstr);
             },
-            //     misc.pair(.bitset, .array) => {
-            //         var result = array_container_create();
-            //         array_bitset_container_intersection(c2, c1, &result);
-
-            //         return result;
-            //     },
-            //     misc.pair(.array, .bitset) => {
-            //         var result = array_container_create();
-            //         array_bitset_container_intersection(c1, c2, &result);
-            //         return result;
-            //     },
+            misc.pair(.bitset, .array) => {
+                result = try array_container_create_given_capacity(allocator, c2.cardinality, dstr);
+                try array_bitset_container_intersection(&result, allocator, dstr, c2, x2, c1, x1);
+            },
+            misc.pair(.array, .bitset) => {
+                result = try array_container_create_given_capacity(allocator, c1.cardinality, dstr);
+                try array_bitset_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
+            },
             //     misc.pair(.bitset, .run) => {
             //         return run_bitset_container_intersection(c2, c1, &result);
             //     },
@@ -1930,27 +1977,15 @@ pub const Container = packed struct(u64) {
             //         return run_bitset_container_intersection(c1, c2, &result);
             //     },
             misc.pair(.array, .run) => {
-                var ret: Container = .{
-                    .typecode = .array,
-                    .cardinality = 0,
-                    .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
-                    .nblocks_minus1 = undefined,
-                };
-                try c1.array_run_container_intersection(allocator, c2, &ret, x1, x2, dstr);
-                return ret;
+                result = try array_container_create_given_capacity(allocator, c1.cardinality, dstr);
+                try array_run_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
             },
             misc.pair(.run, .array) => {
-                var ret: Container = .{
-                    .typecode = .array,
-                    .cardinality = 0,
-                    .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
-                    .nblocks_minus1 = undefined,
-                };
-                try c2.array_run_container_intersection(allocator, c1, &ret, x2, x1, dstr);
-                return ret;
+                result = try array_container_create_given_capacity(allocator, c2.cardinality, dstr);
+                try array_run_container_intersection(&result, allocator, dstr, c2, x2, c1, x1);
             },
-            //     else => unreachable,
         }
+        return result;
     }
 
     /// Check whether the container spans the whole chunk (cardinality = 1<<16).

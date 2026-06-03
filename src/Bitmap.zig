@@ -1264,7 +1264,7 @@ pub const FmtLong = struct {
         });
 
         for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
-            try w.print("\n{: <2} {: <2}:{f}", .{ i, key, c.fmtLong(r, key) });
+            try w.print("\n{: <5} {: <5}:{f}", .{ i, key, c.fmtLong(r, key) });
         }
     }
 };
@@ -1467,6 +1467,8 @@ pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, in
 
 pub fn clear_retaining_capacity(r: *Bitmap) void {
     if (r.is_empty()) return;
+    @memset(r.array.slice(.containers), undefined);
+    @memset(r.array.slice(.keys), undefined);
     r.array.ptr(.len).* = 0;
     r.array.ptr(.blockslen).* = 0;
 }
@@ -1535,8 +1537,8 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     var answer = try create_with_capacity(allocator, @max(length1, length2));
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
-    trace(@src(), "x1={f}", .{x1});
-    trace(@src(), "x2={f}", .{x2});
+    trace(@src(), "x1={f}", .{x1.fmtLong()});
+    trace(@src(), "x2={f}", .{x2.fmtLong()});
 
     var pos1: u32 = 0;
     var pos2: u32 = 0;

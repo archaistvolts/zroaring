@@ -352,9 +352,8 @@ pub fn intersect_uint16(
             b += 1;
             if (a == aend or b == bend) return @intCast(out - OUT.ptr);
         } else {
-            std.debug.assert(a[0] > b[0]);
-            // A > B happened after B advanced.  advance a once to catch up,
-            // simulates what `goto SKIP_FIRST_COMPARE` from croaring.
+            // a > b happened after b advanced.  advance a once to catch up.
+            // emulates `goto SKIP_FIRST_COMPARE` from croaring.
             a += 1;
             if (a == aend) return @intCast(out - OUT.ptr);
         }
