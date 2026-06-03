@@ -711,6 +711,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     if (num_required_containers > common_length) {
         const distance = num_required_containers - common_length;
         try r.shift_tail(allocator, suffix_length, @bitCast(distance));
+        @memset(r.slice(.containers, .len)[prefix_length + common_length ..][0..@intCast(distance)], .uninit);
     }
 
     var src: i32 = @bitCast(prefix_length + common_length -% 1);

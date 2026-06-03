@@ -104,7 +104,6 @@ pub const Container = packed struct(u64) {
         assert(moreblocks != 0);
         // TODO move this logic to extend_array?
         const cid = c - r.array.ptr(.containers);
-        // trace(@src(), "moreblocks={} c={}", .{ moreblocks, c });
         const blockslen = r.array.ptr(.blockslen).*;
         if (blockslen + c.nblocks() + moreblocks >= r.array.ptr(.blockscapacity).*) {
             try r.extend_array(allocator, 0, moreblocks);
@@ -112,7 +111,6 @@ pub const Container = packed struct(u64) {
         // move blocks and update blocks info
         const blocks = r.slice(.blocks, .blockscapacity);
         const c2 = &r.array.ptr(.containers)[cid];
-        // trace(@src(), "blocks.len={} c2.blockoffset={} c2.nblocks()={} blockslen={} r.array.ptr(.blockslen)={}", .{ blocks.len, c2.blockoffset, c2.nblocks(), blockslen, r.array.ptr(.blockslen).* });
         const rest = blocks[c2.blockoffset + c2.nblocks() .. blockslen];
         @memmove(rest.ptr + moreblocks, rest);
         c2.nblocks_minus1 += @intCast(moreblocks);
