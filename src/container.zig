@@ -2190,7 +2190,7 @@ pub const Container = packed struct(u64) {
         base: u16,
     ) usize {
         var outpos: u32 = 0;
-        var base1 = base;
+        var base1: u32 = base;
         for (words1, words2) |w1, w2| {
             var w = w1 & w2;
             while (w != 0) {

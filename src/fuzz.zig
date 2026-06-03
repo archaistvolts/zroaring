@@ -366,13 +366,13 @@ fn perform_op(
     comptime assert(is_cr or is_hashmap);
     switch (op) {
         .add,
-        .add_many,
         .remove,
         .intersect,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
-        => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() missing '.' before '{'.
-
+        => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() prints '{..}' - missing leading '.'.
+        .add_many,
+        => |x| fuzzprint(".{{ .add_many = .{{ .idx = {}, .vals = &{any},\n", .{ x.idx, x.vals }), // TODO bug report for std.Io.Writer.printSlice() prints '{..}' - missing leading '&.'.
         .clear,
         .run_optimize,
         .shrink_to_fit,
@@ -958,10 +958,20 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 0 } },
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
+
+    try ops_fn(ctx, &.{ // bitset_extract_intersection_setbits_uint16 overflow
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 35376531, 23019426, 96611749, 99425048, 22409478, 9441758 } } },
+        .{ .clear = 0 },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 50517783, 87812310, 9441758, 14633378, 33887403 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 9471775, 9561093 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 9317044, 9446418 } } },
+        .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
 }
 
 test "crash0" {
-    //
+    // const ops_fn = cr_perform_ops;
+    // const ctx = {};
 }
 
 const std = @import("std");
