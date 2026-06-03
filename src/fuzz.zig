@@ -213,7 +213,7 @@ const AflSmith = struct {
         return switch (tag) {
             .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
             .add_many => {
-                const len = smith.valueRangeLessThan(u8, 0, @intCast(outvals.len + 1)) orelse return null;
+                const len = smith.valueRangeLessThan(u8, 1, @intCast(outvals.len + 1)) orelse return null;
                 for (outvals[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 return .{ .add_many = .{ .idx = idx, .vals = outvals[0..len] } };
             },
@@ -367,18 +367,19 @@ fn perform_op(
     switch (op) {
         .add,
         .add_many,
-        .add_range_closed,
         .remove,
         .intersect,
-        // TODO adjust to new FuzzOp format throughout, print idx etc.
-        => fuzzprint("{}\n", .{op}),
+        => fuzzprint("{},\n", .{op}),
+        .add_range_closed,
+        => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() missing '.' before '{'.
+
         .clear,
         .run_optimize,
         .shrink_to_fit,
         .portable_serialize,
         .frozen_serialize,
         .equals,
-        => fuzzprint(".{t},\n", .{op}),
+        => fuzzprint("{},\n", .{op}),
         .contains,
         .contains_many,
         => {}, // no print, not part of reproduction
@@ -922,6 +923,40 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 0, .vals = &.{50064} } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 259797, 285999 } } },
         .{ .run_optimize = 0 },
+    });
+
+    try ops_fn(ctx, &.{ // bitset_container_clone crash
+        .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 365, 423 } } },
+        .{ .portable_serialize = 1 },
+        .{ .portable_serialize = 1 },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 616, 129897 } } },
+        .{ .add = .{ .idx = 0, .val = 256 } },
+        .{ .add = .{ .idx = 1, .val = 167 } },
+        .{ .add = .{ .idx = 0, .val = 58056981 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 104, 228 } } },
+        .{ .run_optimize = 1 },
+        .{ .add = .{ .idx = 0, .val = 90595328 } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 13, 43022 } } },
+        .{ .add = .{ .idx = 0, .val = 11010048 } },
+        .{ .add = .{ .idx = 0, .val = 15925248 } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // run_bitset_container_intersection handle uninit
+        .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 166, 192 } } },
+        .{ .add = .{ .idx = 1, .val = 0 } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 10779, 73338 } } },
+        .{ .add = .{ .idx = 0, .val = 256 } },
+        .{ .add = .{ .idx = 1, .val = 167 } },
+        .{ .add = .{ .idx = 0, .val = 58056981 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 104, 210 } } },
+        .{ .add = .{ .idx = 0, .val = 11010048 } },
+        .{ .add = .{ .idx = 0, .val = 15925248 } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 }
 

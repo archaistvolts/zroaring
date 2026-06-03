@@ -30,10 +30,7 @@ pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
 pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u30);
 
-pub const IS_X86 = switch (builtin.cpu.arch) {
-    .x86_64, .x86 => true,
-    else => false,
-};
+pub const IS_X86 = builtin.cpu.arch.isX86();
 pub const HAS_AVX2 = if (IS_X86)
     std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)
 else

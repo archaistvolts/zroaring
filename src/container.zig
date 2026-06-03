@@ -871,20 +871,18 @@ pub const Container = packed struct(u64) {
 
     /// Check whether this bitset is empty,
     pub fn bitset_container_empty(bitset: Container, r: Bitmap) bool {
-        if (bitset.cardinality == C.BITSET_UNKNOWN_CARDINALITY) {
-            const words = bitset.blocks_as(.bitset, r);
-            for (0..C.BITSET_CONTAINER_SIZE_IN_WORDS) |i| {
-                if ((words[i]) != 0) return false;
-            }
-            return true;
-        }
-        return bitset.cardinality == 0;
+        return if (bitset.cardinality == C.BITSET_UNKNOWN_CARDINALITY)
+            for (bitset.blocks_as(.bitset, r)) |word| {
+                if (word != 0) break false;
+            } else true
+        else
+            bitset.cardinality == 0;
     }
 
     /// Checks whether a container is not empty, requires a  typecode
     pub fn nonzero_cardinality(c: Container, r: Bitmap) bool {
         // TODO // c = c.container_unwrap_shared();
-        return switch (c.typecode) {
+        return c != uninit and switch (c.typecode) {
             .bitset => !c.bitset_container_empty(r),
             .array, .run => c.cardinality != 0,
             else => unreachable,
@@ -987,17 +985,15 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn array_container_from_bitset(
-        bits: *Container,
+        bits: Container,
         allocator: mem.Allocator,
         r: *Bitmap,
     ) !Container {
-        const cid = bits - r.array.ptr(.containers);
         var result = try array_container_create_given_capacity(allocator, bits.cardinality, r);
-        const bits2 = r.array.ptr(.containers)[cid];
-        result.cardinality = bits2.cardinality;
+        result.cardinality = bits.cardinality;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
-        _ = bitset_extract_setbits_u16(bits2.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
+        _ = bitset_extract_setbits_u16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
         return result;
     }
 
@@ -1157,6 +1153,87 @@ pub const Container = packed struct(u64) {
         return r.array.ptr(.containers)[cid];
     }
 
+    /// Simple CSA over Block
+    pub fn CSA(h: *Block, l: *Block, a: Block, b: Block, c: Block) void {
+        const u = a ^ b;
+        h.* = (a & b) | (u & c);
+        l.* = u ^ c;
+    }
+
+    pub fn popcount256(v: Block) root.Block64 {
+        const lookuppos: Block = .{
+            4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
+            4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
+            4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
+            4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
+        };
+
+        const lookupneg: Block = .{
+            4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
+            4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
+            4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
+            4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
+        };
+
+        const low_mask: Block = @splat(0x0f);
+        const shift_amt: Block = @splat(4);
+        const lo = v & low_mask;
+        const hi = (v >> shift_amt) & low_mask;
+        const popcnt1 = misc.pshufb(lookuppos, lo);
+        const popcnt2 = misc.pshufb(lookupneg, hi);
+        const sad_result = misc.psadbw(popcnt1, popcnt2);
+        return @bitCast(sad_result);
+    }
+
+    /// Fast Harley-Seal AVX population count function
+    pub fn avx2_harley_seal_popcount(data: []root.Block) u64 {
+        var total: root.Block64 = @splat(0);
+        var ones: Block = @splat(0);
+        var twos: Block = @splat(0);
+        var fours: Block = @splat(0);
+        var eights: Block = @splat(0);
+        var sixteens: Block = @splat(0);
+        var twosA: Block = undefined;
+        var twosB: Block = undefined;
+        var foursA: Block = undefined;
+        var foursB: Block = undefined;
+        var eightsA: Block = undefined;
+        var eightsB: Block = undefined;
+        const size = data.len;
+        const limit = size - size % 16;
+        var i: u64 = 0;
+
+        while (i < limit) : (i += 16) {
+            CSA(&twosA, &ones, ones, data[i], data[i + 1]);
+            CSA(&twosB, &ones, ones, data[i + 2], data[i + 3]);
+            CSA(&foursA, &twos, twos, twosA, twosB);
+            CSA(&twosA, &ones, ones, data[i + 4], data[i + 5]);
+            CSA(&twosB, &ones, ones, data[i + 6], data[i + 7]);
+            CSA(&foursB, &twos, twos, twosA, twosB);
+            CSA(&eightsA, &fours, fours, foursA, foursB);
+            CSA(&twosA, &ones, ones, data[i + 8], data[i + 9]);
+            CSA(&twosB, &ones, ones, data[i + 10], data[i + 11]);
+            CSA(&foursA, &twos, twos, twosA, twosB);
+            CSA(&twosA, &ones, ones, data[i + 12], data[i + 13]);
+            CSA(&twosB, &ones, ones, data[i + 14], data[i + 15]);
+            CSA(&foursB, &twos, twos, twosA, twosB);
+            CSA(&eightsB, &fours, fours, foursA, foursB);
+            CSA(&sixteens, &eights, eights, eightsA, eightsB);
+
+            total += popcount256(sixteens);
+        }
+
+        total <<= @splat(4); // *= 16
+        total += popcount256(eights) << @splat(3); // += 8 * ...
+        total += popcount256(fours) << @splat(2); // += 4 * ...
+        total += popcount256(twos) << @splat(1); // += 2 * ...
+        total += popcount256(ones);
+        while (i < size) : (i += 1)
+            total += popcount256(data[i]);
+
+        return @reduce(.Add, total);
+    }
+
     fn op_methods(comptime op: std.builtin.ReduceOp) type {
         return struct {
             fn bitset_container_op(
@@ -1214,29 +1291,19 @@ pub const Container = packed struct(u64) {
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
             ) u30 {
-                if (C.HAS_AVX2) {
-                    const a = _avx2_bitset_container_op_nocard(src1, src2, dstc, dst);
-                    const b = _scalar_bitset_container_op_nocard(src1, src2, dstc, dst);
-                    if (a != b) {
-                        trace(@src(), "avx nocard {} != scalar nocard {}", .{ a, b });
-                        unreachable;
-                    }
-                    return a;
-                } else _scalar_bitset_container_op_nocard(src1, src2, dstc, dst);
+                return if (C.HAS_AVX2)
+                    _avx2_bitset_container_op_nocard(src1, src2, dstc, dst)
+                else
+                    _scalar_bitset_container_op_nocard(src1, src2, dstc, dst);
             }
             pub fn bitset_container_op_justcard(
                 src1: [*]align(C.BLOCK_ALIGN) const u64,
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
             ) u32 {
-                return if (C.HAS_AVX2) {
-                    const a = _avx2_bitset_container_op_justcard(src1, src2);
-                    const b = _scalar_bitset_container_op_justcard(src1, src2);
-                    if (a != b) {
-                        trace(@src(), "avx justcard {} != scalar justcard {}", .{ a, b });
-                        unreachable;
-                    }
-                    return a;
-                } else _scalar_bitset_container_op_justcard(src1, src2);
+                return if (C.HAS_AVX2)
+                    _avx2_bitset_container_op_justcard(src1, src2)
+                else
+                    _scalar_bitset_container_op_justcard(src1, src2);
             }
 
             fn _scalar_bitset_container_op_justcard(
@@ -1270,87 +1337,6 @@ pub const Container = packed struct(u64) {
                     .And => a & b,
                     else => unreachable,
                 };
-            }
-
-            /// Simple CSA over Block
-            pub fn CSA(h: *Block, l: *Block, a: Block, b: Block, c: Block) void {
-                const u = a ^ b;
-                h.* = (a & b) | (u & c);
-                l.* = u ^ c;
-            }
-
-            /// Fast Harley-Seal AVX population count function
-            pub fn avx2_harley_seal_popcount(data: []root.Block) u64 {
-                var total: root.Block64 = @splat(0);
-                var ones: Block = @splat(0);
-                var twos: Block = @splat(0);
-                var fours: Block = @splat(0);
-                var eights: Block = @splat(0);
-                var sixteens: Block = @splat(0);
-                var twosA: Block = undefined;
-                var twosB: Block = undefined;
-                var foursA: Block = undefined;
-                var foursB: Block = undefined;
-                var eightsA: Block = undefined;
-                var eightsB: Block = undefined;
-                const size = data.len;
-                const limit = size - size % 16;
-                var i: u64 = 0;
-
-                while (i < limit) : (i += 16) {
-                    CSA(&twosA, &ones, ones, (data + i)[0..@sizeOf(Block)].*, (data + i + 1)[0..@sizeOf(Block)].*);
-                    CSA(&twosB, &ones, ones, (data + i + 2)[0..@sizeOf(Block)].*, (data + i + 3)[0..@sizeOf(Block)].*);
-                    CSA(&foursA, &twos, twos, twosA, twosB);
-                    CSA(&twosA, &ones, ones, (data + i + 4)[0..@sizeOf(Block)].*, (data + i + 5)[0..@sizeOf(Block)].*);
-                    CSA(&twosB, &ones, ones, (data + i + 6)[0..@sizeOf(Block)].*, (data + i + 7)[0..@sizeOf(Block)].*);
-                    CSA(&foursB, &twos, twos, twosA, twosB);
-                    CSA(&eightsA, &fours, fours, foursA, foursB);
-                    CSA(&twosA, &ones, ones, (data + i + 8)[0..@sizeOf(Block)].*, (data + i + 9)[0..@sizeOf(Block)].*);
-                    CSA(&twosB, &ones, ones, (data + i + 10)[0..@sizeOf(Block)].*, (data + i + 11)[0..@sizeOf(Block)].*);
-                    CSA(&foursA, &twos, twos, twosA, twosB);
-                    CSA(&twosA, &ones, ones, (data + i + 12)[0..@sizeOf(Block)].*, (data + i + 13)[0..@sizeOf(Block)].*);
-                    CSA(&twosB, &ones, ones, (data + i + 14)[0..@sizeOf(Block)].*, (data + i + 15)[0..@sizeOf(Block)].*);
-                    CSA(&foursB, &twos, twos, twosA, twosB);
-                    CSA(&eightsB, &fours, fours, foursA, foursB);
-                    CSA(&sixteens, &eights, eights, eightsA, eightsB);
-
-                    total = total + @as(Block, @splat(popcount256(sixteens)));
-                }
-
-                total <<= 4; // *= 16
-                total += popcount256(eights) << 3; // += 8 * ...
-                total += popcount256(fours) << 2; // += 4 * ...
-                total += popcount256(twos) << 1; // += 2 * ...
-                total += popcount256(ones);
-                while (i < size) : (i += 1)
-                    total += popcount256((data + i)[0..@sizeOf(Block).*]);
-
-                return @reduce(.Add, total);
-            }
-
-            pub inline fn popcount256(v: Block) root.Block64 {
-                const lookuppos: Block = .{
-                    4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
-                    4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
-                    4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
-                    4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
-                };
-
-                const lookupneg: Block = .{
-                    4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
-                    4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
-                    4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
-                    4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
-                };
-
-                const low_mask: Block = @splat(0x0f);
-                const shift_amt: Block = @splat(4);
-                const lo = v & low_mask;
-                const hi = (v >> shift_amt) & low_mask;
-                const popcnt1 = misc.pshufb(lookuppos, lo);
-                const popcnt2 = misc.pshufb(lookupneg, hi);
-                const sad_result = misc.psadbw(popcnt1, popcnt2);
-                return @bitCast(sad_result);
             }
 
             fn avx2_harley_seal_popcount_op(
@@ -1417,7 +1403,6 @@ pub const Container = packed struct(u64) {
                     A1 = avx_intrinsic((data1 + i)[0], (data2 + i)[0]);
                     total += popcount256(A1);
                 }
-
                 return @reduce(.Add, total);
             }
 
@@ -1502,23 +1487,29 @@ pub const Container = packed struct(u64) {
             }
 
             fn _avx2_bitset_container_op_nocard(
-                words_1: [*]align(C.BLOCK_ALIGN) const u64,
-                words_2: [*]align(C.BLOCK_ALIGN) const u64,
+                words1: [*]align(C.BLOCK_ALIGN) const u64,
+                words2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
             ) u30 {
                 const innerloop = 8;
-                var words1: [*]const root.Block64 = @ptrCast(words_1);
-                var words2: [*]const root.Block64 = @ptrCast(words_2);
-                var wordsout: [*]root.Block64 = @ptrCast(dst);
-                var i: usize = 0;
-                while (i < C.BITSET_BLOCKS / innerloop) : (i += innerloop) {
-                    inline for (0..innerloop) |j| {
-                        wordsout[i + j] = avx_intrinsic(words2[j], words1[j]);
-                        words1 += 1;
-                        words2 += 1;
+                var blocks1: [*]const root.Block64 = @ptrCast(words1);
+                var blocks2: [*]const root.Block64 = @ptrCast(words2);
+                var blocksout: [*]root.Block64 = @ptrCast(dst);
+                const blocksend = dst + C.BITSET_CONTAINER_SIZE_IN_WORDS;
+                while (@intFromPtr(blocksout) < @intFromPtr(blocksend)) {
+                    inline for (
+                        blocksout[0..innerloop],
+                        blocks2[0..innerloop],
+                        blocks1[0..innerloop],
+                    ) |*bo, b2, b1| {
+                        bo.* = avx_intrinsic(b2, b1);
                     }
+                    blocksout += innerloop;
+                    blocks1 += innerloop;
+                    blocks2 += innerloop;
                 }
+                assert(@intFromPtr(blocksout) == @intFromPtr(dst + C.BITSET_CONTAINER_SIZE_IN_WORDS));
                 dstc.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
                 return C.BITSET_UNKNOWN_CARDINALITY;
             }
@@ -1546,7 +1537,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Compute the intersection between src1 and src2 and write the result
-    /// to *dst. If the return function is true, the result is a bitset_container_t
+    /// to dst. If the return function is true, the result is a bitset_container_t
     /// otherwise is a array_container_t.
     fn bitset_bitset_container_intersection(
         dst: *Container,
@@ -1561,6 +1552,7 @@ pub const Container = packed struct(u64) {
             src1.blocks_as(.bitset, x1).ptr,
             src2.blocks_as(.bitset, x2).ptr,
         );
+        trace(@src(), "newCardinality={}", .{newCardinality});
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
             dst.* = try bitset_container_create(allocator, dstr);
             _ = bitset_container_and_nocard(
@@ -1572,7 +1564,8 @@ pub const Container = packed struct(u64) {
             dst.cardinality = newCardinality;
             return;
         }
-        if (newCardinality == 0) return;
+        if (newCardinality == 0)
+            return;
         dst.* = try array_container_create_given_capacity(allocator, newCardinality, dstr);
         dst.cardinality = newCardinality;
         _ = bitset_extract_intersection_setbits_uint16(
@@ -1586,7 +1579,7 @@ pub const Container = packed struct(u64) {
     /// Same as bitset_bitset_container_intersection except that if the output
     /// is to be a bitset container, then src1 is modified and no allocation
     /// is made. If the output is to be an array container, then caller is
-    /// responsible to free the container. In all cases, the result is in *dst.
+    /// responsible to free the container. In all cases, the result is in dst.
     fn bitset_bitset_container_intersection_inplace(
         src1: Container,
         src2: Container,
@@ -1810,6 +1803,200 @@ pub const Container = packed struct(u64) {
         dst.cardinality = newcard;
     }
 
+    fn bitset_container_clone(
+        allocator: mem.Allocator,
+        c: Container,
+        x: Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        try dstr.extend_array(allocator, 0, C.BITSET_BLOCKS);
+        var bc = Container{
+            .typecode = .bitset,
+            .cardinality = c.cardinality,
+            .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
+            .nblocks_minus1 = @intCast(C.BITSET_BLOCKS - 1),
+        };
+        dstr.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
+        @memcpy(bc.get_blocks(dstr.*), c.get_blocks(x));
+        return bc;
+    }
+
+    /// Get the cardinality of `run'. Requires an actual computation.
+    fn _avx2_run_container_cardinality(
+        run: Container,
+        runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
+    ) u30 {
+        const n_runs = run.cardinality;
+
+        // by initializing with n_runs, we omit counting the +1 for each pair.
+        var sum = n_runs;
+        var k: u32 = 0;
+        const step = C.BLOCK_LEN32;
+        if (n_runs > step) {
+            var total: root.Block32 = @splat(0);
+            while (k + step <= n_runs) : (k += step) {
+                const ymm1: root.Block32 = @bitCast((runs + k)[0..C.BLOCK_LEN32].*);
+                const justlengths = ymm1 >> @splat(16);
+                total += justlengths;
+            }
+            // a store might be faster than extract?
+            sum += @intCast((total[0] + total[1]) + (total[2] + total[3]) +
+                (total[4] + total[5]) + (total[6] + total[7]));
+        }
+        for (runs[k..n_runs]) |r| {
+            sum += r.length;
+        }
+
+        return sum;
+    }
+
+    /// Get the cardinality of `run'. Requires an actual computation.
+    fn _scalar_run_container_cardinality(
+        run: Container,
+        runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
+    ) u30 {
+        const n_runs = run.cardinality;
+        // by initializing with n_runs, we omit counting the +1 for each pair.
+        var sum = n_runs;
+        for (runs[0..n_runs]) |r| {
+            sum += r.length;
+        }
+        return sum;
+    }
+
+    fn run_container_cardinality(run: Container, runs: [*]align(C.BLOCK_ALIGN) root.Rle16) u30 {
+        // Empirically AVX-512 is not always faster than AVX2
+        // TODO? _avx512_run_container_cardinality;
+        return if (C.HAS_AVX2)
+            _avx2_run_container_cardinality(run, runs)
+        else
+            _scalar_run_container_cardinality(run, runs);
+    }
+
+    /// Set all bits in indexes [begin,end) to false.
+    fn bitset_reset_range(
+        words: [*]align(C.BLOCK_ALIGN) u64,
+        start: u32,
+        end: u32,
+    ) void {
+        if (start == end) return;
+        const firstword = start / 64;
+        const endword = (end - 1) / 64;
+        if (firstword == endword) {
+            words[firstword] &= ~(((~@as(u64, 0)) << @truncate(start % 64)) &
+                ((~@as(u64, 0)) >> @truncate((~end + 1) % 64)));
+            return;
+        }
+        words[firstword] &= ~((~@as(u64, 0)) << @truncate(start % 64));
+        @memset(words[firstword + 1 .. endword], 0);
+        words[endword] &= ~((~@as(u64, 0)) >> @truncate((~end + 1) % 64));
+    }
+
+    /// Get the number of bits set (force computation)
+    fn _scalar_bitset_container_compute_cardinality(
+        words: [*]align(C.BLOCK_ALIGN) u64,
+    ) u30 {
+        var sum: u30 = 0;
+        var i: u32 = 0;
+        while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 4) {
+            sum += @popCount(words[i]);
+            sum += @popCount(words[i + 1]);
+            sum += @popCount(words[i + 2]);
+            sum += @popCount(words[i + 3]);
+        }
+        return sum;
+    }
+
+    /// Get the number of bits set (force computation)
+    fn bitset_container_compute_cardinality(words: [*]align(C.BLOCK_ALIGN) u64) u30 {
+        // TODO avx512_vpopcount
+        const x = words[0..C.BITSET_CONTAINER_SIZE_IN_WORDS];
+        if (C.HAS_AVX2) {
+            return @intCast(avx2_harley_seal_popcount(@ptrCast(x)));
+        } else {
+            return _scalar_bitset_container_compute_cardinality(x);
+        }
+    }
+
+    /// Compute the intersection of src1 and src2 and write the result to
+    /// dst. If dst == src2, an in-place processing is attempted.
+    fn run_bitset_container_intersection(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) !void {
+        if (run_container_is_full(src1, x1)) {
+            if (dst.* != src2)
+                dst.* = try bitset_container_clone(allocator, src2, x2, dstr);
+            return;
+        }
+        const src1runs = src1.blocks_as(.run, x1)[0..src1.cardinality];
+        const src2words = src2.blocks_as(.bitset, x2);
+        var card = run_container_cardinality(src1, src1runs.ptr);
+        trace(@src(), "card={}", .{card});
+
+        if (card <= C.DEFAULT_MAX_SIZE) {
+            // result can only be an array (assuming that we never make a RunContainer)
+            if (card > src2.cardinality) {
+                card = src2.cardinality;
+            }
+            dst.* = try array_container_create_given_capacity(allocator, card, dstr);
+            const dstarray = dst.blocks_as(.array, dstr.*);
+
+            for (0..src1.cardinality) |rlepos| {
+                const rle = src1runs[rlepos];
+                const endofrun = @as(u32, rle.value) + rle.length;
+                for (rle.value..endofrun + 1) |runValue| {
+                    dstarray[dst.cardinality] = @truncate(runValue);
+                    dst.cardinality += @intFromBool(bitset_container_get(src2words.ptr, @truncate(runValue)));
+                }
+            }
+            return;
+        }
+        if (dst.* == src2) { // we attempt in-place
+            var start: u32 = 0;
+            for (0..src1.cardinality) |rlepos| {
+                const rle = src1runs[rlepos];
+                const end: u32 = rle.value;
+                bitset_reset_range(src2words.ptr, start, end);
+                start = end + rle.length + 1;
+            }
+            bitset_reset_range(src2words.ptr, start, C.MAX_KEY_CARDINALITY);
+            dst.cardinality = bitset_container_compute_cardinality(dst.blocks_as(.bitset, dstr.*).ptr);
+            if (src2.cardinality > C.DEFAULT_MAX_SIZE) {
+                return;
+            } else {
+                dst.* = try array_container_from_bitset(src2, allocator, dstr);
+                return;
+            }
+        } else { // no inplace
+            // we expect the answer to be a bitmap (if we are lucky)
+            dst.* = try bitset_container_clone(allocator, src2, x2, dstr);
+            const dstwords = dst.blocks_as(.bitset, dstr.*).ptr;
+            var start: u32 = 0;
+            for (0..src1.cardinality) |rlepos| {
+                const rle = src1runs[rlepos];
+                const end: u32 = rle.value;
+                bitset_reset_range(dstwords, start, end);
+                start = end + rle.length + 1;
+            }
+            bitset_reset_range(dstwords, start, C.MAX_KEY_CARDINALITY);
+            dst.cardinality = bitset_container_compute_cardinality(dstwords);
+
+            if (dst.cardinality > C.DEFAULT_MAX_SIZE) {
+                return;
+            } else {
+                const answer = try array_container_from_bitset(dst.*, allocator, dstr);
+                dst.deinit_blocks(dstr.*);
+                dst.* = answer;
+            }
+        }
+    }
+
     /// Compute the intersection of src1 and src2 and write the result to
     /// dst. It is allowed for dst to be equal to src1. We assume that dst is a
     /// valid container.
@@ -1937,8 +2124,8 @@ pub const Container = packed struct(u64) {
     pub fn intersect(
         c1: Container,
         allocator: mem.Allocator,
-        c2: Container,
         x1: Bitmap,
+        c2: Container,
         x2: Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -1949,6 +2136,7 @@ pub const Container = packed struct(u64) {
         trace(@src(), "c1=    {}", .{c1});
         trace(@src(), "c2=    {}", .{c2});
         defer trace(@src(), "result={}", .{result});
+
         switch (misc.pair(c1.typecode, c2.typecode)) {
             else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
             misc.pair(.bitset, .bitset) => {
@@ -1970,12 +2158,12 @@ pub const Container = packed struct(u64) {
                 result = try array_container_create_given_capacity(allocator, c1.cardinality, dstr);
                 try array_bitset_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
             },
-            //     misc.pair(.bitset, .run) => {
-            //         return run_bitset_container_intersection(c2, c1, &result);
-            //     },
-            //     misc.pair(.run, .bitset) => {
-            //         return run_bitset_container_intersection(c1, c2, &result);
-            //     },
+            misc.pair(.bitset, .run) => {
+                try run_bitset_container_intersection(&result, allocator, dstr, c2, x2, c1, x1);
+            },
+            misc.pair(.run, .bitset) => {
+                try run_bitset_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
+            },
             misc.pair(.array, .run) => {
                 result = try array_container_create_given_capacity(allocator, c1.cardinality, dstr);
                 try array_run_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);

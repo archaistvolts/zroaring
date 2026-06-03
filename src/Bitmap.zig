@@ -1134,7 +1134,7 @@ pub fn realloc_array(
     new_capacity: u32,
     new_blockscapacity: u32,
 ) !void {
-    if (new_capacity == 0) {
+    if (new_capacity == 0 and new_blockscapacity == 0) {
         r.deinit(allocator);
         return;
     }
@@ -1549,11 +1549,11 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
         if (key1 == key2) {
             const c1 = x1.array.ptr(.containers)[pos1];
             const c2 = x2.array.ptr(.containers)[pos2];
-            const c = try c1.intersect(allocator, c2, x1, x2, &answer);
+            const c = try Container.intersect(c1, allocator, x1, c2, x2, &answer);
 
             if (c.nonzero_cardinality(answer)) {
                 try answer.append(allocator, key1, c);
-            } else {
+            } else if (c != Container.uninit) {
                 c.deinit_blocks(answer); // otherwise: memory leak!
             }
             pos1 += 1;
