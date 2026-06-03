@@ -371,7 +371,7 @@ fn perform_op(
         .remove,
         .intersect,
         // TODO adjust to new FuzzOp format throughout, print idx etc.
-        => fuzzprint(".{{ .{t} = ", .{op}),
+        => fuzzprint("{}\n", .{op}),
         .clear,
         .run_optimize,
         .shrink_to_fit,
@@ -385,7 +385,6 @@ fn perform_op(
     }
     switch (op) {
         .add => |o| {
-            fuzzprint("{} }},\n", .{o.val});
             try rs[o.idx].add(allocator, o.val);
             if (is_cr)
                 c.roaring_bitmap_add(oracles[o.idx], o.val)
@@ -393,12 +392,6 @@ fn perform_op(
                 try oracles[o.idx].put(allocator, o.val, {});
         },
         .add_many => |o| {
-            fuzzprint("&.{{ ", .{});
-            for (o.vals, 0..) |val, i| {
-                if (i != 0) fuzzprint(", ", .{});
-                fuzzprint("{}", .{val});
-            }
-            fuzzprint(" }} }},\n", .{});
             _ = try rs[o.idx].add_many(allocator, o.vals);
             if (is_cr)
                 c.roaring_bitmap_add_many(oracles[o.idx], o.vals.len, o.vals.ptr)
@@ -409,7 +402,6 @@ fn perform_op(
         },
         .add_range_closed => |o| {
             const val1, const val2 = o.val;
-            fuzzprint(".{{ {}, {} }} }},\n", .{ val1, val2 });
             try rs[o.idx].add_range_closed(allocator, val1, val2);
             if (is_cr)
                 c.roaring_bitmap_add_range_closed(oracles[o.idx], val1, val2)
@@ -436,7 +428,6 @@ fn perform_op(
                 }
                 break :val existing_val;
             } else o.val;
-            fuzzprint("{} }},\n", .{val});
 
             try std.testing.expectEqual(
                 if (is_cr)
@@ -447,7 +438,6 @@ fn perform_op(
             );
         },
         .intersect => |o| {
-            fuzzprint(".{{ {}, {}, {} }} }},\n", .{ o.idx, o.src1, o.src2 });
             var res = try rs[o.src1].intersect(allocator, rs[o.src2]);
             defer res.deinit(allocator);
 
