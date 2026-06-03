@@ -372,7 +372,7 @@ fn perform_op(
         .add_range_closed,
         => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() prints '{..}' - missing leading '.'.
         .add_many,
-        => |x| fuzzprint(".{{ .add_many = .{{ .idx = {}, .vals = &{any},\n", .{ x.idx, x.vals }), // TODO bug report for std.Io.Writer.printSlice() prints '{..}' - missing leading '&.'.
+        => |x| fuzzprint(".{{ .add_many = .{{ .idx = {}, .vals = &.{any} }} }},\n", .{ x.idx, x.vals }), // TODO bug report for std.Io.Writer.printSlice() prints '{..}' - missing leading '&.'.
         .clear,
         .run_optimize,
         .shrink_to_fit,
@@ -965,6 +965,15 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 0, .vals = &.{ 50517783, 87812310, 9441758, 14633378, 33887403 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 9471775, 9561093 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 9317044, 9446418 } } },
+        .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // run_bitset_container_intersection handle empty intersection
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 9471775, 9561093 } } },
+        .{ .clear = 0 },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 35376531, 23019426, 96611749, 99425048, 22409478, 9441758 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 9317044, 9446418 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 199973, 294236 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 }

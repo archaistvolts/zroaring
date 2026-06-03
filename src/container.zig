@@ -1987,13 +1987,12 @@ pub const Container = packed struct(u64) {
             bitset_reset_range(dstwords, start, C.MAX_KEY_CARDINALITY);
             dst.cardinality = bitset_container_compute_cardinality(dstwords);
 
-            if (dst.cardinality > C.DEFAULT_MAX_SIZE) {
+            if (dst.cardinality == 0 or dst.cardinality > C.DEFAULT_MAX_SIZE)
                 return;
-            } else {
-                const answer = try array_container_from_bitset(dst.*, allocator, dstr);
-                dst.deinit_blocks(dstr.*);
-                dst.* = answer;
-            }
+
+            const answer = try array_container_from_bitset(dst.*, allocator, dstr);
+            dst.deinit_blocks(dstr.*);
+            dst.* = answer;
         }
     }
 
