@@ -1241,34 +1241,38 @@ pub const Container = packed struct(u64) {
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) u32 {
-                return if (C.HAS_AVX2)
-                    _avx2_bitset_container_op(src1, src2, dstc, dst)
+            ) void {
+                if (C.HAS_AVX2)
+                    dstc.cardinality = @intCast(avx2_harley_seal_popcount_op_store(
+                        @ptrCast(src1),
+                        @ptrCast(src2),
+                        @ptrCast(dst),
+                        C.BITSET_BLOCKS,
+                    ))
                 else
-                    _scalar_bitset_container_op(src1, src2, dstc, dst);
+                    _ = _scalar_bitset_container_op(src1, src2, dstc, dst);
             }
 
             fn _scalar_bitset_container_op(
-                src1: [*]align(C.BLOCK_ALIGN) const u64,
-                src2: [*]align(C.BLOCK_ALIGN) const u64,
-                dstc: *Container,
-                dst: [*]align(C.BLOCK_ALIGN) u64,
+                words1: [*]align(C.BLOCK_ALIGN) const u64,
+                words2: [*]align(C.BLOCK_ALIGN) const u64,
+                dst: *Container,
+                out: [*]align(C.BLOCK_ALIGN) u64,
             ) Cardinality {
-                _ = src1;
-                _ = src2;
-                _ = dstc;
-                _ = dst;
-                unreachable;
-                // var sum: Cardinality = 0;
-                // var i: usize = 0;
-                // while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 2) {
-                //     const word1 = opsymbol(words1[i], words2[i]);
-                //     const word2 = opsymbol(words1[i + 1], words2[i + 1]);
-                //     sum += @popCount(word1);
-                //     sum += @popCount(word2);
-                // }
-                // return sum;
+                var sum: Cardinality = 0;
+                var i: usize = 0;
+                while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (i += 2) {
+                    const word1 = avx_intrinsic(words1[i], words2[i]);
+                    const word2 = avx_intrinsic(words1[i + 1], words2[i + 1]);
+                    out[i] = word1;
+                    out[i + 1] = word2;
+                    sum += @popCount(word1);
+                    sum += @popCount(word2);
+                }
+                dst.cardinality = sum;
+                return sum;
             }
+
             fn _avx2_bitset_container_op(
                 src1: [*]align(C.BLOCK_ALIGN) const u64,
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
@@ -1281,7 +1285,7 @@ pub const Container = packed struct(u64) {
                 return @intCast(avx2_harley_seal_popcount_op(
                     @ptrCast(src1),
                     @ptrCast(src2),
-                    C.BITSET_CONTAINER_SIZE_IN_WORDS / (C.BLOCK_SIZE),
+                    C.BITSET_BLOCKS,
                 ));
             }
 
@@ -1296,6 +1300,7 @@ pub const Container = packed struct(u64) {
                 else
                     _scalar_bitset_container_op_nocard(src1, src2, dstc, dst);
             }
+
             pub fn bitset_container_op_justcard(
                 src1: [*]align(C.BLOCK_ALIGN) const u64,
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
@@ -1320,6 +1325,7 @@ pub const Container = packed struct(u64) {
                 }
                 return sum;
             }
+
             fn _avx2_bitset_container_op_justcard(
                 data1: [*]align(C.BLOCK_ALIGN) const u64,
                 data2: [*]align(C.BLOCK_ALIGN) const u64,
@@ -1335,6 +1341,7 @@ pub const Container = packed struct(u64) {
             fn perform_op(a: anytype, b: anytype) @TypeOf(a) {
                 return switch (op) {
                     .And => a & b,
+                    .Or => a | b,
                     else => unreachable,
                 };
             }
@@ -1409,6 +1416,7 @@ pub const Container = packed struct(u64) {
             fn avx2_harley_seal_popcount_op_store(
                 data1: [*]const Block,
                 data2: [*]const Block,
+                out: [*]Block,
                 size: u64,
             ) u64 {
                 var total: root.Block64 = @splat(0);
@@ -1428,33 +1436,49 @@ pub const Container = packed struct(u64) {
                 const limit = size - size % 16;
                 var i: usize = 0;
                 while (i < limit) : (i += 16) {
-                    A1 = avx_intrinsic((data1 + i)[0], (data2 + i)[0]);
-                    A2 = avx_intrinsic((data1 + i + 1)[0], (data2 + i + 1)[0]);
+                    A1 = avx_intrinsic(data1[i + 0], data2[i + 0]);
+                    out[i] = A1;
+                    A2 = avx_intrinsic(data1[i + 1], data2[i + 1]);
+                    out[i + 1] = A2;
                     CSA(&twosA, &ones, ones, A1, A2);
-                    A1 = avx_intrinsic((data1 + i + 2)[0], (data2 + i + 2)[0]);
-                    A2 = avx_intrinsic((data1 + i + 3)[0], (data2 + i + 3)[0]);
+                    A1 = avx_intrinsic(data1[i + 2], data2[i + 2]);
+                    out[i + 2] = A1;
+                    A2 = avx_intrinsic(data1[i + 3], data2[i + 3]);
+                    out[i + 3] = A2;
                     CSA(&twosB, &ones, ones, A1, A2);
                     CSA(&foursA, &twos, twos, twosA, twosB);
-                    A1 = avx_intrinsic((data1 + i + 4)[0], (data2 + i + 4)[0]);
-                    A2 = avx_intrinsic((data1 + i + 5)[0], (data2 + i + 5)[0]);
+                    A1 = avx_intrinsic(data1[i + 4], data2[i + 4]);
+                    out[i + 4] = A1;
+                    A2 = avx_intrinsic(data1[i + 5], data2[i + 5]);
+                    out[i + 5] = A2;
                     CSA(&twosA, &ones, ones, A1, A2);
-                    A1 = avx_intrinsic((data1 + i + 6)[0], (data2 + i + 6)[0]);
-                    A2 = avx_intrinsic((data1 + i + 7)[0], (data2 + i + 7)[0]);
+                    A1 = avx_intrinsic(data1[i + 6], data2[i + 6]);
+                    out[i + 6] = A1;
+                    A2 = avx_intrinsic(data1[i + 7], data2[i + 7]);
+                    out[i + 7] = A2;
                     CSA(&twosB, &ones, ones, A1, A2);
                     CSA(&foursB, &twos, twos, twosA, twosB);
                     CSA(&eightsA, &fours, fours, foursA, foursB);
-                    A1 = avx_intrinsic((data1 + i + 8)[0], (data2 + i + 8)[0]);
-                    A2 = avx_intrinsic((data1 + i + 9)[0], (data2 + i + 9)[0]);
+                    A1 = avx_intrinsic(data1[i + 8], data2[i + 8]);
+                    out[i + 8] = A1;
+                    A2 = avx_intrinsic(data1[i + 9], data2[i + 9]);
+                    out[i + 9] = A2;
                     CSA(&twosA, &ones, ones, A1, A2);
-                    A1 = avx_intrinsic((data1 + i + 10)[0], (data2 + i + 10)[0]);
-                    A2 = avx_intrinsic((data1 + i + 11)[0], (data2 + i + 11)[0]);
+                    A1 = avx_intrinsic(data1[i + 10], data2[i + 10]);
+                    out[i + 10] = A1;
+                    A2 = avx_intrinsic(data1[i + 11], data2[i + 11]);
+                    out[i + 11] = A2;
                     CSA(&twosB, &ones, ones, A1, A2);
                     CSA(&foursA, &twos, twos, twosA, twosB);
-                    A1 = avx_intrinsic((data1 + i + 12)[0], (data2 + i + 12)[0]);
-                    A2 = avx_intrinsic((data1 + i + 13)[0], (data2 + i + 13)[0]);
+                    A1 = avx_intrinsic(data1[i + 12], data2[i + 12]);
+                    out[i + 12] = A1;
+                    A2 = avx_intrinsic(data1[i + 13], data2[i + 13]);
+                    out[i + 13] = A2;
                     CSA(&twosA, &ones, ones, A1, A2);
-                    A1 = avx_intrinsic((data1 + i + 14)[0], (data2 + i + 14)[0]);
-                    A2 = avx_intrinsic((data1 + i + 15)[0], (data2 + i + 15)[0]);
+                    A1 = avx_intrinsic(data1[i + 14], data2[i + 14]);
+                    out[i + 14] = A1;
+                    A2 = avx_intrinsic(data1[i + 15], data2[i + 15]);
+                    out[i + 15] = A2;
                     CSA(&twosB, &ones, ones, A1, A2);
                     CSA(&foursB, &twos, twos, twosA, twosB);
                     CSA(&eightsB, &fours, fours, foursA, foursB);
@@ -1803,24 +1827,6 @@ pub const Container = packed struct(u64) {
         dst.cardinality = newcard;
     }
 
-    fn bitset_container_clone(
-        allocator: mem.Allocator,
-        c: Container,
-        x: Bitmap,
-        dstr: *Bitmap,
-    ) !Container {
-        try dstr.extend_array(allocator, 0, C.BITSET_BLOCKS);
-        var bc = Container{
-            .typecode = .bitset,
-            .cardinality = c.cardinality,
-            .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
-            .nblocks_minus1 = @intCast(C.BITSET_BLOCKS - 1),
-        };
-        dstr.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
-        @memcpy(bc.get_blocks(dstr.*), c.get_blocks(x));
-        return bc;
-    }
-
     /// Get the cardinality of `run'. Requires an actual computation.
     fn _avx2_run_container_cardinality(
         run: Container,
@@ -1931,7 +1937,7 @@ pub const Container = packed struct(u64) {
     ) !void {
         if (run_container_is_full(src1, x1)) {
             if (dst.* != src2)
-                dst.* = try bitset_container_clone(allocator, src2, x2, dstr);
+                dst.* = try bitset_container_clone(src2, allocator, x2, dstr);
             return;
         }
         const src1runs = src1.blocks_as(.run, x1)[0..src1.cardinality];
@@ -1975,7 +1981,7 @@ pub const Container = packed struct(u64) {
             }
         } else { // no inplace
             // we expect the answer to be a bitmap (if we are lucky)
-            dst.* = try bitset_container_clone(allocator, src2, x2, dstr);
+            dst.* = try bitset_container_clone(src2, allocator, x2, dstr);
             const dstwords = dst.blocks_as(.bitset, dstr.*).ptr;
             var start: u32 = 0;
             for (0..src1.cardinality) |rlepos| {
@@ -2175,6 +2181,333 @@ pub const Container = packed struct(u64) {
         return result;
     }
 
+    fn bitset_container_or_justcard(
+        src1: [*]align(C.BLOCK_ALIGN) const u64,
+        src2: [*]align(C.BLOCK_ALIGN) const u64,
+    ) Cardinality {
+        return @intCast(op_methods(.Or).bitset_container_op_justcard(src1, src2));
+    }
+
+    fn bitset_container_or_nocard(
+        data1: [*]align(C.BLOCK_ALIGN) const u64,
+        data2: [*]align(C.BLOCK_ALIGN) const u64,
+        dstc: *Container,
+        dst: [*]align(C.BLOCK_ALIGN) u64,
+    ) Cardinality {
+        return op_methods(.Or).bitset_container_op_nocard(data1, data2, dstc, dst);
+    }
+
+    fn bitset_container_or(
+        dst: *Container,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) void {
+        _ = op_methods(.Or).bitset_container_op(
+            src1.blocks_as(.bitset, x1).ptr,
+            src2.blocks_as(.bitset, x2).ptr,
+            dst,
+            dst.blocks_as(.bitset, dstr.*).ptr,
+        );
+    }
+
+    /// Merge two sorted array containers into one sorted array.
+    fn array_container_union(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) !void {
+        const card1 = src1.cardinality;
+        const card2 = src2.cardinality;
+        const max_card = card1 + card2;
+
+        if (dst.calc_capacity() < max_card)
+            try dst.array_container_grow(allocator, dstr, max_card, false);
+
+        dst.cardinality = @intCast(misc.fast_union_uint16(
+            src1.blocks_as(.array, x1)[0..card1],
+            src2.blocks_as(.array, x2)[0..card2],
+            dst.blocks_as(.array, dstr.*),
+        ));
+    }
+
+    /// Compute the union of two array containers.
+    /// Writes result into dst. Returns true if result is a bitset.
+    fn array_array_container_union(
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+    ) !void {
+        const card1 = src1.cardinality;
+        const card2 = src2.cardinality;
+        const totalCardinality = card1 + card2;
+
+        if (totalCardinality <= C.DEFAULT_MAX_SIZE) {
+            dst.* = try array_container_create_given_capacity(allocator, totalCardinality, dstr);
+            try array_container_union(dst, allocator, dstr, src1, x1, src2, x2);
+            return;
+        }
+
+        dst.* = try bitset_container_create(allocator, dstr);
+        const dstwords = dst.blocks_as(.bitset, dstr.*);
+        for (src1.blocks_as(.array, x1)[0..card1]) |v|
+            dst.bitset_container_set(v, dstwords);
+        for (src2.blocks_as(.array, x2)[0..card2]) |v|
+            dst.bitset_container_set(v, dstwords);
+
+        if (dst.cardinality <= C.DEFAULT_MAX_SIZE) {
+            const answer = try array_container_from_bitset(dst.*, allocator, dstr);
+            dst.deinit_blocks(dstr.*);
+            dst.* = answer;
+        }
+    }
+
+    /// Append run vl to a run container, merging if overlapping/adjacent.
+    ///
+    /// It is assumed that the run would be inserted at the end of the container, no
+    /// check is made.
+    /// It is assumed that the run container has the necessary capacity: caller is
+    /// responsible for checking memory capacity.
+    ///
+    /// This is not a safe function, it is meant for performance: use with care.
+    fn run_container_append(
+        run: *Container,
+        runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
+        vl: root.Rle16,
+        previousrl: *root.Rle16,
+    ) void {
+        const previousend = @as(u32, previousrl.value) + previousrl.length;
+        if (vl.value > previousend + 1) { // we add a new one
+            runs[run.cardinality] = vl;
+            run.cardinality += 1;
+            previousrl.* = vl;
+        } else {
+            const newend = @as(u32, vl.value) + vl.length + 1;
+            if (newend > previousend) { // we merge
+                previousrl.length = @truncate(newend - 1 - previousrl.value);
+                runs[run.cardinality - 1] = previousrl.*;
+            }
+        }
+    }
+
+    /// Like run_container_append but it is assumed that the content of run is empty.
+    fn run_container_append_first(
+        run: *Container,
+        runs: [*]align(C.BLOCK_ALIGN) root.Rle16,
+        vl: root.Rle16,
+    ) root.Rle16 {
+        runs[run.cardinality] = vl;
+        run.cardinality += 1;
+        return vl;
+    }
+
+    fn run_container_union(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) !void {
+        const if1 = run_container_is_full(src1, x1);
+        const if2 = run_container_is_full(src2, x2);
+        if (if1 or if2) {
+            if (if1) {
+                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run, x1).ptr, dstr);
+                return;
+            }
+            if (if2) {
+                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run, x2).ptr, dstr);
+                return;
+            }
+        }
+
+        const neededcapacity = src1.cardinality + src2.cardinality;
+        if (dst.calc_capacity() < neededcapacity)
+            try run_container_grow(dst, allocator, neededcapacity, false, dstr);
+
+        dst.cardinality = 0;
+        var rlepos: u32 = 0;
+        var xrlepos: u32 = 0;
+        const src1runs = src1.blocks_as(.run, x1);
+        const src2runs = src2.blocks_as(.run, x2);
+        const dstruns = dst.blocks_as(.run, dstr.*);
+
+        var previousrle: root.Rle16 = .{ .value = 0, .length = 0 };
+        if (src1runs[rlepos].value <= src2runs[xrlepos].value) {
+            previousrle = run_container_append_first(dst, dstruns.ptr, src1runs[rlepos]);
+            rlepos += 1;
+        } else {
+            previousrle = run_container_append_first(dst, dstruns.ptr, src2runs[xrlepos]);
+            xrlepos += 1;
+        }
+
+        while (xrlepos < src2.cardinality and rlepos < src1.cardinality) {
+            const newrl = if (src1runs[rlepos].value <= src2runs[xrlepos].value) rl: {
+                defer rlepos += 1;
+                break :rl src1runs[rlepos];
+            } else rl: {
+                defer xrlepos += 1;
+                break :rl src2runs[xrlepos];
+            };
+            run_container_append(dst, dstruns.ptr, newrl, &previousrle);
+        }
+        while (xrlepos < src2.cardinality) {
+            run_container_append(dst, dstruns.ptr, src2runs[xrlepos], &previousrle);
+            xrlepos += 1;
+        }
+        while (rlepos < src1.cardinality) {
+            run_container_append(dst, dstruns.ptr, src1runs[rlepos], &previousrle);
+            rlepos += 1;
+        }
+    }
+
+    /// perform a union (or) operation on the container
+    pub fn unite(
+        c1: Container,
+        allocator: mem.Allocator,
+        x1: Bitmap,
+        c2: Container,
+        x2: Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        var result: Container = .uninit;
+        trace(@src(), "c1=    {}", .{c1});
+        trace(@src(), "c2=    {}", .{c2});
+        defer trace(@src(), "result={}", .{result});
+
+        switch (misc.pair(c1.typecode, c2.typecode)) {
+            else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
+            misc.pair(.bitset, .bitset) => {
+                result = try bitset_container_create(allocator, dstr);
+                bitset_container_or(&result, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.array, .array) => {
+                try array_array_container_union(c1, x1, c2, x2, &result, allocator, dstr);
+            },
+            misc.pair(.run, .run) => {
+                try run_container_union(&result, allocator, dstr, c1, x1, c2, x2);
+                result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
+            },
+            // misc.pair(.bitset, .array) => {
+            //     result = try bitset_container_create(allocator, dstr);
+            //     try array_bitset_container_union(c2, x2, c1, x1, &result, dstr);
+            // },
+            // misc.pair(.array, .bitset) => {
+            //     result = try bitset_container_create(allocator, dstr);
+            //     try array_bitset_container_union(c1, x1, c2, x2, &result, dstr);
+            // },
+            // misc.pair(.bitset, .run) => {
+            //     if (run_container_is_full(c2, x2)) {
+            //         try c2.run_container_copy(allocator, &result, c2.blocks_as(.run, x2).ptr, dstr);
+            //     } else {
+            //         result = try bitset_container_create(allocator, dstr);
+            //         try run_bitset_container_union(c2, x2, c1, x1, &result, dstr);
+            //     }
+            // },
+            // misc.pair(.run, .bitset) => {
+            //     if (run_container_is_full(c1, x1)) {
+            //         try c1.run_container_copy(allocator, &result, c1.blocks_as(.run, x1).ptr, dstr);
+            //     } else {
+            //         result = try bitset_container_create(allocator, dstr);
+            //         try run_bitset_container_union(c1, x1, c2, x2, &result, dstr);
+            //     }
+            // },
+            // misc.pair(.array, .run) => {
+            //     try array_run_container_union(c1, x1, c2, x2, &result, allocator, dstr);
+            //     result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
+            // },
+            // misc.pair(.run, .array) => {
+            //     try array_run_container_union(c2, x2, c1, x1, &result, allocator, dstr);
+            //     result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
+            // },
+        }
+        return result;
+    }
+
+    /// Create an copy of a c and it's blocks allocated dstr.
+    pub fn get_copy_of_container(
+        c: Container,
+        allocator: mem.Allocator,
+        x: Bitmap,
+        dstr: *Bitmap,
+        copy_on_write: bool,
+    ) !Container {
+        if (copy_on_write) {
+            unreachable; // TODO
+        }
+        // TODO // const actualc = container_unwrap_shared(c);
+        return clone(c, allocator, x, dstr);
+    }
+
+    fn array_container_clone(
+        c: Container,
+        allocator: mem.Allocator,
+        x: Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        var newc = try array_container_create_given_capacity(allocator, c.cardinality, dstr);
+        newc.cardinality = c.cardinality;
+        @memcpy(
+            newc.blocks_as(.array, dstr.*)[0..c.cardinality],
+            c.blocks_as(.array, x)[0..c.cardinality],
+        );
+        return newc;
+    }
+
+    fn run_container_clone(
+        c: Container,
+        allocator: mem.Allocator,
+        x: Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        var newc = try run_container_create_given_capacity(allocator, c.cardinality, dstr);
+        newc.cardinality = c.cardinality;
+        @memcpy(
+            newc.blocks_as(.run, dstr.*)[0..c.cardinality],
+            c.blocks_as(.run, x)[0..c.cardinality],
+        );
+        return newc;
+    }
+
+    fn bitset_container_clone(
+        c: Container,
+        allocator: mem.Allocator,
+        x: Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        try dstr.extend_array(allocator, 0, C.BITSET_BLOCKS);
+        var bc = Container{
+            .typecode = .bitset,
+            .cardinality = c.cardinality,
+            .blockoffset = @intCast(dstr.array.ptr(.blockslen).*),
+            .nblocks_minus1 = @intCast(C.BITSET_BLOCKS - 1),
+        };
+        dstr.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
+        @memcpy(bc.get_blocks(dstr.*), c.get_blocks(x));
+        return bc;
+    }
+
+    pub fn clone(c: Container, allocator: mem.Allocator, x: Bitmap, dstr: *Bitmap) !Container {
+        return switch (c.typecode) {
+            .array => c.array_container_clone(allocator, x, dstr),
+            .run => c.run_container_clone(allocator, x, dstr),
+            .bitset => c.bitset_container_clone(allocator, x, dstr),
+            .shared => unreachable,
+        };
+    }
+
     /// Check whether the container spans the whole chunk (cardinality = 1<<16).
     /// This check can be done in constant time (inexpensive).
     fn run_container_is_full(run: Container, r: Bitmap) bool {
@@ -2215,3 +2548,4 @@ const C = @import("constants.zig");
 const misc = @import("misc.zig");
 const trace = misc.trace;
 const builtin = @import("builtin");
+const Rle16 = root.Rle16;

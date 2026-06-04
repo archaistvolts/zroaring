@@ -1522,6 +1522,7 @@ fn advance_until(ra: Bitmap, x: u16, pos: u32) u32 {
 }
 
 pub fn clone(r: Bitmap, allocator: mem.Allocator) !Bitmap {
+    if (r.is_empty()) return r;
     const lens = r.array.calcLens();
     const buflen = Bitmap.Model.calcSize(lens);
     const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, buflen);
@@ -1531,6 +1532,14 @@ pub fn clone(r: Bitmap, allocator: mem.Allocator) !Bitmap {
 }
 
 pub const @"and" = intersect;
+
+/// Computes the intersection between two bitmaps and returns new bitmap. The
+/// caller is responsible for memory management.
+///
+/// Performance hint: if you are computing the intersection between several
+/// bitmaps, two-by-two, it is best to start with the smallest bitmap.
+/// You may also rely on roaring_bitmap_and_inplace to avoid creating
+/// many temporary bitmaps.
 // there should be some SIMD optimizations possible here
 pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
@@ -1565,6 +1574,89 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
             pos2 = x2.advance_until(key1, pos2);
         }
     }
+    return answer;
+}
+
+fn append_copy_range(
+    ra: *Bitmap,
+    allocator: mem.Allocator,
+    sa: Bitmap,
+    start_index: u32,
+    end_index: u32,
+    copy_on_write: bool,
+) !void {
+    const sakeys = sa.array.ptr(.keys);
+    const sacontainers = sa.array.ptr(.containers);
+    var more_blocks: u32 = 0;
+    for (sacontainers[start_index..end_index]) |c| {
+        more_blocks += c.nblocks();
+    }
+    try ra.extend_array(allocator, end_index - start_index, more_blocks);
+
+    const rakeys = ra.array.ptr(.keys);
+    const racontainers = ra.array.ptr(.containers);
+
+    for (start_index..end_index) |i| {
+        const pos = ra.array.ptr(.len).*;
+        rakeys[pos] = sakeys[i];
+        if (copy_on_write) {
+            sacontainers[i] = try Container.get_copy_of_container(sacontainers[i], allocator, sa, ra, copy_on_write);
+            racontainers[pos] = sacontainers[i];
+        } else {
+            racontainers[pos] = try Container.clone(sacontainers[i], allocator, sa, ra);
+        }
+        ra.array.ptr(.len).* += 1;
+    }
+}
+
+pub const @"or" = unite;
+
+/// Computes the union between two bitmaps and returns new bitmap. The caller is
+/// responsible for memory management.
+pub fn unite(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    if (length1 == 0) return try x2.clone(allocator);
+    if (length2 == 0) return try x1.clone(allocator);
+
+    var answer = try create_with_capacity(allocator, length1 + length2);
+    answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
+    defer answer.assert_valid();
+    trace(@src(), "x1={f}", .{x1.fmtLong()});
+    trace(@src(), "x2={f}", .{x2.fmtLong()});
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    while (pos1 < length1 and pos2 < length2) {
+        const key1 = x1.array.ptr(.keys)[pos1];
+        const key2 = x2.array.ptr(.keys)[pos2];
+
+        if (key1 == key2) {
+            const c1 = x1.array.ptr(.containers)[pos1];
+            const c2 = x2.array.ptr(.containers)[pos2];
+            const c = try Container.unite(c1, allocator, x1, c2, x2, &answer);
+            try answer.append(allocator, key1, c);
+            pos1 += 1;
+            pos2 += 1;
+        } else if (key1 < key2) {
+            const c1 = x1.array.ptr(.containers)[pos1];
+            const c = try Container.get_copy_of_container(c1, allocator, x1, &answer, x1.is_cow());
+            try answer.append(allocator, key1, c);
+            pos1 += 1;
+        } else {
+            const c2 = x2.array.ptr(.containers)[pos2];
+            const c = try Container.get_copy_of_container(c2, allocator, x2, &answer, x2.is_cow());
+            try answer.append(allocator, key2, c);
+            pos2 += 1;
+        }
+    }
+
+    if (pos1 == length1) {
+        try answer.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
+    } else if (pos2 == length2) {
+        try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
+    }
+
     return answer;
 }
 

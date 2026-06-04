@@ -360,6 +360,93 @@ pub fn intersect_uint16(
     }
 }
 
+pub fn union_vector16(
+    set1: []const u16,
+    set2: []const u16,
+    buffer: []u16,
+) usize {
+    _ = set1;
+    _ = set2;
+    _ = buffer;
+    unreachable; // TODO
+}
+
+pub fn union_uint16(
+    set1: []const u16,
+    set2: []const u16,
+    buffer: []u16,
+) usize {
+    var pos: usize = 0;
+    var idx_1: usize = 0;
+    var idx_2: usize = 0;
+
+    if (set2.len == 0) {
+        @memmove(buffer[0..set1.len], set1[0..set1.len]);
+        return set1.len;
+    }
+    if (set1.len == 0) {
+        @memmove(buffer[0..set2.len], set2[0..set2.len]);
+        return set2.len;
+    }
+
+    var val_1 = set1[idx_1];
+    var val_2 = set2[idx_2];
+
+    while (true) {
+        if (val_1 < val_2) {
+            buffer[pos] = val_1;
+            pos += 1;
+            idx_1 += 1;
+            if (idx_1 >= set1.len) break;
+            val_1 = set1[idx_1];
+        } else if (val_2 < val_1) {
+            buffer[pos] = val_2;
+            pos += 1;
+            idx_2 += 1;
+            if (idx_2 >= set2.len) break;
+            val_2 = set2[idx_2];
+        } else {
+            buffer[pos] = val_1;
+            pos += 1;
+            idx_1 += 1;
+            idx_2 += 1;
+            if (idx_1 >= set1.len or idx_2 >= set2.len) break;
+            val_1 = set1[idx_1];
+            val_2 = set2[idx_2];
+        }
+    }
+
+    if (idx_1 < set1.len) {
+        const n_elems = set1.len - idx_1;
+        @memmove(buffer[pos..][0..n_elems], set1[idx_1..][0..n_elems]);
+        pos += n_elems;
+    } else if (idx_2 < set2.len) {
+        const n_elems = set2.len - idx_2;
+        @memmove(buffer[pos..][0..n_elems], set2[idx_2..][0..n_elems]);
+        pos += n_elems;
+    }
+
+    return pos;
+}
+
+pub fn fast_union_uint16(
+    set1: []align(C.BLOCK_ALIGN) const u16,
+    set2: []align(C.BLOCK_ALIGN) const u16,
+    buffer: []align(C.BLOCK_ALIGN) u16,
+) usize {
+    // compute union with smallest array first
+    const m = if (false and C.HAS_AVX2) // TODO
+        union_vector16
+    else
+        union_uint16;
+
+    if (set1.len < set2.len) {
+        return m(set1, set2, buffer);
+    } else {
+        return m(set2, set1, buffer);
+    }
+}
+
 pub const pshufb =
     if (@import("builtin").zig_backend == .stage2_llvm)
         struct {
