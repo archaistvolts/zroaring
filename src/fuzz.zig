@@ -481,9 +481,11 @@ fn perform_op(
                 .merge => {
                     var ret = HashMapOracle.empty;
                     try ret.ensureTotalCapacity(allocator, 1024);
-                    for (oracles[o.src1].keys()) |key| {
+                    for (oracles[o.src1].keys()) |key|
                         try ret.put(allocator, key, {});
-                    }
+                    for (oracles[o.src2].keys()) |key|
+                        try ret.put(allocator, key, {});
+
                     oracles[o.idx].deinit(allocator);
                     oracles[o.idx] = ret;
                 },
@@ -1245,9 +1247,13 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
 }
 
 test "crash0" {
-    // const ops_fn = cr_perform_ops;
-    // const ctx = {};
-
+    const ops_fn = cr_perform_ops;
+    const ctx = {};
+    try ops_fn(ctx, &.{ //
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 6, 140 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 75, .val = 63225675 } },
+        .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
+    });
 }
 
 const std = @import("std");
