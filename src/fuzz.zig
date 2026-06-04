@@ -75,7 +75,7 @@ pub const FuzzOp = union(enum) {
     add_range_closed: Two,
     remove: Remove,
     intersect: BinOp,
-    unite: BinOp,
+    merge: BinOp,
     clear: u8,
     run_optimize: u8,
     shrink_to_fit: u8,
@@ -145,7 +145,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             } }, &oracles, &rs, allocator),
-            .unite => try perform_op(.{ .unite = .{
+            .merge => try perform_op(.{ .merge = .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
@@ -240,7 +240,7 @@ const AflSmith = struct {
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             } },
-            .unite => .{ .unite = .{
+            .merge => .{ .merge = .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
@@ -379,7 +379,7 @@ fn perform_op(
         .add,
         .remove,
         .intersect,
-        .unite,
+        .merge,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
         => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() prints '{..}' - missing leading '.'.
@@ -450,15 +450,15 @@ fn perform_op(
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
-        .intersect, .unite => |o| {
+        .intersect, .merge => |o| {
             const method = switch (op) {
                 .intersect => &Bitmap.intersect,
-                .unite => &Bitmap.unite,
+                .merge => &Bitmap.merge,
                 else => unreachable,
             };
             const crmethod = switch (op) {
                 .intersect => &c.roaring_bitmap_and,
-                .unite => &c.roaring_bitmap_or,
+                .merge => &c.roaring_bitmap_or,
                 else => unreachable,
             };
             var res = try method(rs[o.src1], allocator, rs[o.src2]);
@@ -480,7 +480,7 @@ fn perform_op(
                     oracles[o.idx].deinit(allocator);
                     oracles[o.idx] = ret;
                 },
-                .unite => {
+                .merge => {
                     var ret = HashMapOracle.empty;
                     try ret.ensureTotalCapacity(allocator, 1024);
                     for (oracles[o.src1].keys()) |key| {
@@ -1110,8 +1110,9 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
     try ops_fn(ctx, &.{ // simple union
         .{ .add_many = .{ .idx = 1, .vals = &.{ 83277985, 22079185, 12386, 59147363, 1409811, 46078391 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 59136871, 59264939 } } },
-        .{ .unite = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
     });
+
     try ops_fn(ctx, &.{ // run_container_union overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -1131,7 +1132,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 0, .vals = &.{ 7008684, 1932533, 90747111, 42683756, 38346431, 14936439, 24490572 } } },
         .{ .portable_serialize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 24854 } } },
-        .{ .unite = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
         .{ .add = .{ .idx = 0, .val = 131072 } },
         .{ .add = .{ .idx = 0, .val = 52225024 } },
         .{ .add = .{ .idx = 0, .val = 2048 } },
@@ -1150,13 +1151,83 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 256 } },
         .{ .add = .{ .idx = 0, .val = 0 } },
         .{ .intersect = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
-        .{ .unite = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
+    });
+
+    try ops_fn(ctx, &.{ // run/bitset merge?
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
+        .{ .clear = 0 },
+        .{ .run_optimize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 78054451, 42683756, 31579123 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 4489, 4490 } } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 8583 } } },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 31579123, 38986709, 230607, 25877483 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 253, .val = 52112985 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
+        .{ .clear = 0 },
+        .{ .add = .{ .idx = 0, .val = 131072 } },
+        .{ .add = .{ .idx = 0, .val = 52225024 } },
+        .{ .add = .{ .idx = 0, .val = 2048 } },
+        .{ .add = .{ .idx = 0, .val = 256 } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add = .{ .idx = 0, .val = 1536 } },
+        .{ .add = .{ .idx = 1, .val = 256 } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add = .{ .idx = 0, .val = 61184 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 24854 } } },
+        .{ .add = .{ .idx = 0, .val = 256 } },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // array/bitset merge?
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
+        .{ .clear = 0 },
+        .{ .run_optimize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 78054451, 42683756, 31579123 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 4489, 4490 } } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 8583 } } },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 31579123, 38986709, 230607, 25877483 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 253, .val = 52112985 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+        .{ .add = .{ .idx = 0, .val = 131072 } },
+        .{ .add = .{ .idx = 0, .val = 52225024 } },
+        .{ .frozen_serialize = 0 },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
+        .{ .shrink_to_fit = 1 },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 56722248, 93194823 } } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 78753268, 26833213, 31579123 } } },
+        .{ .run_optimize = 0 },
+        .{ .remove = .{ .idx = 0, .pick_existing = 158, .val = 16308496 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 12805158 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // run/bitset merge: run_container_create_given_capacity overflow nblocks_minus1
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
+        .{ .clear = 0 },
+        .{ .run_optimize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 78054451, 42683756, 31579123 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 4489, 652212 } } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 8583 } } },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 31579123, 38986709, 230607, 25877483 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 253, .val = 52112985 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 }
 
 test "crash0" {
     // const ops_fn = cr_perform_ops;
     // const ctx = {};
+
 }
 
 const std = @import("std");

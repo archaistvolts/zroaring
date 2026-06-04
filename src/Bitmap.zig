@@ -1577,6 +1577,8 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     return answer;
 }
 
+/// Append new key-value pairs to ra, cloning (in COW sense) values from sa at
+/// indexes [start_index, end_index)
 fn append_copy_range(
     ra: *Bitmap,
     allocator: mem.Allocator,
@@ -1587,33 +1589,30 @@ fn append_copy_range(
 ) !void {
     const sakeys = sa.array.ptr(.keys);
     const sacontainers = sa.array.ptr(.containers);
-    var more_blocks: u32 = 0;
+    var cnblocks: u32 = 0;
     for (sacontainers[start_index..end_index]) |c| {
-        more_blocks += c.nblocks();
+        cnblocks += c.nblocks();
     }
-    try ra.extend_array(allocator, end_index - start_index, more_blocks);
+    try ra.extend_array(allocator, end_index - start_index, cnblocks);
 
     const rakeys = ra.array.ptr(.keys);
     const racontainers = ra.array.ptr(.containers);
-
     for (start_index..end_index) |i| {
         const pos = ra.array.ptr(.len).*;
         rakeys[pos] = sakeys[i];
-        if (copy_on_write) {
-            sacontainers[i] = try Container.get_copy_of_container(sacontainers[i], allocator, sa, ra, copy_on_write);
-            racontainers[pos] = sacontainers[i];
-        } else {
-            racontainers[pos] = try Container.clone(sacontainers[i], allocator, sa, ra);
-        }
+        racontainers[pos] = if (copy_on_write)
+            try Container.get_copy_of_container(sacontainers[i], allocator, sa, ra, copy_on_write)
+        else
+            try Container.clone(sacontainers[i], allocator, sa, ra);
         ra.array.ptr(.len).* += 1;
     }
 }
 
-pub const @"or" = unite;
-
 /// Computes the union between two bitmaps and returns new bitmap. The caller is
 /// responsible for memory management.
-pub fn unite(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
+pub const @"or" = merge;
+
+pub fn merge(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     if (length1 == 0) return try x2.clone(allocator);
@@ -1634,7 +1633,7 @@ pub fn unite(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
         if (key1 == key2) {
             const c1 = x1.array.ptr(.containers)[pos1];
             const c2 = x2.array.ptr(.containers)[pos2];
-            const c = try Container.unite(c1, allocator, x1, c2, x2, &answer);
+            const c = try Container.merge(c1, allocator, x1, c2, x2, &answer);
             try answer.append(allocator, key1, c);
             pos1 += 1;
             pos2 += 1;
