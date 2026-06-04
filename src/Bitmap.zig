@@ -460,27 +460,6 @@ fn bitset_lenrange_cardinality(
     return @intCast(answer);
 }
 
-/// Set all bits in indexes [begin,begin+lenminusone] to true.
-fn bitset_set_lenrange(words: [*]align(C.BLOCK_ALIGN) u64, start: u32, lenminusone: u32) void {
-    const firstword = start / 64;
-    const endword = (start + lenminusone) / 64;
-    if (firstword == endword) {
-        words[firstword] |= ((~@as(u64, 0)) >>
-            @truncate((63 - lenminusone) % 64)) <<
-            @truncate(start % 64);
-        return;
-    }
-    const temp = words[endword];
-    words[firstword] |= (~@as(u64, 0)) << @truncate(start % 64);
-    var i: u32 = firstword + 1;
-    while (i < endword) : (i += 2) {
-        words[i] = ~@as(u64, 0);
-        words[i + 1] = ~@as(u64, 0);
-    }
-    words[endword] =
-        temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
-}
-
 /// The new container consists of a single run [start,stop).
 /// It is required that stop>start, the caller is responsability for this check.
 /// It is required that stop <= (1<<16), the caller is responsability for this
@@ -583,13 +562,13 @@ fn container_from_run_range(
     for (0..run.cardinality) |i| {
         const rle_min: u32 = runs[i].value;
         const rle_max: u32 = rle_min + runs[i].length;
-        bitset_set_lenrange(words.ptr, rle_min, rle_max - rle_min);
+        misc.bitset_set_lenrange(words.ptr, rle_min, rle_max - rle_min);
         union_cardinality += runs[i].length + 1;
     }
     union_cardinality += @intCast(max - min + 1);
     union_cardinality -=
         bitset_lenrange_cardinality(words.ptr, min, max - min);
-    bitset_set_lenrange(words.ptr, min, max - min);
+    misc.bitset_set_lenrange(words.ptr, min, max - min);
     bitset.cardinality = @intCast(union_cardinality);
     if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
         // convert to an array container
@@ -628,7 +607,7 @@ fn container_add_range(
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
                 return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else {
-                bitset_set_lenrange(words.ptr, min, max - min);
+                misc.bitset_set_lenrange(words.ptr, min, max - min);
                 c.cardinality = @intCast(union_cardinality);
                 return c.*;
             }
@@ -649,7 +628,7 @@ fn container_add_range(
                 return r.array.ptr(.containers)[cid];
             } else {
                 var bitset = try c.bitset_container_from_array(allocator, r);
-                bitset_set_lenrange(bitset.blocks_as(.bitset, r.*).ptr, min, max - min);
+                misc.bitset_set_lenrange(bitset.blocks_as(.bitset, r.*).ptr, min, max - min);
                 bitset.cardinality = @intCast(union_cardinality);
                 return bitset;
             }

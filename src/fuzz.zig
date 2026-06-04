@@ -13,9 +13,7 @@ test "croaring oracle fuzz" {
 }
 
 fn loadPath(io: Io, path: []const u8) ![]const u8 {
-    return Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited) catch |e| {
-        std.debug.panic("loadPath: {} path: '{s}'", .{ e, path });
-    };
+    return try Io.Dir.cwd().readFileAlloc(io, path, testgpa, .unlimited);
 }
 
 /// loads .zig-cache/f/crash along with files in dirpath
@@ -346,7 +344,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(o.pick_existing);
             try writer.writeInt(u32, o.val, .little);
         },
-        .intersect => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src1 }),
+        .intersect, .merge => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src1 }),
         .contains => |o| try writer.writeInt(u32, o.val, .little),
         .contains_many => |o| {
             try writer.writeByte(@intCast(o.vals.len));
@@ -456,7 +454,7 @@ fn perform_op(
                 .merge => &Bitmap.merge,
                 else => unreachable,
             };
-            const crmethod = switch (op) {
+            const crmethod = if (!is_cr) {} else switch (op) {
                 .intersect => &c.roaring_bitmap_and,
                 .merge => &c.roaring_bitmap_or,
                 else => unreachable,
@@ -1221,6 +1219,28 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .remove = .{ .idx = 1, .pick_existing = 253, .val = 52112985 } },
         .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // bitset/run merge
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
+        .{ .clear = 0 },
+        .{ .run_optimize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 78054451, 42683756, 31579123 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 4489, 373533 } } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 4489, 9066 } } },
+        .{ .intersect = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 31579123, 38986709, 230607, 25877483 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 253, .val = 52112985 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // bitset_container_create missing clear
+        .{ .add = .{ .idx = 1, .val = 30060 } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 8356, 11049 } } },
+        .{ .shrink_to_fit = 1 },
+        .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     });
 }
 

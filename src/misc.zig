@@ -447,6 +447,31 @@ pub fn fast_union_uint16(
     }
 }
 
+/// Set all bits in indexes [begin,begin+lenminusone] to true.
+pub fn bitset_set_lenrange(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    start: u32,
+    lenminusone: u32,
+) void {
+    const firstword = start / 64;
+    const endword = (start + lenminusone) / 64;
+    if (firstword == endword) {
+        words[firstword] |= ((~@as(u64, 0)) >>
+            @truncate((63 - lenminusone) % 64)) <<
+            @truncate(start % 64);
+        return;
+    }
+    const temp = words[endword];
+    words[firstword] |= (~@as(u64, 0)) << @truncate(start % 64);
+    var i: u32 = firstword + 1;
+    while (i < endword) : (i += 2) {
+        words[i] = ~@as(u64, 0);
+        words[i + 1] = ~@as(u64, 0);
+    }
+    words[endword] =
+        temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
+}
+
 pub const pshufb =
     if (@import("builtin").zig_backend == .stage2_llvm)
         struct {

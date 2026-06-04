@@ -862,18 +862,24 @@ pub const Container = packed struct(u64) {
         };
     }
 
+    pub fn bitset_container_clear(bc: Container, r: Bitmap) void {
+        @memset(bc.get_blocks(r), @splat(0));
+    }
+
     pub fn bitset_container_create(
         allocator: mem.Allocator,
         r: *Bitmap,
     ) !Container {
         try r.extend_array(allocator, 1, C.BITSET_BLOCKS);
         defer r.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
-        return .{
+        const bc = Container{
             .typecode = .bitset,
             .cardinality = 0,
             .blockoffset = @intCast(r.array.ptr(.blockslen).*),
             .nblocks_minus1 = C.BITSET_BLOCKS - 1,
         };
+        bitset_container_clear(bc, r.*);
+        return bc;
     }
 
     /// Check whether this bitset is empty,
@@ -972,7 +978,7 @@ pub const Container = packed struct(u64) {
     /// set.
     ///
     /// Returns how many values were actually decoded.
-    pub fn bitset_extract_setbits_u16(
+    pub fn bitset_extract_setbits_uint16(
         words: [*]align(C.BLOCK_ALIGN) u64,
         out: []align(C.BLOCK_ALIGN) u16,
         base: u16,
@@ -1000,7 +1006,7 @@ pub const Container = packed struct(u64) {
         result.cardinality = bits.cardinality;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
-        _ = bitset_extract_setbits_u16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*), 0);
+        _ = bitset_extract_setbits_uint16(bits.blocks_as(.bitset, r.*).ptr, result.blocks_as(.array, r.*)[0..result.cardinality], 0);
         return result;
     }
 
@@ -2486,6 +2492,23 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    fn run_bitset_container_union(
+        dst: *Container,
+        dstr: *Bitmap,
+        src1: Container,
+        x1: Bitmap,
+        src2: Container,
+        x2: Bitmap,
+    ) void {
+        bitset_container_copy(dst, dstr, src2, x2);
+        const runs = src1.blocks_as(.run, x1);
+        const dwords = dst.blocks_as(.bitset, dstr.*);
+        for (runs[0..src1.cardinality]) |rle| {
+            misc.bitset_set_lenrange(dwords.ptr, rle.value, rle.length);
+        }
+        dst.cardinality = @intCast(dst.compute_cardinality(dstr.*));
+    }
+
     /// perform an 'or' operation (union) on the container.
     pub fn merge(
         c1: Container,
@@ -2501,7 +2524,6 @@ pub const Container = packed struct(u64) {
         defer trace(@src(), "result={}", .{result});
 
         switch (misc.pair(c1.typecode, c2.typecode)) {
-            else => |p| std.debug.panic("TODO {any}\n", .{misc.pairFromInt(p)}),
             misc.pair(.bitset, .bitset) => {
                 result = try bitset_container_create(allocator, dstr);
                 bitset_container_or(&result, dstr, c1, x1, c2, x2);
@@ -2521,24 +2543,23 @@ pub const Container = packed struct(u64) {
                 result = try bitset_container_create(allocator, dstr);
                 array_bitset_container_union(&result, dstr, c1, x1, c2, x2);
             },
-            // misc.pair(.bitset, .run) => {
-            //     if (run_container_is_full(c2, x2)) {
-            //         try c2.run_container_copy(allocator, &result, c2.blocks_as(.run, x2).ptr, dstr);
-            //     } else {
-            //         result = try bitset_container_create(allocator, dstr);
-            //         try run_bitset_container_union(c2, x2, c1, x1, &result, dstr);
-            //     }
-            // },
-            // misc.pair(.run, .bitset) => {
-            //     if (run_container_is_full(c1, x1)) {
-            //         try c1.run_container_copy(allocator, &result, c1.blocks_as(.run, x1).ptr, dstr);
-            //     } else {
-            //         result = try bitset_container_create(allocator, dstr);
-            //         try run_bitset_container_union(c1, x1, c2, x2, &result, dstr);
-            //     }
-            // },
+            misc.pair(.bitset, .run) => {
+                if (run_container_is_full(c2, x2)) {
+                    try run_container_copy(c2, allocator, &result, c2.blocks_as(.run, x2).ptr, dstr);
+                } else {
+                    result = try bitset_container_create(allocator, dstr);
+                    run_bitset_container_union(&result, dstr, c2, x2, c1, x1);
+                }
+            },
+            misc.pair(.run, .bitset) => {
+                if (run_container_is_full(c1, x1)) {
+                    try c1.run_container_copy(allocator, &result, c1.blocks_as(.run, x1).ptr, dstr);
+                } else {
+                    result = try bitset_container_create(allocator, dstr);
+                    run_bitset_container_union(&result, dstr, c1, x1, c2, x2);
+                }
+            },
             misc.pair(.array, .run) => {
-                // result = try array_container_create_given_capacity(allocator, @min(C.MAX_KEY_CARDINALITY, c1.cardinality), dstr);
                 try array_run_container_union(&result, allocator, dstr, c1, x1, c2, x2);
                 result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
             },
@@ -2546,6 +2567,7 @@ pub const Container = packed struct(u64) {
                 try array_run_container_union(&result, allocator, dstr, c2, x2, c1, x1);
                 result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
             },
+            else => unreachable,
         }
         return result;
     }
