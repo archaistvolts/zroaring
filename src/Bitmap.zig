@@ -1520,7 +1520,7 @@ pub const @"and" = intersect;
 /// You may also rely on roaring_bitmap_and_inplace to avoid creating
 /// many temporary bitmaps.
 // there should be some SIMD optimizations possible here
-pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
+pub fn intersect(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     var answer = try create_with_capacity(allocator, @max(length1, length2));
@@ -1536,8 +1536,8 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
         const key2 = x2.array.ptr(.keys)[pos2];
 
         if (key1 == key2) {
-            const c1 = x1.array.ptr(.containers)[pos1];
-            const c2 = x2.array.ptr(.containers)[pos2];
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            const c2 = &x2.array.ptr(.containers)[pos2];
             const c = try Container.intersect(c1, allocator, x1, c2, x2, &answer);
 
             if (c.nonzero_cardinality(answer)) {
@@ -1561,7 +1561,7 @@ pub fn intersect(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
 fn append_copy_range(
     ra: *Bitmap,
     allocator: mem.Allocator,
-    sa: Bitmap,
+    sa: *const Bitmap,
     start_index: u32,
     end_index: u32,
     copy_on_write: bool,
@@ -1591,7 +1591,9 @@ fn append_copy_range(
 /// responsible for memory management.
 pub const @"or" = merge;
 
-pub fn merge(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
+pub fn merge(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+    trace(@src(), "x1={f}", .{x1.fmtLong()});
+    trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     if (length1 == 0) return try x2.clone(allocator);
@@ -1600,8 +1602,6 @@ pub fn merge(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
     var answer = try create_with_capacity(allocator, length1 + length2);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
-    trace(@src(), "x1={f}", .{x1.fmtLong()});
-    trace(@src(), "x2={f}", .{x2.fmtLong()});
 
     var pos1: u32 = 0;
     var pos2: u32 = 0;
@@ -1610,10 +1610,62 @@ pub fn merge(x1: Bitmap, allocator: mem.Allocator, x2: Bitmap) !Bitmap {
         const key2 = x2.array.ptr(.keys)[pos2];
 
         if (key1 == key2) {
-            const c1 = x1.array.ptr(.containers)[pos1];
-            const c2 = x2.array.ptr(.containers)[pos2];
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            const c2 = &x2.array.ptr(.containers)[pos2];
             const c = try Container.merge(c1, allocator, x1, c2, x2, &answer);
             try answer.append(allocator, key1, c);
+            pos1 += 1;
+            pos2 += 1;
+        } else if (key1 < key2) {
+            const c1 = x1.array.ptr(.containers)[pos1];
+            const c = try Container.get_copy_of_container(c1, allocator, x1, &answer, x1.is_cow());
+            try answer.append(allocator, key1, c);
+            pos1 += 1;
+        } else {
+            const c2 = x2.array.ptr(.containers)[pos2];
+            const c = try Container.get_copy_of_container(c2, allocator, x2, &answer, x2.is_cow());
+            try answer.append(allocator, key2, c);
+            pos2 += 1;
+        }
+    }
+
+    if (pos1 == length1) {
+        try answer.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
+    } else if (pos2 == length2) {
+        try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
+    }
+
+    return answer;
+}
+
+/// Returned Bitamp contains values present in one but not both inputs.
+pub fn xor(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+    trace(@src(), "x1={f}", .{x1.fmtLong()});
+    trace(@src(), "x2={f}", .{x2.fmtLong()});
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    if (length1 == 0) return try x2.clone(allocator);
+    if (length2 == 0) return try x1.clone(allocator);
+
+    var answer = try create_with_capacity(allocator, length1 + length2);
+    answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
+    defer answer.assert_valid();
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    while (pos1 < length1 and pos2 < length2) {
+        const key1 = x1.array.ptr(.keys)[pos1];
+        const key2 = x2.array.ptr(.keys)[pos2];
+
+        if (key1 == key2) {
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            const c2 = &x2.array.ptr(.containers)[pos2];
+            const c = try Container.xor(c1, allocator, x1, c2, x2, &answer);
+            if (c.nonzero_cardinality(answer)) {
+                try answer.append(allocator, key1, c);
+            } else if (c != Container.uninit) {
+                c.deinit_blocks(answer);
+            }
             pos1 += 1;
             pos2 += 1;
         } else if (key1 < key2) {

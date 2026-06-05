@@ -429,6 +429,44 @@ pub fn union_uint16(
     return pos;
 }
 
+pub fn xor_uint16(
+    set1: []align(C.BLOCK_ALIGN) const u16,
+    set2: []align(C.BLOCK_ALIGN) const u16,
+    out: []align(C.BLOCK_ALIGN) u16,
+) usize {
+    var pos1: usize = 0;
+    var pos2: usize = 0;
+    var pos_out: usize = 0;
+    while (pos1 < set1.len and pos2 < set2.len) {
+        const v1 = set1[pos1];
+        const v2 = set2[pos2];
+        if (v1 == v2) {
+            pos1 += 1;
+            pos2 += 1;
+            continue;
+        }
+        if (v1 < v2) {
+            out[pos_out] = v1;
+            pos_out += 1;
+            pos1 += 1;
+        } else {
+            out[pos_out] = v2;
+            pos_out += 1;
+            pos2 += 1;
+        }
+    }
+    if (pos1 < set1.len) {
+        const n_elems = set1.len - pos1;
+        @memcpy(out[pos_out..][0..n_elems], set1[pos1..].ptr);
+        pos_out += n_elems;
+    } else if (pos2 < set2.len) {
+        const n_elems = set2.len - pos2;
+        @memcpy(out[pos_out..][0..n_elems], set2[pos2..].ptr);
+        pos_out += n_elems;
+    }
+    return pos_out;
+}
+
 pub fn fast_union_uint16(
     set1: []align(C.BLOCK_ALIGN) const u16,
     set2: []align(C.BLOCK_ALIGN) const u16,
@@ -470,6 +508,53 @@ pub fn bitset_set_lenrange(
     }
     words[endword] =
         temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
+}
+
+/// Flip bits in range [start, end).
+pub fn bitset_flip_range(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    start: u32,
+    end: u32,
+) void {
+    if (start == end) return;
+    const firstword = start / 64;
+    const endword = (end - 1) / 64;
+    words[firstword] ^= ~((~@as(u64, 0)) << @truncate(start % 64));
+    for (words[firstword..endword]) |*w|
+        w.* = ~w.*;
+    words[endword] ^= ((~@as(u64, 0)) >> @truncate(((~end +% 1) % 64)));
+}
+
+/// Flip (XOR) bits at given positions (no cardinality tracking).
+pub fn bitset_flip_list(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    list: []align(C.BLOCK_ALIGN) const u16,
+) void {
+    for (list) |pos| {
+        const offset = pos >> 6;
+        const index: u6 = @truncate(pos & 63);
+        words[offset] ^= (@as(u64, 1) << index);
+    }
+}
+
+/// Flip bits at given positions, return updated cardinality.
+pub fn bitset_flip_list_withcard(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    card: u32,
+    list: []align(C.BLOCK_ALIGN) const u16,
+) u32 {
+    var card_out = card;
+    for (list) |pos| {
+        const offset = pos >> 6;
+        const index: u6 = @truncate(pos & 63);
+        const load = words[offset];
+        const newload = load ^ (@as(u64, 1) << index);
+        const inc: u32 = @truncate(1 -% ((load >> index) & 1) * 2); // avoids branch
+        std.debug.assert(inc == std.math.maxInt(u32) or inc == 1); //  +1 or -1
+        card_out +%= inc;
+        words[offset] = newload;
+    }
+    return card_out;
 }
 
 pub const pshufb =

@@ -74,6 +74,7 @@ pub const FuzzOp = union(enum) {
     remove: Remove,
     intersect: BinOp,
     merge: BinOp,
+    xor: BinOp,
     clear: u8,
     run_optimize: u8,
     shrink_to_fit: u8,
@@ -138,16 +139,11 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             } }, &oracles, &rs, allocator),
-            .intersect => try perform_op(.{ .intersect = .{
+            inline .intersect, .merge, .xor => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
-            } }, &oracles, &rs, allocator),
-            .merge => try perform_op(.{ .merge = .{
-                .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
-                .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
-                .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
-            } }, &oracles, &rs, allocator),
+            }), &oracles, &rs, allocator),
             .clear => try perform_op(.{ .clear = idx }, &oracles, &rs, allocator),
             .run_optimize => try perform_op(.{ .run_optimize = idx }, &oracles, &rs, allocator),
             .shrink_to_fit => try perform_op(.{ .shrink_to_fit = idx }, &oracles, &rs, allocator),
@@ -233,16 +229,11 @@ const AflSmith = struct {
                 .pick_existing = smith.value(u8) orelse return null,
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null,
             } },
-            .intersect => .{ .intersect = .{
+            inline .intersect, .merge, .xor => |t| @unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
-            } },
-            .merge => .{ .merge = .{
-                .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
-                .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
-                .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
-            } },
+            }),
             .clear => .{ .clear = idx },
             .run_optimize => .{ .run_optimize = idx },
             .shrink_to_fit => .{ .shrink_to_fit = idx },
@@ -345,6 +336,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeInt(u32, o.val, .little);
         },
         .intersect, .merge => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src1 }),
+        .xor => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .contains => |o| try writer.writeInt(u32, o.val, .little),
         .contains_many => |o| {
             try writer.writeByte(@intCast(o.vals.len));
@@ -378,6 +370,7 @@ fn perform_op(
         .remove,
         .intersect,
         .merge,
+        .xor,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
         => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() prints '{..}' - missing leading '.'.
@@ -448,18 +441,20 @@ fn perform_op(
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
-        .intersect, .merge => |o| {
+        .intersect, .merge, .xor => |o| {
             const method = switch (op) {
                 .intersect => &Bitmap.intersect,
                 .merge => &Bitmap.merge,
+                .xor => &Bitmap.xor,
                 else => unreachable,
             };
             const crmethod = if (!is_cr) {} else switch (op) {
                 .intersect => &c.roaring_bitmap_and,
                 .merge => &c.roaring_bitmap_or,
+                .xor => &c.roaring_bitmap_xor,
                 else => unreachable,
             };
-            var res = try method(rs[o.src1], allocator, rs[o.src2]);
+            var res = try method(&rs[o.src1], allocator, &rs[o.src2]);
             defer res.deinit(allocator);
 
             if (is_cr) {
@@ -485,6 +480,19 @@ fn perform_op(
                         try ret.put(allocator, key, {});
                     for (oracles[o.src2].keys()) |key|
                         try ret.put(allocator, key, {});
+
+                    oracles[o.idx].deinit(allocator);
+                    oracles[o.idx] = ret;
+                },
+                .xor => {
+                    var ret = HashMapOracle.empty;
+                    try ret.ensureTotalCapacity(allocator, 1024);
+                    const s1 = &oracles[o.src1];
+                    const s2 = &oracles[o.src2];
+                    for (s1.keys()) |key|
+                        if (!s2.contains(key)) try ret.put(allocator, key, {});
+                    for (s2.keys()) |key|
+                        if (!s1.contains(key)) try ret.put(allocator, key, {});
 
                     oracles[o.idx].deinit(allocator);
                     oracles[o.idx] = ret;
@@ -1244,16 +1252,117 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .shrink_to_fit = 1 },
         .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     });
-}
 
-test "crash0" {
-    const ops_fn = cr_perform_ops;
-    const ctx = {};
-    try ops_fn(ctx, &.{ //
+    try ops_fn(ctx, &.{ // unclassified
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6, 140 } } },
         .{ .remove = .{ .idx = 1, .pick_existing = 75, .val = 63225675 } },
         .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     });
+
+    try ops_fn(ctx, &.{ // run_container_xor overflow
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 7168203, 7188028 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 7085752, 7177876 } } },
+        .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
+    });
+
+    try ops_fn(ctx, &.{ // bitset_bitset_container_xor overflow
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 71718449, 58120711, 93799294, 82023683 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 81247268, 81516798 } } },
+        .{ .run_optimize = 0 },
+        .{ .portable_serialize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 12430017, 7614144, 10801897, 18755785, 1118996, 11892158, 40583395 } } },
+        .{ .shrink_to_fit = 0 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 64009518, 94040951, 58107690, 50529318 } } },
+        .{ .frozen_serialize = 1 },
+        .{ .remove = .{ .idx = 1, .pick_existing = 51, .val = 65467172 } },
+        .{ .add = .{ .idx = 0, .val = 61148954 } },
+        .{ .merge = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 65467172 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18529397, 18801035 } } },
+        .{ .xor = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+    });
+    try ops_fn(ctx, &.{ //
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 71718449, 58120711, 93799294, 82023683 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 81247268, 81516798 } } },
+        .{ .run_optimize = 0 },
+        .{ .portable_serialize = 1 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 12430017, 7614144, 10801897, 18755785, 1118996, 11892158, 40583395 } } },
+        .{ .shrink_to_fit = 0 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 64009518, 94040951, 58107690, 50529318 } } },
+        .{ .frozen_serialize = 1 },
+        .{ .remove = .{ .idx = 1, .pick_existing = 51, .val = 65467172 } },
+        .{ .add = .{ .idx = 0, .val = 61148954 } },
+        .{ .merge = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 65467172 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18529397, 18801035 } } },
+        .{ .xor = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // array_array_container_xor: wrong source bitmap
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 58120711, 18755785 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18529397, 18747336 } } },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 82023683, 12430017, 7614144, 64009518 } } },
+        .{ .portable_serialize = 0 },
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 18755785, 1118996, 11892158, 40583395, 64009518, 94040951, 58107690 } } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 74257080, 33002231, 74875152, 5762413, 85946124, 58107690, 21122583 } } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 51, .val = 95125108 } },
+        .{ .add = .{ .idx = 1, .val = 61148954 } },
+        .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 65467172 } },
+        .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
+        .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
+    });
+
+    try ops_fn(ctx, &.{ // ?
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18745974 } } },
+        .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 51, .val = 79710172 } },
+        .{ .run_optimize = 1 },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 95125108 } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // bitset_array_container_ixor segfault
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18760729 } } },
+        .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 51, .val = 79710172 } },
+        .{ .run_optimize = 1 },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 95125108 } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 7614144, 64009518, 7614144, 64009518 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18613874 } } },
+        .{ .portable_serialize = 0 },
+        .{ .remove = .{ .idx = 0, .pick_existing = 51, .val = 58563798 } },
+        .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+    });
+
+    try ops_fn(ctx, &.{ // run_bitset_container_xor oob
+        .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18807558 } } },
+        .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
+        .{ .remove = .{ .idx = 0, .pick_existing = 51, .val = 79710172 } },
+        .{ .run_optimize = 1 },
+        .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 95125108 } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+        .{ .add_many = .{ .idx = 0, .vals = &.{ 7614144, 64009518, 7614144, 64009518, 72703457, 47071953 } } },
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 18703177, 18891777 } } },
+        .{ .portable_serialize = 0 },
+        .{ .remove = .{ .idx = 0, .pick_existing = 51, .val = 58563798 } },
+        .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
+        .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
+    });
+}
+
+test "crash0" {
+    // const ops_fn = cr_perform_ops;
+    // const ctx = {};
+
 }
 
 const std = @import("std");
