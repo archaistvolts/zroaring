@@ -405,14 +405,14 @@ fn perform_op(
         .clear,
         .run_optimize,
         .shrink_to_fit,
+        .rank,
+        .select,
         => fuzzprint("{},\n", .{op}),
         .portable_serialize,
         .frozen_serialize,
         .equals,
         .minimum,
         .maximum,
-        .rank,
-        .select,
         .contains,
         .contains_many,
         => {}, // no print, not part of reproduction
@@ -1619,6 +1619,13 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .frozen_serialize = 1 },
         .{ .portable_serialize = 1 },
         .{ .frozen_serialize = 0 },
+    });
+
+    try ops_fn(ctx, &.{ // bitset_container_rank: overflow
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 7093678, 7143424 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 42284429, 42682699 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 7202188, 7267639 } } },
+        .{ .rank = .{ .idx = 0, .val = 7183487 } },
     });
 }
 

@@ -275,6 +275,59 @@ pub const Container = packed struct(u64) {
         return increment > 0;
     }
 
+    /// Moves the data so that we can write data at index
+    fn makeRoomAtIndex(run: *Container, allocator: mem.Allocator, r: *Bitmap, index: u16) !void {
+        // This function calls realloc + memmove sequentially to move by one index.
+        // Potentially copying the array twice.
+        const cindex = run - r.array.ptr(.containers);
+        if (run.cardinality + 1 > run.calc_capacity())
+            try run.run_container_grow(allocator, run.cardinality + 1, true, r);
+
+        const run2 = &r.array.ptr(.containers)[cindex];
+        const runs = run2.blocks_as(.run, r.*).ptr;
+        @memmove(runs + 1 + index, (runs + index)[0 .. run2.cardinality - index]);
+        run2.cardinality += 1;
+    }
+
+    /// Add all values in range [min, max] using hint.
+    pub fn run_container_add_range_nruns(
+        run: *Container,
+        allocator: mem.Allocator,
+        r: *Bitmap,
+        min: u32,
+        max: u32,
+        nruns_less: u32,
+        nruns_greater: u32,
+    ) !void {
+        const nruns_common = run.cardinality - nruns_less - nruns_greater;
+        if (nruns_common == 0) {
+            const cid = run - r.array.ptr(.containers);
+            try run.makeRoomAtIndex(allocator, r, @truncate(nruns_less));
+            const run2 = r.array.ptr(.containers)[cid];
+            const runs = run2.blocks_as(.run, r.*)[0..run2.cardinality];
+            runs.ptr[nruns_less] = .{
+                .value = @truncate(min),
+                .length = @truncate(max - min),
+            };
+        } else {
+            const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
+            const common_min = runs[nruns_less].value;
+            const common_max = runs[nruns_less + nruns_common - 1].value +
+                runs[nruns_less + nruns_common - 1].length;
+            const result_min = if (common_min < min) common_min else min;
+            const result_max = if (common_max > max) common_max else max;
+
+            runs[nruns_less].value = @truncate(result_min);
+            runs[nruns_less].length = @truncate((result_max - result_min));
+
+            @memmove(
+                runs.ptr + nruns_less + 1,
+                runs[run.cardinality - nruns_greater ..][0..nruns_greater],
+            );
+            run.cardinality = @intCast(nruns_less + 1 + nruns_greater);
+        }
+    }
+
     pub fn run_container_add(
         run: *Container,
         allocator: mem.Allocator,
@@ -327,7 +380,7 @@ pub const Container = packed struct(u64) {
             }
         }
         // trace(@src(), "index={} cindex={} {f}", .{ mindex, cindex, run.fmt(r.*) });
-        try r.makeRoomAtIndex(allocator, run, @intCast(index +% 1));
+        try run.makeRoomAtIndex(allocator, r, @intCast(index +% 1));
         const run2 = &r.array.ptr(.containers)[cindex];
         const runs2 = run2.blocks_as(.run, r.*);
         runs2[index +% 1] = .{ .value = pos, .length = 0 };
@@ -952,7 +1005,7 @@ pub const Container = packed struct(u64) {
                 const newvalue = pos + 1;
                 const newlength: i32 = runlength - offset - 1;
                 const cid = run - r.array.ptr(.containers);
-                try r.makeRoomAtIndex(allocator, run, @intCast(mindex + 1));
+                try run.makeRoomAtIndex(allocator, r, @intCast(mindex + 1));
                 const run2 = r.array.ptr(.containers)[cid];
                 const runs2 = run2.blocks_as(.run, r.*);
                 runs2[index].length = @intCast(offset - 1);
@@ -3813,7 +3866,7 @@ pub const Container = packed struct(u64) {
         }
         const lastword = words[i];
         const lastpos = @as(u64, 1) << @truncate(x % 64);
-        const mask = lastpos + lastpos - 1; // smear right
+        const mask = lastpos +% lastpos -% 1; // smear right
         sum += @popCount(lastword & mask);
         return sum;
     }
