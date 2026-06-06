@@ -1769,6 +1769,35 @@ pub fn maximum(bm: Bitmap) u32 {
     return 0;
 }
 
+/// Returns the number of integers that are smaller or equal to x.
+pub fn rank(bm: Bitmap, x: u32) u64 {
+    var size: u64 = 0;
+    const xhigh: u16 = @truncate(x >> 16);
+    for (bm.slice(.keys, .len), bm.slice(.containers, .len)) |key, *c| {
+        if (xhigh > key) {
+            size += c.get_cardinality(bm);
+        } else if (xhigh == key) {
+            return size + c.rank(@truncate(x), bm);
+        } else {
+            return size;
+        }
+    }
+    return size;
+}
+
+/// Selects the element at the specified rank (0-based).
+/// Returns null if the bitmap is empty or rank >= cardinality.
+pub fn select(bm: Bitmap, target_rank: u32) ?u32 {
+    var start_rank: u32 = 0;
+    const len = bm.array.ptr(.len).*;
+    for (bm.array.ptr(.keys)[0..len], bm.array.ptr(.containers)) |key, *c| {
+        if (c.select(&start_rank, target_rank, bm)) |element| {
+            return element | @as(u32, key) << 16;
+        }
+    }
+    return null;
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata

@@ -84,6 +84,8 @@ pub const FuzzOp = union(enum) {
     equals: u8,
     minimum: u8,
     maximum: u8,
+    rank: One,
+    select: One,
     // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
     // get_index, // TODO
     contains: One,
@@ -156,9 +158,12 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .minimum,
             .maximum,
             => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), idx), &oracles, &rs, allocator),
-            .contains => {
+            inline .rank,
+            .select,
+            .contains,
+            => |t| {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                try perform_op(.{ .contains = .{ .idx = idx, .val = val } }, &oracles, &rs, allocator);
+                try perform_op(@unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = val }), &oracles, &rs, allocator);
             },
             .contains_many => {
                 var vals: [8]u32 = undefined;
@@ -249,7 +254,10 @@ const AflSmith = struct {
             .minimum,
             .maximum,
             => |t| @unionInit(FuzzOp, @tagName(t), idx),
-            .contains => .{ .contains = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
+            inline .rank,
+            .select,
+            .contains,
+            => |t| @unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null }),
             .contains_many => {
                 const len = smith.valueRangeLessThan(u8, 0, @intCast(outvals.len + 1)) orelse return null;
                 for (outvals[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
@@ -349,7 +357,10 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .xor,
         .andnot,
         => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
-        .contains => |o| try writer.writeInt(u32, o.val, .little),
+        .contains,
+        .rank,
+        .select,
+        => |o| try writer.writeInt(u32, o.val, .little),
         .contains_many => |o| {
             try writer.writeByte(@intCast(o.vals.len));
             for (o.vals) |v| try writer.writeInt(u32, v, .little);
@@ -400,6 +411,8 @@ fn perform_op(
         .equals,
         .minimum,
         .maximum,
+        .rank,
+        .select,
         .contains,
         .contains_many,
         => {}, // no print, not part of reproduction
@@ -604,6 +617,50 @@ fn perform_op(
                     mem.max(u32, oracles[idx].keys()),
                 rs[idx].maximum(),
             );
+        },
+        .rank => |o| {
+            try std.testing.expectEqual(
+                if (is_cr)
+                    c.roaring_bitmap_rank(oracles[o.idx], o.val)
+                else if (oracles[o.idx].count() == 0)
+                    0
+                else blk: {
+                    const keys = oracles[o.idx].keys();
+                    var i: usize = 0;
+                    while (i < keys.len and keys[i] <= o.val) i += 1;
+                    break :blk @as(u64, i);
+                },
+                rs[o.idx].rank(o.val),
+            );
+        },
+        .select => |o| blk: {
+            const card: u32 = @intCast(if (is_cr)
+                c.roaring_bitmap_get_cardinality(oracles[o.idx])
+            else
+                oracles[o.idx].count());
+            if (card == 0) break :blk;
+            const mzr_val = rs[o.idx].select(o.val % card);
+            const zr_ok = mzr_val != null;
+            if (is_cr) {
+                var cr_val: u32 = undefined;
+                const cr_ok = c.roaring_bitmap_select(
+                    oracles[o.idx],
+                    o.val % card,
+                    &cr_val,
+                );
+                try std.testing.expectEqual(cr_ok, zr_ok);
+                if (zr_ok) try std.testing.expectEqual(cr_val, mzr_val.?);
+            } else {
+                if (card == 0) {
+                    try std.testing.expect(!zr_ok);
+                } else {
+                    try std.testing.expect(zr_ok);
+                    if (zr_ok) try std.testing.expectEqual(
+                        oracles[o.idx].keys()[o.val % card],
+                        mzr_val.?,
+                    );
+                }
+            }
         },
         // don't print, not part of reproduction
         .contains => |o| {

@@ -3793,6 +3793,133 @@ pub const Container = packed struct(u64) {
             else => unreachable,
         };
     }
+
+    /// Returns the number of integers that are smaller or equal to x.
+    fn array_container_rank(c: Container, x: u16, r: Bitmap) u32 {
+        const array = c.blocks_as(.array, r)[0..c.cardinality];
+        const idx = misc.binarySearch(array, x);
+        return @bitCast(if (idx >= 0) idx + 1 else -idx - 1);
+    }
+
+    /// Returns the number of values equal or smaller than x
+    fn bitset_container_rank(c: Container, x: u16, r: Bitmap) u32 {
+        // credit: aqrit
+        const words = c.blocks_as(.bitset, r);
+        var sum: u32 = 0;
+        var i: u32 = 0;
+        const end = x / 64;
+        while (i < end) : (i += 1) {
+            sum += @popCount(words[i]);
+        }
+        const lastword = words[i];
+        const lastpos = @as(u64, 1) << @truncate(x % 64);
+        const mask = lastpos + lastpos - 1; // smear right
+        sum += @popCount(lastword & mask);
+        return sum;
+    }
+
+    fn run_container_rank(c: Container, x: u16, r: Bitmap) u32 {
+        const runs = c.blocks_as(.run, r)[0..c.cardinality];
+        var sum: u32 = 0;
+        const x32: u32 = x;
+        for (runs) |run| {
+            const startpoint: u32 = run.value;
+            const length = run.length;
+            const endpoint = startpoint + length;
+            if (x <= endpoint) {
+                if (x < startpoint) break;
+                return sum + (x32 - startpoint) + 1;
+            } else {
+                sum += length + 1;
+            }
+        }
+        return sum;
+    }
+
+    pub fn rank(c: Container, x: u16, r: Bitmap) u32 {
+        return switch (c.typecode) {
+            .bitset => c.bitset_container_rank(x, r),
+            .array => c.array_container_rank(x, r),
+            .run => c.run_container_rank(x, r),
+            .shared => unreachable,
+        };
+    }
+
+    /// If the element of given rank is in this container, supposing that the
+    /// first element has rank start_rank, then return element. Otherwise, it
+    /// returns null and updates start_rank.
+    fn array_container_select(
+        c: Container,
+        start_rank: *u32,
+        target_rank: u32,
+        r: Bitmap,
+    ) ?u32 {
+        const card = c.cardinality;
+        if (start_rank.* + card <= target_rank) {
+            start_rank.* += card;
+            return null;
+        } else {
+            const array = c.blocks_as(.array, r);
+            return array[target_rank - start_rank.*];
+        }
+    }
+
+    /// If the element of given rank is in this container, supposing that the first
+    /// element has rank start_rank, then the function returns element accordingly.
+    /// Otherwise, it returns null and updates start_rank.
+    fn bitset_container_select(c: Container, start_rank: *u32, target_rank: u32, r: Bitmap) ?u32 {
+        const card = c.cardinality;
+        if (target_rank >= start_rank.* + card) {
+            start_rank.* += card;
+            return null;
+        }
+        const words = c.blocks_as(.bitset, r);
+        for (0..C.BITSET_CONTAINER_SIZE_IN_WORDS) |i| {
+            const size = @popCount(words[i]);
+            if (target_rank <= start_rank.* + size) {
+                var w = words[i];
+                const base: u16 = @truncate(i * 64);
+                while (w != 0) {
+                    const rpos = @ctz(w);
+                    if (start_rank.* == target_rank) {
+                        return rpos + base;
+                    }
+                    w &= (w - 1);
+                    start_rank.* += 1;
+                }
+            } else {
+                start_rank.* += size;
+            }
+        }
+        unreachable;
+    }
+
+    fn run_container_select(
+        c: Container,
+        start_rank: *u32,
+        target_rank: u32,
+        r: Bitmap,
+    ) ?u32 {
+        const runs = c.blocks_as(.run, r)[0..c.cardinality];
+        for (runs) |run| {
+            const length: u32 = run.length;
+            if (target_rank <= start_rank.* + length) {
+                return @as(u32, run.value) + target_rank - start_rank.*;
+            } else {
+                start_rank.* += length + 1;
+            }
+        }
+        return null;
+    }
+
+    pub fn select(c: Container, start_rank: *u32, target_rank: u32, r: Bitmap) ?u32 {
+        return switch (c.typecode) {
+            .bitset => c.bitset_container_select(start_rank, target_rank, r),
+            .array => c.array_container_select(start_rank, target_rank, r),
+            .run => c.run_container_select(start_rank, target_rank, r),
+            .shared => unreachable,
+        };
+    }
 };
 
 const std = @import("std");
