@@ -1480,6 +1480,34 @@ pub fn overwrite(r: *Bitmap, allocator: mem.Allocator, src: Bitmap) !void {
     r.* = new_copy;
 }
 
+pub fn is_subset(r1: Bitmap, r2: Bitmap) bool {
+    const keys1 = r1.slice(.keys, .len);
+    const keys2 = r2.slice(.keys, .len);
+    const containers1 = r1.slice(.containers, .len);
+    const containers2 = r2.slice(.containers, .len);
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    while (pos1 < containers1.len and pos2 < containers2.len) {
+        const s1 = keys1[pos1];
+        const s2 = keys2[pos2];
+        if (s1 == s2) {
+            if (!containers1[pos1].is_subset(r1, containers2[pos2], r2))
+                return false;
+            pos1 += 1;
+            pos2 += 1;
+        } else if (s1 < s2) {
+            return false;
+        } else {
+            pos2 = misc.advanceUntil(keys2, pos2, s1);
+        }
+    }
+    return pos1 == containers1.len;
+}
+
+pub fn is_strict_subset(r1: Bitmap, r2: Bitmap) bool {
+    return r2.get_cardinality() > r1.get_cardinality() and r1.is_subset(r2);
+}
+
 pub const @"and" = intersect;
 
 /// Computes the intersection between two bitmaps and returns new bitmap. The
@@ -1487,8 +1515,7 @@ pub const @"and" = intersect;
 ///
 /// Performance hint: if you are computing the intersection between several
 /// bitmaps, two-by-two, it is best to start with the smallest bitmap.
-/// You may also rely on roaring_bitmap_and_inplace to avoid creating
-/// many temporary bitmaps.
+/// You may also rely on and_inplace to avoid creating many temporary bitmaps.
 // there should be some SIMD optimizations possible here
 pub fn intersect(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;

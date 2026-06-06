@@ -76,6 +76,7 @@ pub const FuzzOp = union(enum) {
     merge: BinOp,
     xor: BinOp,
     andnot: BinOp,
+    is_subset: BinOp,
     clear: u8,
     run_optimize: u8,
     shrink_to_fit: u8,
@@ -144,7 +145,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             } }, &oracles, &rs, allocator),
-            inline .intersect, .merge, .xor, .andnot => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{
+            inline .intersect, .merge, .xor, .andnot, .is_subset => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
@@ -240,7 +241,7 @@ const AflSmith = struct {
                 .pick_existing = smith.value(u8) orelse return null,
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null,
             } },
-            inline .intersect, .merge, .xor, .andnot => |t| @unionInit(FuzzOp, @tagName(t), .{
+            inline .intersect, .merge, .xor, .andnot, .is_subset => |t| @unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
@@ -356,6 +357,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .merge,
         .xor,
         .andnot,
+        .is_subset,
         => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .contains,
         .rank,
@@ -397,6 +399,7 @@ fn perform_op(
         .merge,
         .xor,
         .andnot,
+        .is_subset,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
         => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .val = .{{ {}, {} }} }} }},\n", .{ x.idx, x.val[0], x.val[1] }), // TODO bug report for std.Io.Writer.printArray() prints '{..}' - missing leading '.'.
@@ -542,6 +545,22 @@ fn perform_op(
             }
             rs[o.idx].deinit(allocator);
             rs[o.idx] = try res.copy(allocator);
+        },
+        .is_subset => |o| {
+            try std.testing.expectEqual(
+                if (is_cr)
+                    c.roaring_bitmap_is_subset(oracles[o.src1], oracles[o.src2])
+                else blk: {
+                    const s1 = oracles[o.src1];
+                    const s2 = oracles[o.src2];
+                    if (s1.count() > s2.count()) break :blk false;
+                    for (s1.keys()) |key| {
+                        if (!s2.contains(key)) break :blk false;
+                    }
+                    break :blk true;
+                },
+                rs[o.src1].is_subset(rs[o.src2]),
+            );
         },
         .clear => |idx| {
             rs[idx].clear_retaining_capacity();
@@ -1626,6 +1645,12 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 42284429, 42682699 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7202188, 7267639 } } },
         .{ .rank = .{ .idx = 0, .val = 7183487 } },
+    });
+
+    try ops_fn(ctx, &.{ // is_subset correctness
+        .{ .add_range_closed = .{ .idx = 1, .val = .{ 488, 540 } } },
+        .{ .add_range_closed = .{ .idx = 0, .val = .{ 547, 33516 } } },
+        .{ .is_subset = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     });
 }
 

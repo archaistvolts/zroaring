@@ -65,7 +65,7 @@ pub const Container = packed struct(u64) {
     pub fn get_cardinality(c: Container, r: Bitmap) u32 {
         return switch (c.typecode) {
             .bitset, .array => c.cardinality,
-            .run => c.compute_cardinality(r),
+            .run => run_container_cardinality(c, c.blocks_as(.run, r).ptr),
             .shared => unreachable,
         };
     }
@@ -507,24 +507,12 @@ pub const Container = packed struct(u64) {
 
     pub fn compute_cardinality(v: Container, r: Bitmap) Cardinality {
         if (v == uninit) return 0;
-        var ret: Cardinality = undefined;
-        switch (v.typecode) {
-            .bitset => {
-                ret = 0;
-                for (v.blocks_as(.bitset, r)) |word| {
-                    ret += @popCount(word);
-                }
-            },
-            .array => ret = @intCast(v.cardinality),
-            .run => {
-                ret = v.cardinality; // init with nruns
-                for (v.blocks_as(.run, r)[0..v.cardinality]) |run| {
-                    ret += run.length;
-                }
-            },
+        return switch (v.typecode) {
+            .bitset => bitset_container_compute_cardinality(v.blocks_as(.bitset, r).ptr),
+            .array => v.cardinality,
+            .run => run_container_cardinality(v, v.blocks_as(.run, r).ptr),
             .shared => unreachable,
-        }
-        return ret;
+        };
     }
 
     pub fn internal_validate(v: Container, reason: *?[]const u8, r: Bitmap) bool {
@@ -3971,6 +3959,199 @@ pub const Container = packed struct(u64) {
             .array => c.array_container_select(start_rank, target_rank, r),
             .run => c.run_container_select(start_rank, target_rank, r),
             .shared => unreachable,
+        };
+    }
+
+    fn array_container_is_subset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        if (c1.cardinality > c2.cardinality) return false;
+        const array1 = c1.blocks_as(.array, r1)[0..c1.cardinality];
+        const array2 = c2.blocks_as(.array, r2)[0..c2.cardinality];
+        var idx1: u32 = 0;
+        var idx2: u32 = 0;
+        while (idx1 < array1.len and idx2 < array2.len) {
+            if (array1[idx1] == array2[idx2]) {
+                idx1 += 1;
+                idx2 += 1;
+            } else if (array1[idx1] > array2[idx2]) {
+                idx2 += 1;
+            } else {
+                return false;
+            }
+        }
+        return idx1 == array1.len;
+    }
+
+    fn bitset_container_is_subset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        if (c1.cardinality != C.BITSET_UNKNOWN_CARDINALITY and
+            c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY and
+            c1.cardinality > c2.cardinality) return false;
+        const words1 = c1.blocks_as(.bitset, r1);
+        const words2 = c2.blocks_as(.bitset, r2);
+        for (
+            words1[0..C.BITSET_CONTAINER_SIZE_IN_WORDS],
+            words2[0..C.BITSET_CONTAINER_SIZE_IN_WORDS],
+        ) |w1, w2| {
+            if ((w1 & w2) != w1) return false;
+        }
+        return true;
+    }
+
+    fn run_container_is_subset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        const runs1 = c1.blocks_as(.run, r1)[0..c1.cardinality];
+        const runs2 = c2.blocks_as(.run, r2)[0..c2.cardinality];
+        var idx1: u32 = 0;
+        var idx2: u32 = 0;
+        while (idx1 < runs1.len and idx2 < runs2.len) {
+            const start1: u32 = runs1[idx1].value;
+            const stop1: u32 = start1 + runs1[idx1].length;
+            const start2: u32 = runs2[idx2].value;
+            const stop2: u32 = start2 + runs2[idx2].length;
+            if (start1 < start2) {
+                return false;
+            } else if (stop1 < stop2) {
+                idx1 += 1;
+            } else if (stop1 == stop2) {
+                idx1 += 1;
+                idx2 += 1;
+            } else {
+                idx2 += 1;
+            }
+        }
+        return idx1 == runs1.len;
+    }
+
+    fn array_container_is_subset_bitset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        if (c2.cardinality < c1.cardinality)
+            return false;
+        const array1 = c1.blocks_as(.array, r1)[0..c1.cardinality];
+        const words2 = c2.blocks_as(.bitset, r2);
+        for (array1) |val| {
+            if (!bitset_container_get(words2.ptr, val)) return false;
+        }
+        return true;
+    }
+
+    fn array_container_is_subset_run(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        const runs2 = c2.blocks_as(.run, r2)[0..c2.cardinality];
+        if (c1.cardinality > c2.run_container_cardinality(runs2.ptr))
+            return false;
+        const array1 = c1.blocks_as(.array, r1)[0..c1.cardinality];
+        var iarray: u32 = 0;
+        var irun: u32 = 0;
+        while (iarray < array1.len and irun < runs2.len) {
+            const start: u32 = runs2[irun].value;
+            const stop: u32 = start + runs2[irun].length;
+            if (array1[iarray] < start) {
+                return false;
+            } else if (array1[iarray] > stop) {
+                irun += 1;
+            } else {
+                iarray += 1;
+            }
+        }
+        return iarray == array1.len;
+    }
+
+    fn run_container_is_subset_array(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        const runs1 = c1.blocks_as(.run, r1);
+        if (c1.run_container_cardinality(runs1.ptr) > c2.cardinality)
+            return false;
+        const array2 = c2.blocks_as(.array, r2)[0..c2.cardinality];
+        var start_pos: u32 = std.math.maxInt(u32);
+        var stop_pos: u32 = std.math.maxInt(u32);
+        for (runs1[0..c1.cardinality]) |run| {
+            const start: u32 = run.value;
+            const stop: u32 = start + run.length;
+            start_pos = misc.advanceUntil(array2, start_pos, @intCast(start));
+            stop_pos = misc.advanceUntil(array2, stop_pos, @intCast(stop));
+            if (stop_pos == c2.cardinality)
+                return false;
+            if (stop_pos - start_pos != stop - start or
+                array2[start_pos] != start or
+                array2[stop_pos] != stop)
+                return false;
+        }
+        return true;
+    }
+
+    fn run_container_is_subset_bitset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        // todo: this code could be much faster
+        const runs1 = c1.blocks_as(.run, r1);
+        const words2 = c2.blocks_as(.bitset, r2);
+        if (c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY) {
+            if (c2.cardinality < c1.run_container_cardinality(runs1.ptr))
+                return false;
+        } else {
+            const card = bitset_container_compute_cardinality(words2.ptr); // modify container2?
+            if (card < c1.run_container_cardinality(runs1.ptr)) {
+                return false;
+            }
+        }
+        for (runs1[0..c1.cardinality]) |run| {
+            const start: u32 = run.value;
+            const end = start + run.length;
+            var j = start;
+            while (j <= end) : (j += 1) {
+                if (!bitset_container_get(words2.ptr, @intCast(j)))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    fn bitset_container_is_subset_run(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        // todo: this code could be much faster
+        const words1 = c1.blocks_as(.bitset, r1);
+        const runs2 = c2.blocks_as(.run, r2)[0..c2.cardinality];
+        if (c1.cardinality != C.BITSET_UNKNOWN_CARDINALITY) {
+            if (c1.cardinality > c2.run_container_cardinality(runs2.ptr))
+                return false;
+        }
+        var ibitset: u32 = 0;
+        var irun: u32 = 0;
+        while (ibitset < C.BITSET_CONTAINER_SIZE_IN_WORDS and irun < runs2.len) {
+            var w = words1[ibitset];
+            while (w != 0 and irun < runs2.len) {
+                const start: u32 = runs2[irun].value;
+                const stop: u32 = start + runs2[irun].length;
+                const t = w & (~w + 1);
+                const rpos = ibitset * 64 + @ctz(w);
+                if (rpos < start) {
+                    return false;
+                } else if (rpos > stop) {
+                    irun += 1;
+                } else {
+                    w ^= t;
+                }
+            }
+            if (w == 0) {
+                ibitset += 1;
+            } else {
+                return false;
+            }
+        }
+        while (ibitset < C.BITSET_CONTAINER_SIZE_IN_WORDS) : (ibitset += 1) {
+            if (words1[ibitset] != 0)
+                return false;
+        }
+        return true;
+    }
+
+    pub fn is_subset(c1: Container, r1: Bitmap, c2: Container, r2: Bitmap) bool {
+        return switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.array, .array) => array_container_is_subset(c1, r1, c2, r2),
+            misc.pair(.array, .bitset) => array_container_is_subset_bitset(c1, r1, c2, r2),
+            misc.pair(.array, .run) => array_container_is_subset_run(c1, r1, c2, r2),
+            misc.pair(.array, .shared) => unreachable,
+            misc.pair(.bitset, .array) => false,
+            misc.pair(.bitset, .bitset) => bitset_container_is_subset(c1, r1, c2, r2),
+            misc.pair(.bitset, .run) => bitset_container_is_subset_run(c1, r1, c2, r2),
+            misc.pair(.bitset, .shared) => unreachable,
+            misc.pair(.run, .array) => run_container_is_subset_array(c1, r1, c2, r2),
+            misc.pair(.run, .bitset) => run_container_is_subset_bitset(c1, r1, c2, r2),
+            misc.pair(.run, .run) => run_container_is_subset(c1, r1, c2, r2),
+            misc.pair(.run, .shared) => unreachable,
+            else => unreachable,
         };
     }
 };
