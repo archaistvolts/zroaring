@@ -37,6 +37,8 @@ pub const Flag = enum(u8) {
     frozen,
 };
 
+pub const free = deinit;
+
 pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
     if (r.is_empty()) return;
     r.array.destroy(allocator);
@@ -1433,7 +1435,7 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
 }
 
 /// Moves the data so that we can write data at index
-pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
+fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, index: u16) !void {
     // This function calls realloc + memmove sequentially to move by one index.
     // Potentially copying the array twice.
     const cindex = run - r.array.ptr(.containers);
@@ -1444,6 +1446,20 @@ pub fn makeRoomAtIndex(r: *Bitmap, allocator: mem.Allocator, run: *Container, in
     const runs = run2.blocks_as(.run, r.*).ptr;
     @memmove(runs + 1 + index, (runs + index)[0 .. run2.cardinality - index]);
     run2.cardinality += 1;
+}
+
+fn clear_containers(r: Bitmap) void {
+    for (r.array.ptr(.containers)) |*c| {
+        c.deinit(r);
+    }
+}
+
+pub fn clear(r: *Bitmap, allocator: mem.Allocator) void {
+    if (r.is_empty()) return;
+    r.clear_containers();
+    r.array.ptr(.len).* = 0;
+    r.array.ptr(.blockslen).* = 0;
+    r.shrink_to_fit(allocator);
 }
 
 pub fn clear_retaining_capacity(r: *Bitmap) void {
@@ -1501,7 +1517,7 @@ fn advance_until(ra: Bitmap, x: u16, pos: u32) u32 {
     return misc.advanceUntil(ra.slice(.keys, .len), pos, x);
 }
 
-pub fn clone(r: Bitmap, allocator: mem.Allocator) !Bitmap {
+pub fn copy(r: Bitmap, allocator: mem.Allocator) !Bitmap {
     if (r.is_empty()) return r;
     const lens = r.array.calcLens();
     const buflen = Bitmap.Model.calcSize(lens);
@@ -1509,6 +1525,12 @@ pub fn clone(r: Bitmap, allocator: mem.Allocator) !Bitmap {
     const ret: Bitmap = .{ .array = .initBuffer(buf, lens) };
     r.copy_to(ret.array);
     return ret;
+}
+
+pub fn overwrite(r: *Bitmap, allocator: mem.Allocator, src: Bitmap) !void {
+    const new_copy = try src.copy(allocator);
+    r.deinit(allocator);
+    r.* = new_copy;
 }
 
 pub const @"and" = intersect;
@@ -1597,8 +1619,8 @@ pub fn merge(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bi
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
-    if (length1 == 0) return try x2.clone(allocator);
-    if (length2 == 0) return try x1.clone(allocator);
+    if (length1 == 0) return try x2.copy(allocator);
+    if (length2 == 0) return try x1.copy(allocator);
 
     var answer = try create_with_capacity(allocator, length1 + length2);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
@@ -1645,8 +1667,8 @@ pub fn xor(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitm
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
-    if (length1 == 0) return try x2.clone(allocator);
-    if (length2 == 0) return try x1.clone(allocator);
+    if (length1 == 0) return try x2.copy(allocator);
+    if (length2 == 0) return try x1.copy(allocator);
 
     var answer = try create_with_capacity(allocator, length1 + length2);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
@@ -1701,7 +1723,7 @@ pub fn andnot(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !B
         result.set_copy_on_write(x1.is_cow() or x2.is_cow());
         return result;
     }
-    if (length2 == 0) return try x1.clone(allocator);
+    if (length2 == 0) return try x1.copy(allocator);
 
     var answer = try create_with_capacity(allocator, length1);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());

@@ -541,7 +541,7 @@ fn perform_op(
                 else => unreachable,
             }
             rs[o.idx].deinit(allocator);
-            rs[o.idx] = try res.clone(allocator);
+            rs[o.idx] = try res.copy(allocator);
         },
         .clear => |idx| {
             rs[idx].clear_retaining_capacity();
