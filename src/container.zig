@@ -576,7 +576,7 @@ pub const Container = packed struct(u64) {
                         reason.* = "run start + length overflow";
                         return false;
                     }
-                    if (end > (1 << 16)) {
+                    if (end > C.MAX_KEY_CARDINALITY) {
                         reason.* = "run start + length too large";
                         return false;
                     }
@@ -683,11 +683,15 @@ pub const Container = packed struct(u64) {
         };
     }
 
+    fn bitset_container_contains(c: Container, val: u16, r: Bitmap) bool {
+        return bitset_container_get(c.blocks_as(.bitset, r).ptr, val);
+    }
+
     /// Check whether a value is in a container
     pub fn contains(c: Container, val: u16, r: Bitmap) bool {
         // c = c.container_unwrap_shared(); // TODO
         return switch (c.typecode) {
-            .bitset => bitset_container_get(c.blocks_as(.bitset, r).ptr, val),
+            .bitset => c.bitset_container_contains(val, r),
             .array => misc.binarySearchFallbackLinear(c.blocks_as(.array, r)[0..c.cardinality], val) >= 0,
             .run => run_container_contains(c.blocks_as(.run, r)[0..c.cardinality], val),
             .shared => unreachable,
@@ -789,22 +793,20 @@ pub const Container = packed struct(u64) {
     /// does not move blocks. modifies c if it has extra blocks to minimum
     /// blocks needed or deinit when cardinality is 0.
     pub fn shrink_to_fit(c: *Container, r: Bitmap) !usize {
-        const nblocksneeded = switch (c.typecode) {
+        const blocksneeded = switch (c.typecode) {
             .bitset => return 0, // no shrinking possible
             .array => misc.numGroupsOfSize(c.cardinality, C.BLOCK_LEN16),
             .run => misc.numGroupsOfSize(c.cardinality, C.BLOCK_LEN32),
             .shared => unreachable,
         };
-        const nblocks0 = c.nblocks();
-        trace(@src(), "nblocksneeded={} nblocks={} src={}", .{ nblocksneeded, nblocks0, c });
-
+        const cblocks = c.nblocks();
         if (c.cardinality == 0) {
             c.deinit(r);
-            return nblocks0 * C.BLOCK_SIZE;
-        } else if (nblocksneeded < c.nblocks()) {
-            c.nblocks_minus1 = @intCast(nblocksneeded - 1);
+            return cblocks * C.BLOCK_SIZE;
+        } else if (blocksneeded < c.nblocks()) {
+            c.nblocks_minus1 = @intCast(blocksneeded - 1);
         }
-        return (nblocks0 - c.nblocks()) * C.BLOCK_SIZE;
+        return (cblocks - c.nblocks()) * C.BLOCK_SIZE;
     }
 
     /// total number of elements an array or run container can hold given its
@@ -829,7 +831,6 @@ pub const Container = packed struct(u64) {
         capacity: u32,
         r: *Bitmap,
     ) !Container {
-        trace(@src(), "capacity={}", .{capacity});
         const numblocks = misc.numGroupsOfSize(capacity * @sizeOf(u16), C.BLOCK_SIZE);
         try r.extend_array(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
@@ -850,7 +851,6 @@ pub const Container = packed struct(u64) {
             C.BITSET_BLOCKS,
             misc.numGroupsOfSize(nruns_capacity * @sizeOf(root.Rle16), C.BLOCK_SIZE),
         );
-        trace(@src(), "nruns_capacity={} numblocks={}", .{ nruns_capacity, numblocks });
         try r.extend_array(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
         return .{
@@ -1255,23 +1255,25 @@ pub const Container = packed struct(u64) {
         return @reduce(.Add, total);
     }
 
-    fn op_methods(comptime op: std.builtin.ReduceOp) type {
+    const ReduceOp = enum { And, Or, Xor, AndNot };
+    fn op_methods(comptime op: ReduceOp) type {
         return struct {
             fn bitset_container_op(
                 src1: [*]align(C.BLOCK_ALIGN) const u64,
                 src2: [*]align(C.BLOCK_ALIGN) const u64,
                 dstc: *Container,
                 dst: [*]align(C.BLOCK_ALIGN) u64,
-            ) void {
-                if (C.HAS_AVX2)
-                    dstc.cardinality = @intCast(avx2_harley_seal_popcount_op_store(
+            ) Cardinality {
+                dstc.cardinality = @intCast(if (C.HAS_AVX2)
+                    avx2_harley_seal_popcount_op_store(
                         @ptrCast(src1),
                         @ptrCast(src2),
                         @ptrCast(dst),
                         C.BITSET_BLOCKS,
-                    ))
+                    )
                 else
-                    _ = _scalar_bitset_container_op(src1, src2, dstc, dst);
+                    _scalar_bitset_container_op(src1, src2, dstc, dst));
+                return dstc.cardinality;
             }
 
             fn _scalar_bitset_container_op(
@@ -1348,7 +1350,7 @@ pub const Container = packed struct(u64) {
                     .And => a & b,
                     .Or => a | b,
                     .Xor => a ^ b,
-                    else => unreachable,
+                    .AndNot => a & ~b,
                 };
             }
 
@@ -1582,7 +1584,6 @@ pub const Container = packed struct(u64) {
             src1.blocks_as(.bitset, x1.*).ptr,
             src2.blocks_as(.bitset, x2.*).ptr,
         );
-        trace(@src(), "newCardinality={}", .{newCardinality});
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
             dst.* = try bitset_container_create(allocator, dstr);
             _ = bitset_container_and_nocard(
@@ -2074,7 +2075,6 @@ pub const Container = packed struct(u64) {
         const card = c.compute_cardinality(r.*);
         const arraysize = card * @sizeOf(u16);
         const min_size_non_run = @min(@sizeOf(root.Bitset), arraysize);
-        trace(@src(), "arraysize={} runsize={} min_size_non_run={}", .{ arraysize, runsize, min_size_non_run });
         if (c.cardinality == 0 or runsize <= min_size_non_run) { // no conversion
             return c;
         }
@@ -2144,10 +2144,6 @@ pub const Container = packed struct(u64) {
         // TODO // c2 = container_unwrap_shared(c2);
 
         var result: Container = .uninit;
-        trace(@src(), "c1=    {}", .{c1});
-        trace(@src(), "c2=    {}", .{c2});
-        defer trace(@src(), "result={}", .{result});
-
         switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => {
                 try bitset_bitset_container_intersection(&result, allocator, dstr, c1, x1, c2, x2);
@@ -2593,10 +2589,6 @@ pub const Container = packed struct(u64) {
         dstr: *Bitmap,
     ) !Container {
         var result: Container = .uninit;
-        trace(@src(), "c1=    {}", .{c1});
-        trace(@src(), "c2=    {}", .{c2});
-        defer trace(@src(), "result={}", .{result});
-
         switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => {
                 result = try bitset_container_create(allocator, dstr);
@@ -2802,9 +2794,8 @@ pub const Container = packed struct(u64) {
         src2: *const Container,
         x2: *const Bitmap,
     ) !void {
-        var ans = uninit;
-        try run_container_xor(&ans, allocator, dstr, src1, x1, src2, x2);
-        dst.* = try convert_run_to_efficient_container_and_free(ans, allocator, dstr);
+        try run_container_xor(dst, allocator, dstr, src1, x1, src2, x2);
+        dst.* = try convert_run_to_efficient_container_and_free(dst.*, allocator, dstr);
     }
 
     /// Compute the symmetric difference of `src1` and `src2` and write the
@@ -3005,7 +2996,545 @@ pub const Container = packed struct(u64) {
         }
     }
 
-    /// Compute xor (symmetric difference) between two containers.
+    fn bitset_container_andnot(
+        dst: *Container,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) u32 {
+        return op_methods(.AndNot).bitset_container_op(
+            src1.blocks_as(.bitset, x1.*).ptr,
+            src2.blocks_as(.bitset, x2.*).ptr,
+            dst,
+            dst.blocks_as(.bitset, dstr.*).ptr,
+        );
+    }
+
+    /// Compute the andnot of src1 and src2 and write the result to dst.
+    /// dst does not initially have any container.
+    fn bitset_bitset_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        dst.* = try bitset_container_create(allocator, dstr);
+        const card = bitset_container_andnot(dst, dstr, src1, x1, src2, x2);
+
+        if (card <= C.DEFAULT_MAX_SIZE) {
+            const answer = try array_container_from_bitset(dst, allocator, dstr);
+            dst.deinit_blocks(dstr.*);
+            dst.* = answer;
+        }
+    }
+
+    /// Computes the difference of arrays src1 and src2 and write the result to
+    /// array dst. Array dst does not need to be distinct from src1
+    fn array_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        const card1 = src1.cardinality;
+        const card2 = src2.cardinality;
+        if (dst.calc_capacity() < card1)
+            try dst.array_container_grow(allocator, dstr, card1, false);
+        dst.cardinality = @intCast(misc.difference_uint16(
+            src1.blocks_as(.array, x1.*)[0..card1],
+            src2.blocks_as(.array, x2.*)[0..card2],
+            dst.blocks_as(.array, dstr.*),
+        ));
+    }
+
+    /// dst is a valid array container and may be the same as src1
+    fn array_array_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        dst.* = try array_container_create_given_capacity(allocator, src1.cardinality, dstr);
+        try array_container_andnot(dst, allocator, dstr, src1, x1, src2, x2);
+    }
+
+    /// Compute the andnot of src1 and src2 and write the result to dst, which
+    /// starts uninit.
+    fn bitset_array_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        dst.* = try bitset_container_create(allocator, dstr);
+        bitset_container_copy(dst, dstr, src1.*, x1.*);
+        dst.cardinality = @truncate(misc.bitset_clear_list(
+            dst.blocks_as(.bitset, dstr.*).ptr,
+            dst.cardinality,
+            src2.blocks_as(.array, x2.*)[0..src2.cardinality],
+        ));
+        if (dst.cardinality <= C.DEFAULT_MAX_SIZE) {
+            const answer = try array_container_from_bitset(dst, allocator, dstr);
+            dst.deinit_blocks(dstr.*);
+            dst.* = answer;
+        }
+    }
+
+    /// Compute the andnot of src1 and src2 and write the result to
+    /// dst, a valid array container that could be the same as dst.
+    fn array_bitset_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        const card1 = src1.cardinality;
+        dst.* = try array_container_create_given_capacity(allocator, card1, dstr);
+        const src1array = src1.blocks_as(.array, x1.*);
+        const dstarray = dst.blocks_as(.array, dstr.*);
+        const src2bitset = src2.blocks_as(.bitset, x2.*);
+        var newcard: Cardinality = 0;
+        for (src1array[0..card1]) |key| {
+            dstarray[newcard] = key;
+            newcard += 1 - @intFromBool(bitset_container_get(src2bitset.ptr, key));
+        }
+        dst.cardinality = newcard;
+    }
+
+    /// Compute the andnot of src1 and src2 and write the result to dst. Result
+    /// may be either a bitset or an array container. dst starts uninit.
+    fn bitset_run_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        dst.* = try bitset_container_create(allocator, dstr);
+        bitset_container_copy(dst, dstr, src1.*, x1.*);
+        const src2runs = src2.blocks_as(.run, x2.*);
+        const dstwords = dst.blocks_as(.bitset, dstr.*);
+        for (src2runs[0..src2.cardinality]) |rle| {
+            bitset_reset_range(dstwords.ptr, rle.value, @as(u32, rle.value) + rle.length + 1);
+        }
+        dst.cardinality = dst.compute_cardinality(dstr.*);
+        if (dst.cardinality <= C.DEFAULT_MAX_SIZE) {
+            const answer = try array_container_from_bitset(dst, allocator, dstr);
+            dst.deinit_blocks(dstr.*);
+            dst.* = answer;
+        }
+    }
+
+    fn run_bitset_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        // follows the Java implementation as of June 2016
+        assert(dst.* == uninit);
+        const srccard = run_container_cardinality(src1.*, src1.blocks_as(.run, x1.*).ptr);
+        if (srccard <= C.DEFAULT_MAX_SIZE) { // must be an array
+            dst.* = try array_container_create_given_capacity(allocator, srccard, dstr);
+            dst.cardinality = 0;
+            const src1runs = src1.blocks_as(.run, x1.*);
+            const dstarray = dst.blocks_as(.array, dstr.*);
+            for (src1runs[0..src1.cardinality]) |rle| {
+                const run_start: u32 = rle.value;
+                const run_end = run_start + rle.length;
+                var run_value: u32 = run_start;
+                while (run_value <= run_end) : (run_value += 1) {
+                    if (!bitset_container_contains(src2.*, @truncate(run_value), x2.*)) {
+                        dstarray[dst.cardinality] = @truncate(run_value);
+                        dst.cardinality += 1;
+                    }
+                }
+            }
+        } else { // we guess it will be a bitset, have to check guess when done
+            var answer = try bitset_container_clone(src2, allocator, x2, dstr);
+
+            const src1runs = src1.blocks_as(.run, x1.*);
+            const answords = answer.blocks_as(.bitset, dstr.*);
+            var last_pos: u32 = 0;
+            for (src1runs[0..src1.cardinality]) |rle| {
+                const start: u32 = rle.value;
+                const end = start + rle.length + 1;
+                bitset_reset_range(answords.ptr, last_pos, start);
+                misc.bitset_flip_range(answords.ptr, start, end);
+                last_pos = end;
+            }
+            bitset_reset_range(answords.ptr, last_pos, C.MAX_KEY_CARDINALITY);
+            answer.cardinality = bitset_container_compute_cardinality(answords.ptr);
+
+            if (answer.cardinality <= C.DEFAULT_MAX_SIZE) {
+                dst.* = try array_container_from_bitset(&answer, allocator, dstr);
+                answer.deinit_blocks(dstr.*);
+                return;
+            }
+            dst.* = answer;
+        }
+    }
+
+    /// dst must be a valid array container, allowed to be src1
+    fn array_run_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        // basically following Java impl as of June 2016
+        const card1 = src1.cardinality;
+        assert(dst.* == uninit);
+        dst.* = try array_container_create_given_capacity(allocator, card1, dstr);
+        const src1array = src1.blocks_as(.array, x1.*);
+        const src2runs = src2.blocks_as(.run, x2.*);
+        const dstarray = dst.blocks_as(.array, dstr.*);
+
+        if (src2.cardinality == 0) {
+            @memcpy(dstarray[0..card1], src1array);
+            dst.cardinality = card1;
+            return;
+        }
+
+        var run_start: u32 = src2runs[0].value;
+        var run_end: u32 = run_start + src2runs[0].length;
+        var which_run: u32 = 0;
+        var dest_card: Cardinality = 0;
+        var valp: [*]const u16 = src1array.ptr;
+        const end = @intFromPtr(src1array.ptr + card1);
+        while (@intFromPtr(valp) < end) : (valp += 1) {
+            const val = valp[0];
+            if (val < run_start) {
+                dstarray[dest_card] = val;
+                dest_card += 1;
+            } else if (val <= run_end) {
+                // omitted
+            } else {
+                while (true) {
+                    which_run += 1;
+                    if (which_run < src2.cardinality) {
+                        run_start = src2runs[which_run].value;
+                        run_end = run_start + src2runs[which_run].length;
+                    } else {
+                        run_start = C.MAX_KEY_CARDINALITY + 1;
+                        run_end = C.MAX_KEY_CARDINALITY + 1;
+                    }
+                    if (val <= run_end) break;
+                }
+                valp -= 1;
+            }
+        }
+        dst.cardinality = dest_card;
+    }
+
+    /// dst must be a valid array container with adequate capacity.
+    fn run_array_array_subtract(
+        dst: *Container,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) Cardinality {
+        const src1runs = src1.blocks_as(.run, x1.*);
+        const src2array = src2.blocks_as(.array, x2.*);
+        const dstarray = dst.blocks_as(.array, dstr.*);
+        var out_card: Cardinality = 0;
+        var in_array_pos: u32 = std.math.maxInt(u32); // -1, use wrapping math
+        for (src1runs[0..src1.cardinality]) |rle| {
+            const start: u32 = rle.value;
+            const end = start + rle.length + 1;
+            const min = rle.value;
+            in_array_pos = misc.advanceUntil(src2array[0..src2.cardinality], in_array_pos, min);
+            if (in_array_pos >= src2.cardinality) {
+                var i = start;
+                while (i < end) : (i += 1) {
+                    dstarray[out_card] = @intCast(i);
+                    out_card += 1;
+                }
+            } else {
+                var next_nonincluded = src2array[in_array_pos];
+                if (next_nonincluded >= end) {
+                    var i = start;
+                    while (i < end) : (i += 1) {
+                        dstarray[out_card] = @intCast(i);
+                        out_card += 1;
+                    }
+                    in_array_pos -%= 1;
+                } else {
+                    var i = start;
+                    while (i < end) : (i += 1) {
+                        if (i != next_nonincluded) {
+                            dstarray[out_card] = @intCast(i);
+                            out_card += 1;
+                        } else {
+                            next_nonincluded = if (in_array_pos + 1 >= src2.cardinality)
+                                0
+                            else blk: {
+                                in_array_pos += 1;
+                                break :blk src2array[in_array_pos];
+                            };
+                        }
+                    }
+                    in_array_pos -%= 1;
+                }
+            }
+        }
+        return out_card;
+    }
+
+    /// Compute the andnot of src1 and src2 and write the result to
+    /// dst (which has no container initially).  It will modify src1
+    /// to be dst if the result is a bitset.  Otherwise, it will
+    /// free src1 and dst will be a new array container.  In both
+    /// cases, the caller is responsible for deallocating dst.
+    fn bitset_array_container_iandnot(
+        src1: *Container,
+        allocator: mem.Allocator,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+        dst: *Container,
+        dstr: *Bitmap,
+    ) !void {
+        src1.cardinality = @truncate(misc.bitset_clear_list(
+            src1.blocks_as(.bitset, x1.*).ptr,
+            src1.cardinality,
+            src2.blocks_as(.array, x2.*)[0..src2.cardinality],
+        ));
+        if (src1.cardinality <= C.DEFAULT_MAX_SIZE) {
+            const answer = try array_container_from_bitset(src1, allocator, dstr);
+            src1.deinit_blocks(x1.*);
+            dst.* = answer;
+        } else {
+            dst.* = src1.*;
+        }
+    }
+
+    /// dst does not indicate a valid container initially.  Eventually it
+    /// can become any type of container.
+    fn run_array_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        const card = run_container_cardinality(src1.*, src1.blocks_as(.run, x1.*).ptr);
+        const arbitrary_threshold = 32;
+
+        if (card <= arbitrary_threshold) {
+            if (src2.cardinality == 0) {
+                dst.* = try run_container_clone(src1, allocator, x1, dstr);
+                return;
+            }
+            var ans = try run_container_create_given_capacity(allocator, card + src2.cardinality, dstr);
+            ans.cardinality = 0;
+
+            const src1runs = src1.blocks_as(.run, x1.*);
+            const src2array = src2.blocks_as(.array, x2.*);
+            const ansruns = ans.blocks_as(.run, dstr.*);
+
+            var rlepos: u32 = 0;
+            var xrlepos: u32 = 0;
+            const rle = src1runs[rlepos];
+            var start: u32 = rle.value;
+            var end: u32 = start + rle.length + 1;
+            var xstart: u32 = src2array[xrlepos];
+            while (rlepos < src1.cardinality and xrlepos < src2.cardinality) {
+                if (end <= xstart) { // output the first run
+                    ansruns[ans.cardinality] = .{
+                        .value = @intCast(start),
+                        .length = @intCast(end - start - 1),
+                    };
+                    ans.cardinality += 1;
+                    rlepos += 1;
+                    if (rlepos < src1.cardinality) {
+                        start = src1runs[rlepos].value;
+                        end = start + src1runs[rlepos].length + 1;
+                    }
+                } else if (xstart + 1 <= start) { // exit the second run
+                    xrlepos += 1;
+                    if (xrlepos < src2.cardinality)
+                        xstart = src2array[xrlepos];
+                } else {
+                    if (start < xstart) {
+                        ansruns[ans.cardinality] = .{
+                            .value = @intCast(start),
+                            .length = @intCast(xstart - start - 1),
+                        };
+                        ans.cardinality += 1;
+                    }
+                    if (xstart + 1 < end)
+                        start = xstart + 1
+                    else {
+                        rlepos += 1;
+                        if (rlepos < src1.cardinality) {
+                            start = src1runs[rlepos].value;
+                            end = start + src1runs[rlepos].length + 1;
+                        }
+                    }
+                }
+            }
+            if (rlepos < src1.cardinality) {
+                ansruns[ans.cardinality] = .{
+                    .value = @truncate(start),
+                    .length = @truncate(end - start - 1),
+                };
+                ans.cardinality += 1;
+                rlepos += 1;
+                if (rlepos < src1.cardinality) {
+                    const remaining = src1runs[rlepos..src1.cardinality];
+                    @memcpy(ansruns[ans.cardinality..].ptr, remaining);
+                    ans.cardinality += @intCast(remaining.len);
+                }
+            }
+
+            dst.* = try convert_run_to_efficient_container_and_free(ans, allocator, dstr);
+            if (ans != dst.*) ans.deinit_blocks(dstr.*);
+            return;
+        }
+
+        // else it's a bitmap or array
+        if (card <= C.DEFAULT_MAX_SIZE) {
+            dst.* = try array_container_create_given_capacity(allocator, card, dstr);
+            // nb Java code used a generic iterator-based merge to compute
+            // difference
+            dst.cardinality = run_array_array_subtract(dst, dstr, src1, x1, src2, x2);
+            return;
+        }
+        var ans = try bitset_container_from_run(src1, allocator, x1, dstr);
+        try bitset_array_container_iandnot(&ans, allocator, dstr, src2, x2, dst, dstr);
+    }
+
+    /// dst starts uninit and can become any kind of container.
+    fn run_run_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        assert(dst.* == uninit);
+        try run_container_andnot(dst, allocator, dstr, src1, x1, src2, x2);
+        dst.* = try convert_run_to_efficient_container_and_free(dst.*, allocator, dstr);
+    }
+
+    /// Run-level andnot operation on run containers.
+    fn run_container_andnot(
+        dst: *Container,
+        allocator: mem.Allocator,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) !void {
+        const nruns1 = src1.cardinality;
+        const nruns2 = src2.cardinality;
+        const needed_capacity = nruns1 + nruns2;
+        if (dst.calc_capacity() < needed_capacity)
+            try dst.run_container_grow(allocator, needed_capacity, false, dstr);
+        dst.cardinality = 0;
+
+        const src1runs = src1.blocks_as(.run, x1.*);
+        const src2runs = src2.blocks_as(.run, x2.*);
+        const dstruns = dst.blocks_as(.run, dstr.*);
+
+        var rlepos1: u32 = 0;
+        var rlepos2: u32 = 0;
+        var start: u32 = src1runs[rlepos1].value;
+        var end: u32 = start + src1runs[rlepos1].length + 1;
+        var start2: u32 = src2runs[rlepos2].value;
+        var end2: u32 = start2 + src2runs[rlepos2].length + 1;
+
+        while (rlepos1 < nruns1 and rlepos2 < nruns2) {
+            if (end <= start2) {
+                dstruns[dst.cardinality] = .{
+                    .value = @intCast(start),
+                    .length = @intCast(end - start - 1),
+                };
+                dst.cardinality += 1;
+                rlepos1 += 1;
+                if (rlepos1 < nruns1) {
+                    start = src1runs[rlepos1].value;
+                    end = start + src1runs[rlepos1].length + 1;
+                }
+            } else if (end2 <= start) {
+                rlepos2 += 1;
+                if (rlepos2 < nruns2) {
+                    start2 = src2runs[rlepos2].value;
+                    end2 = start2 + src2runs[rlepos2].length + 1;
+                }
+            } else {
+                if (start < start2) {
+                    dstruns[dst.cardinality] = .{
+                        .value = @intCast(start),
+                        .length = @intCast(start2 - start - 1),
+                    };
+                    dst.cardinality += 1;
+                }
+                if (end2 < end) {
+                    start = end2;
+                } else {
+                    rlepos1 += 1;
+                    if (rlepos1 < nruns1) {
+                        start = src1runs[rlepos1].value;
+                        end = start + src1runs[rlepos1].length + 1;
+                    }
+                }
+            }
+        }
+
+        if (rlepos1 < nruns1) {
+            dstruns[dst.cardinality] = .{
+                .value = @intCast(start),
+                .length = @intCast(end - start - 1),
+            };
+            dst.cardinality += 1;
+            rlepos1 += 1;
+            if (rlepos1 < nruns1) {
+                const remaining = src1runs[rlepos1..nruns1];
+                @memcpy(dstruns[dst.cardinality..][0..remaining.len], remaining);
+                dst.cardinality += @intCast(remaining.len);
+            }
+        }
+    }
+
     pub fn xor(
         c1: *const Container,
         allocator: mem.Allocator,
@@ -3015,10 +3544,6 @@ pub const Container = packed struct(u64) {
         dstr: *Bitmap,
     ) !Container {
         var result: Container = .uninit;
-        trace(@src(), "c1=    {}", .{c1});
-        trace(@src(), "c2=    {}", .{c2});
-        defer trace(@src(), "result={}", .{result});
-
         switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => {
                 try bitset_bitset_container_xor(&result, allocator, dstr, c1, x1, c2, x2);
@@ -3046,6 +3571,54 @@ pub const Container = packed struct(u64) {
             },
             misc.pair(.run, .array) => {
                 try array_run_container_xor(&result, allocator, dstr, c2, x2, c1, x1);
+            },
+            else => unreachable,
+        }
+        return result;
+    }
+
+    /// Compute andnot (difference) between two containers, return a new
+    /// container. This allocates new memory, caller is responsible for
+    /// deallocation.
+    pub fn andnot(
+        c1: *const Container,
+        allocator: mem.Allocator,
+        x1: *const Bitmap,
+        c2: *const Container,
+        x2: *const Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        var result: Container = .uninit;
+        switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.bitset, .bitset) => {
+                try bitset_bitset_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.array, .array) => {
+                try array_array_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.run, .run) => {
+                if (run_container_is_full(c2.*, x2.*)) return result;
+                try run_run_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.bitset, .array) => {
+                try bitset_array_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.array, .bitset) => {
+                try array_bitset_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.bitset, .run) => {
+                if (run_container_is_full(c2.*, x2.*)) return result;
+                try bitset_run_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.run, .bitset) => {
+                try run_bitset_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.array, .run) => {
+                if (run_container_is_full(c2.*, x2.*)) return result;
+                try array_run_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
+            },
+            misc.pair(.run, .array) => {
+                try run_array_container_andnot(&result, allocator, dstr, c1, x1, c2, x2);
             },
             else => unreachable,
         }
@@ -3083,7 +3656,7 @@ pub const Container = packed struct(u64) {
     }
 
     fn run_container_clone(
-        c: Container,
+        c: *const Container,
         allocator: mem.Allocator,
         x: *const Bitmap,
         dstr: *Bitmap,

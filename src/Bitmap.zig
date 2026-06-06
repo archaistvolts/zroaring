@@ -266,6 +266,7 @@ pub fn insert_new_key_value_at(
 pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize {
     // TODO estimate how many containers and blocks are needed, preallocate and then use assume capacity api.
     trace(@src(), "vals={}:{?}..{?}", .{ vals.len, if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null });
+    trace(@src(), "{f}", .{r.fmtLong()});
     var ret: usize = 0;
     for (vals) |v| {
         ret += @intFromBool(try r.add_checked(allocator, v));
@@ -286,7 +287,6 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
         @branchHint(.unlikely);
         r.* = try create_with_capacity(allocator, 1);
     }
-    trace(@src(), "{f}", .{r.fmtLong()});
 
     const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
     const mcontaineridx = misc.binarySearch(r.slice(.keys, .len), key);
@@ -398,7 +398,6 @@ pub fn range_of_ones(
 ) !Container {
     assert(range_end >= range_start);
     const card = range_end - range_start + 1;
-    trace(@src(), "{}-{}:{}", .{ range_start, range_end, card });
     return if (card <= 2)
         try r.create_range(allocator, .array, range_start, range_end)
     else
@@ -592,7 +591,6 @@ fn container_add_range(
     min: u32,
     max: u32,
 ) !Container {
-    trace(@src(), "{f}", .{c.fmt(r.*, c.get_key(r.*))});
     const cid = c - r.array.ptr(.containers);
     // NB: when selecting new container type, we perform only inexpensive checks
     switch (c.typecode) {
@@ -620,7 +618,6 @@ fn container_add_range(
                 misc.count_less(array[0 .. c.cardinality - nvals_greater], @truncate(min));
             const union_cardinality =
                 nvals_less + (max - min + 1) + nvals_greater;
-            trace(@src(), "array union_cardinality={}", .{union_cardinality});
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
                 return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
@@ -1192,8 +1189,7 @@ pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i3
     const len = r.array.ptr(.len);
     const srcpos = len.* - count;
     const dstpos = srcpos +% @as(u32, @bitCast(distance));
-    trace(@src(), "count={} distance={} srcpos={} dstpos={}", .{ count, distance, srcpos, dstpos });
-
+    // trace(@src(), "count={} distance={} srcpos={} dstpos={}", .{ count, distance, srcpos, dstpos });
     len.* +%= @bitCast(distance);
 
     const keys = r.slice(.keys, .len);
@@ -1373,28 +1369,31 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
     const capacity = r.array.ptr(.capacity).*;
     const blockscapacity = r.array.ptr(.blockscapacity).*;
     const len = r.array.ptr(.len).*;
-    const blockslen = r.array.ptr(.blockslen).*;
-
-    var answer: usize = 0;
+    // possibly shrink containers before calculating new blockslen
+    var containersavings: usize = 0;
     for (0..len) |i| {
         const c = &r.array.ptr(.containers)[i];
-        assert(c.* != Container.uninit); // TODO handle previously deinit() containers/blocks marked .uninit/0xff
-        answer += try c.shrink_to_fit(r.*);
+        assert(c.* != Container.uninit);
+        containersavings += try c.shrink_to_fit(r.*);
     }
-    if (answer == 0 and capacity == len and blockscapacity == blockslen)
-        return 0;
 
-    const size = Model.calcSize(.{ .capacity = capacity, .blockscapacity = blockscapacity });
+    var blockslen: u32 = 0;
+    for (r.slice(.containers, .len)) |c| blockslen += c.nblocks();
+
+    if (containersavings == 0 and capacity == len and blockscapacity == blockslen)
+        return 0; // no shrinking possible
+
     const newlens = Model.Lengths{ .capacity = len, .blockscapacity = blockslen };
     const newsize = Model.calcSize(newlens);
-    const keysoffset = r.array.offsetOf(.keys);
     const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, newsize);
     // copy non-array fields
+    const keysoffset = r.array.offsetOf(.keys);
     @memcpy(buf[0..keysoffset], r.array.asBytes()[0..keysoffset]);
     const newarray: *Model = @ptrCast(buf);
     newarray.ptr(.capacity).* = len;
     newarray.ptr(.blockscapacity).* = blockslen;
-    const newr = Bitmap{ .array = newarray };
+    newarray.ptr(.len).* = len;
+    newarray.ptr(.blockslen).* = blockslen;
     // copy keys and containers
     newarray.copyField(r.array, .keys);
     newarray.copyField(r.array, .containers);
@@ -1403,15 +1402,17 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
     var block = blocks;
     const cs = r.array.ptr(.containers);
     const newcs = newarray.ptr(.containers);
+    const newr = Bitmap{ .array = newarray };
     for (0..len) |i| {
         newcs[i].blockoffset = @intCast(block - blocks);
         block += cs[i].nblocks();
         @memcpy(newcs[i].get_blocks(newr), cs[i].get_blocks(r.*));
     }
+    const size = Model.calcSize(.{ .capacity = capacity, .blockscapacity = blockscapacity });
     allocator.free(r.array.asBytes()[0..size]);
     r.array = newarray;
 
-    return answer + size - newsize;
+    return containersavings + size - newsize;
 }
 
 pub fn remove_at_index(r: Bitmap, i: u32) void {
@@ -1684,6 +1685,61 @@ pub fn xor(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitm
     if (pos1 == length1) {
         try answer.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
     } else if (pos2 == length2) {
+        try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
+    }
+
+    return answer;
+}
+
+/// Computes the difference (andnot) between two bitmaps and returns new bitmap.
+/// Caller is responsible for freeing the result.
+pub fn andnot(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    if (length1 == 0) {
+        var result = try create_with_capacity(allocator, 0);
+        result.set_copy_on_write(x1.is_cow() or x2.is_cow());
+        return result;
+    }
+    if (length2 == 0) return try x1.clone(allocator);
+
+    var answer = try create_with_capacity(allocator, length1);
+    answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
+    defer answer.assert_valid();
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    while (true) {
+        const key1 = x1.array.ptr(.keys)[pos1];
+        const key2 = x2.array.ptr(.keys)[pos2];
+
+        if (key1 == key2) {
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            const c2 = &x2.array.ptr(.containers)[pos2];
+            const c = try Container.andnot(c1, allocator, x1, c2, x2, &answer);
+            if (c.nonzero_cardinality(answer)) {
+                try answer.append(allocator, key1, c);
+            } else if (c != Container.uninit) {
+                c.deinit_blocks(answer);
+            }
+            pos1 += 1;
+            pos2 += 1;
+            if (pos1 == length1) break;
+            if (pos2 == length2) break;
+        } else if (key1 < key2) {
+            const next_pos1 = x1.advance_until(key2, pos1);
+            try answer.append_copy_range(allocator, x1, pos1, next_pos1, x1.is_cow());
+            // TODO : perhaps some of the copy_on_write should be based on
+            // answer rather than x1 (more stringent?).  Many similar cases
+            pos1 = next_pos1;
+            if (pos1 == length1) break;
+        } else { // key1 > key2
+            pos2 = x2.advance_until(key1, pos2);
+            if (pos2 == length2) break;
+        }
+    }
+
+    if (pos2 == length2) {
         try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
     }
 

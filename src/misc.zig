@@ -137,8 +137,10 @@ pub fn rle16_count_greater(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: 
 /// if the result is x, then if x = length, you have that all values in array
 /// between pos and length are smaller than min. otherwise returns the first
 /// index x such that array[x] >= min.
+///
+/// `pos` may be u32 max so wrapping addition is used.
 pub fn advanceUntil(array: []align(C.BLOCK_ALIGN) const u16, pos: u32, min: u16) u32 {
-    var lower: u32 = pos + 1;
+    var lower = pos +% 1;
     const length: u32 = @intCast(array.len);
     if (lower >= length or array[lower] >= min)
         return lower;
@@ -467,6 +469,57 @@ pub fn xor_uint16(
     return pos_out;
 }
 
+/// Compute the difference (a1 minus a2) of two sorted uint16 arrays.
+pub fn difference_uint16(
+    a1: []align(C.BLOCK_ALIGN) const u16,
+    a2: []align(C.BLOCK_ALIGN) const u16,
+    out: []align(C.BLOCK_ALIGN) u16,
+) u32 {
+    var out_card: u32 = 0;
+    var k1: u32 = 0;
+    var k2: u32 = 0;
+    const length1: u32 = @intCast(a1.len);
+    const length2: u32 = @intCast(a2.len);
+    if (length1 == 0) return 0;
+    if (length2 == 0) {
+        if (a1.ptr != out.ptr) @memcpy(out.ptr, a1);
+        return length1;
+    }
+    var s1 = a1[k1];
+    var s2 = a2[k2];
+    while (true) {
+        if (s1 < s2) {
+            out[out_card] = s1;
+            out_card += 1;
+            k1 += 1;
+            if (k1 >= length1) {
+                break;
+            }
+            s1 = a1[k1];
+        } else if (s1 == s2) {
+            k1 += 1;
+            k2 += 1;
+            if (k1 >= length1) {
+                break;
+            }
+            if (k2 >= length2) {
+                @memmove(out.ptr + out_card, a1[k1..]);
+                return out_card + length1 - k1;
+            }
+            s1 = a1[k1];
+            s2 = a2[k2];
+        } else { // if (val1>val2)
+            k2 += 1;
+            if (k2 >= length2) {
+                @memmove(out.ptr + out_card, a1[k1..]);
+                return out_card + length1 - k1;
+            }
+            s2 = a2[k2];
+        }
+    }
+    return out_card;
+}
+
 pub fn fast_union_uint16(
     set1: []align(C.BLOCK_ALIGN) const u16,
     set2: []align(C.BLOCK_ALIGN) const u16,
@@ -549,9 +602,31 @@ pub fn bitset_flip_list_withcard(
         const index: u6 = @truncate(pos & 63);
         const load = words[offset];
         const newload = load ^ (@as(u64, 1) << index);
-        const inc: u32 = @truncate(1 -% ((load >> index) & 1) * 2); // avoids branch
+        const inc: u32 = @truncate(1 -% ((load >> index) & 1) * 2); // avoid branch
         std.debug.assert(inc == std.math.maxInt(u32) or inc == 1); //  +1 or -1
         card_out +%= inc;
+        words[offset] = newload;
+    }
+    return card_out;
+}
+
+/// Clear bits at positions in list, return updated cardinality.
+pub fn bitset_clear_list(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    card: u32,
+    list: []align(C.BLOCK_ALIGN) const u16,
+) u64 {
+    if (C.HAS_AVX2) {
+        // TODO _asm_bitset_clear_list
+    }
+    // _scalar_bitset_clear_list
+    var card_out: u64 = card;
+    for (list) |pos| {
+        const offset = pos >> 6;
+        const index: u6 = @truncate(pos & 63);
+        const load = words[offset];
+        const newload = load & ~(@as(u64, 1) << index);
+        card_out -= (load ^ newload) >> index;
         words[offset] = newload;
     }
     return card_out;
@@ -615,8 +690,8 @@ test numGroupsOfSize {
 }
 
 /// an int with t1 in lo, t2 in hi bits
-pub fn pair(t1: root.Typecode, t2: root.Typecode) u16 {
-    return @as(u16, @intFromEnum(t1)) << 8 | @intFromEnum(t2);
+pub fn pair(t1: root.Typecode, t2: root.Typecode) u4 {
+    return @as(u4, @intFromEnum(t1)) << 2 | @intFromEnum(t2);
 }
 
 /// an int with t1 in lo, t2 in hi bits
