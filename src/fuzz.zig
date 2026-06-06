@@ -82,6 +82,8 @@ pub const FuzzOp = union(enum) {
     portable_serialize: u8,
     frozen_serialize: u8,
     equals: u8,
+    minimum: u8,
+    maximum: u8,
     // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
     // get_index, // TODO
     contains: One,
@@ -145,12 +147,15 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }), &oracles, &rs, allocator),
-            .clear => try perform_op(.{ .clear = idx }, &oracles, &rs, allocator),
-            .run_optimize => try perform_op(.{ .run_optimize = idx }, &oracles, &rs, allocator),
-            .shrink_to_fit => try perform_op(.{ .shrink_to_fit = idx }, &oracles, &rs, allocator),
-            .portable_serialize => try perform_op(.{ .portable_serialize = idx }, &oracles, &rs, allocator),
-            .frozen_serialize => try perform_op(.{ .frozen_serialize = idx }, &oracles, &rs, allocator),
-            .equals => try perform_op(.{ .equals = idx }, &oracles, &rs, allocator),
+            inline .clear,
+            .run_optimize,
+            .shrink_to_fit,
+            .portable_serialize,
+            .frozen_serialize,
+            .equals,
+            .minimum,
+            .maximum,
+            => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), idx), &oracles, &rs, allocator),
             .contains => {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .contains = .{ .idx = idx, .val = val } }, &oracles, &rs, allocator);
@@ -235,12 +240,15 @@ const AflSmith = struct {
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             }),
-            .clear => .{ .clear = idx },
-            .run_optimize => .{ .run_optimize = idx },
-            .shrink_to_fit => .{ .shrink_to_fit = idx },
-            .portable_serialize => .{ .portable_serialize = idx },
-            .frozen_serialize => .{ .frozen_serialize = idx },
-            .equals => .{ .equals = idx },
+            inline .clear,
+            .run_optimize,
+            .shrink_to_fit,
+            .portable_serialize,
+            .frozen_serialize,
+            .equals,
+            .minimum,
+            .maximum,
+            => |t| @unionInit(FuzzOp, @tagName(t), idx),
             .contains => .{ .contains = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
             .contains_many => {
                 const len = smith.valueRangeLessThan(u8, 0, @intCast(outvals.len + 1)) orelse return null;
@@ -336,8 +344,11 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(o.pick_existing);
             try writer.writeInt(u32, o.val, .little);
         },
-        .intersect, .merge => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src1 }),
-        .xor, .andnot => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
+        .intersect,
+        .merge,
+        .xor,
+        .andnot,
+        => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .contains => |o| try writer.writeInt(u32, o.val, .little),
         .contains_many => |o| {
             try writer.writeByte(@intCast(o.vals.len));
@@ -349,6 +360,8 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .portable_serialize,
         .frozen_serialize,
         .equals,
+        .minimum,
+        .maximum,
         => {},
     }
 }
@@ -381,10 +394,12 @@ fn perform_op(
         .clear,
         .run_optimize,
         .shrink_to_fit,
+        => fuzzprint("{},\n", .{op}),
         .portable_serialize,
         .frozen_serialize,
         .equals,
-        => fuzzprint("{},\n", .{op}),
+        .minimum,
+        .maximum,
         .contains,
         .contains_many,
         => {}, // no print, not part of reproduction
@@ -568,6 +583,28 @@ fn perform_op(
             }
         },
         .equals => |idx| try testing.expect(rs[idx].equals(rs[idx])),
+        .minimum => |idx| {
+            try std.testing.expectEqual(
+                if (is_cr)
+                    c.roaring_bitmap_minimum(oracles[idx])
+                else if (oracles[idx].count() == 0)
+                    std.math.maxInt(u32)
+                else
+                    mem.min(u32, oracles[idx].keys()),
+                rs[idx].minimum(),
+            );
+        },
+        .maximum => |idx| {
+            try std.testing.expectEqual(
+                if (is_cr)
+                    c.roaring_bitmap_maximum(oracles[idx])
+                else if (oracles[idx].count() == 0)
+                    0
+                else
+                    mem.max(u32, oracles[idx].keys()),
+                rs[idx].maximum(),
+            );
+        },
         // don't print, not part of reproduction
         .contains => |o| {
             try std.testing.expectEqual(

@@ -3724,6 +3724,75 @@ pub const Container = packed struct(u64) {
         }
         return outpos;
     }
+
+    /// Returns the smallest value (assumes not empty)
+    pub fn bitset_container_minimum(words: [*]align(C.BLOCK_ALIGN) const u64) u16 {
+        for (words[0..C.BITSET_CONTAINER_SIZE_IN_WORDS]) |*w| {
+            if (w.* != 0) {
+                const r = @ctz(w.*);
+                return r + @as(u16, @intCast(w - words)) * 64;
+            }
+        }
+        return std.math.maxInt(u16);
+    }
+
+    /// Returns the smallest value (assumes not empty)
+    pub fn bitset_container_maximum(words: [*]align(C.BLOCK_ALIGN) const u64) u16 {
+        var i: u16 = C.BITSET_CONTAINER_SIZE_IN_WORDS;
+        while (true) {
+            i -= 1;
+            const w = words[i];
+            if (w != 0) {
+                const r = @clz(w);
+                return i * 64 + 63 - r;
+            }
+        }
+        return 0;
+    }
+
+    /// Returns the smallest value (assumes not empty)
+    pub fn array_container_minimum(arr: Container, array: [*]align(C.BLOCK_ALIGN) const u16) u16 {
+        if (arr.cardinality == 0) return 0;
+        return array[0];
+    }
+
+    /// Returns the largest value (assumes not empty)
+    pub fn array_container_maximum(arr: Container, array: [*]align(C.BLOCK_ALIGN) const u16) u16 {
+        if (arr.cardinality == 0) return 0;
+        return array[arr.cardinality - 1];
+    }
+
+    /// Returns the smallest value (assumes not empty)
+    pub fn run_container_minimum(run: Container, runs: [*]align(C.BLOCK_ALIGN) const Rle16) u16 {
+        if (run.cardinality == 0) return 0;
+        return runs[0].value;
+    }
+
+    /// Returns the largest value (assumes not empty)
+    pub fn run_container_maximum(run: Container, runs: [*]align(C.BLOCK_ALIGN) const Rle16) u16 {
+        if (run.cardinality == 0) return 0;
+        return runs[run.cardinality - 1].value + runs[run.cardinality - 1].length;
+    }
+
+    pub fn minimum(c: Container, r: Bitmap) u16 {
+        // TODO // c = container_unwrap_shared(c);
+        return switch (c.typecode) {
+            .bitset => bitset_container_minimum(c.blocks_as(.bitset, r).ptr),
+            .array => return c.array_container_minimum(c.blocks_as(.array, r).ptr),
+            .run => return c.run_container_minimum(c.blocks_as(.run, r).ptr),
+            else => unreachable,
+        };
+    }
+
+    pub fn maximum(c: Container, r: Bitmap) u16 {
+        // TODO // c = container_unwrap_shared(c);
+        return switch (c.typecode) {
+            .bitset => bitset_container_maximum(c.blocks_as(.bitset, r).ptr),
+            .array => return c.array_container_maximum(c.blocks_as(.array, r).ptr),
+            .run => return c.run_container_maximum(c.blocks_as(.run, r).ptr),
+            else => unreachable,
+        };
+    }
 };
 
 const std = @import("std");

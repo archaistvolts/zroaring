@@ -1746,6 +1746,29 @@ pub fn andnot(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !B
     return answer;
 }
 
+/// returns the smallest value in the set or UINT32_MAX if the set is empty.
+pub fn minimum(bm: Bitmap) u32 {
+    if (bm.array.ptr(.len).* > 0) {
+        const c = bm.array.ptr(.containers)[0];
+        const key: u32 = bm.array.ptr(.keys)[0];
+        const lowvalue = c.minimum(bm);
+        return lowvalue | (key << 16);
+    }
+    return std.math.maxInt(u32);
+}
+
+/// returns the greatest value in the set or 0 if the set is empty.
+pub fn maximum(bm: Bitmap) u32 {
+    const len = bm.array.ptr(.len).*;
+    if (len > 0) {
+        const container = bm.array.ptr(.containers)[len - 1];
+        const key: u32 = bm.array.ptr(.keys)[len - 1];
+        const lowvalue = container.maximum(bm);
+        return lowvalue | (key << 16);
+    }
+    return 0;
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata
