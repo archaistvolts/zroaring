@@ -604,8 +604,10 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const keys = r.array.ptr(.keys)[0..len];
     const blockoffset = r.array.ptr(.blockslen).*;
     errdefer { // maintain initial lens on error
-        r.array.ptr(.len).* = len;
-        r.array.ptr(.blockslen).* = blockoffset;
+        if (!r.is_empty()) {
+            r.array.ptr(.len).* = len;
+            r.array.ptr(.blockslen).* = blockoffset;
+        }
     }
     const suffix_length = misc.count_greater(keys, @truncate(max_key));
     const prefix_length = misc.count_less(keys[0 .. len - suffix_length], @truncate(min_key));
@@ -1052,16 +1054,16 @@ pub fn realloc_array(
     };
     const lens = r.array.calcLens();
     const size = Model.calcSize(lens);
-    // if (@import("build-options").trace) {
-    //     const newsize = Model.calcSize(newlens);
-    //     trace(@src(), "lens:old/new={},{}/{},{} sizes={B:.1}/{B:.1}", .{ lens.capacity, lens.blockscapacity, newlens.capacity, newlens.blockscapacity, size, newsize });
-    // }
     if (r.is_empty()) {
         r.array = try Model.create(allocator, newlens);
         zero_init(r.array);
         return;
     }
 
+    errdefer {
+        allocator.free(r.array.asBytes()[0..size]);
+        r.array = empty.array;
+    }
     // TODO faster to realloc and move fields. when new size is larger?
     const newarray = try Model.create(allocator, newlens);
     r.copy_to(newarray);

@@ -785,9 +785,9 @@ fn roaring_bitmap_printf_describe(r: [*c]c.roaring_bitmap_t, printf: anytype) vo
     printf("}}", .{});
 }
 
-fn cr_perform_ops(_: void, ops: []const FuzzOp) !void {
+fn cr_perform_ops(allocator: mem.Allocator, ops: []const FuzzOp) !void {
     var zrs: [NUM_BITMAPS]Bitmap = @splat(.empty);
-    defer for (&zrs) |*x| x.deinit(testgpa);
+    defer for (&zrs) |*x| x.deinit(allocator);
     var crs: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;
     for (&crs) |*o| o.* = c.roaring_bitmap_create().?;
     defer for (crs) |o| c.roaring_bitmap_free(o);
@@ -795,7 +795,7 @@ fn cr_perform_ops(_: void, ops: []const FuzzOp) !void {
     errdefer for (zrs) |zr| std.debug.print("{f}\n", .{zr.fmtLong()});
     fuzzprint("\n\n--  perform ops  --\n", .{});
     for (ops) |op| {
-        try perform_op(op, &crs, &zrs, testgpa);
+        try perform_op(op, &crs, &zrs, allocator);
     }
 }
 
@@ -805,44 +805,44 @@ fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
 }
 
 test "crash reproductions" {
-    try perform_crash_ops({}, cr_perform_ops);
+    try perform_crash_ops(testgpa, cr_perform_ops);
 }
 
-pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp) anyerror!void) !void {
-    try ops_fn(ctx, &.{
+pub fn perform_crash_ops(allocator: mem.Allocator, ops_fn: *const fn (mem.Allocator, []const FuzzOp) anyerror!void) !void {
+    try ops_fn(allocator, &.{
         .{ .add_many = .{ .idx = 0, .vals = &.{ 98128, 17714 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 0, 100 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 28939 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 58, 109 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 15, 158 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6, 140 } } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 13 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 37022 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 0, 169 } } },
         .{ .add = .{ .idx = 0, .val = 56276 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 79, 196 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 51, 194 } } },
         .{ .add = .{ .idx = 0, .val = 10 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_many = .{ .idx = 0, .vals = &.{ 46535, 45534 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11, 181 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 166, 192 } } },
         .{ .add = .{ .idx = 0, .val = 0 } },
@@ -861,16 +861,16 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 28 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 39, 139 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 12690, 12753 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 62568 } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 62568 } },
     });
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 166, 192 } } },
         .{ .add = .{ .idx = 0, .val = 0 } },
@@ -889,7 +889,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 28 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 50119 } },
         .{ .add = .{ .idx = 0, .val = 62568 } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 62568 } },
@@ -901,7 +901,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 49721 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 49191 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 66, 136 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 13544, 13684 } } },
@@ -913,7 +913,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 512 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6764, 6894 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 13773, 13854 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6766, 6909 } } },
@@ -931,7 +931,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 0, .vals = &.{ 53393, 21069, 57726, 19617, 78427, 65705, 2198, 7957, 66342, 85444, 95090, 52246, 30486 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6111, 6209 } } },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 25060, 63400, 74045, 98806, 36081 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 2476, 2573 } } },
@@ -952,21 +952,21 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 0, .vals = &.{ 16912, 74410, 93120, 59285 } } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add = .{ .idx = 0, .val = 26360 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7557, 7640 } } },
         .{ .run_optimize = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 66305, 6151, 80245, 13872, 7641, 7641 } } },
     });
 
-    try ops_fn(ctx, &.{ // run optimize run to array
+    try ops_fn(allocator, &.{ // run optimize run to array
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 13042, 13044 } } },
         .{ .add = .{ .idx = 0, .val = 62034 } },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 56204, 13694, 95054, 72879 } } },
         .{ .run_optimize = 0 },
     });
 
-    try ops_fn(ctx, &.{ // run_container_add_range_nruns stale ptr
+    try ops_fn(allocator, &.{ // run_container_add_range_nruns stale ptr
         .{ .add = .{ .idx = 0, .val = 86940 } },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 78327, 33246, 28925, 27574, 3773, 75436, 90838 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 12485, 12562 } } },
@@ -978,7 +978,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6425, 6597 } } },
     });
 
-    try ops_fn(ctx, &.{ // break run in two when blockslen==blockscapacity
+    try ops_fn(allocator, &.{ // break run in two when blockslen==blockscapacity
         .{ .add_many = .{ .idx = 0, .vals = &.{ 71302, 41283, 5184, 53083 } } },
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 3356, 3443 } } },
@@ -990,7 +990,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 1680 } },
     });
 
-    try ops_fn(ctx, &.{ // convert_run_to_efficient_container integer overflow
+    try ops_fn(allocator, &.{ // convert_run_to_efficient_container integer overflow
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 8404, 8449 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 8349, 8534 } } },
@@ -1011,7 +1011,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .run_optimize = 0 },
     });
 
-    try ops_fn(ctx, &.{ // add_range_closed blockoffset counting bug
+    try ops_fn(allocator, &.{ // add_range_closed blockoffset counting bug
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 269193, 269194 } } },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 573007, 65042, 934201, 955639, 952480, 934201 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 295, 1717 } } },
@@ -1023,26 +1023,26 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 700979, 701862 } } },
     });
 
-    try ops_fn(ctx, &.{ // add_container_blocks overflow, uninit container bug
+    try ops_fn(allocator, &.{ // add_container_blocks overflow, uninit container bug
         .{ .add = .{ .idx = 0, .val = 602334 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 589467, 589986 } } },
     });
 
-    try ops_fn(ctx, &.{ // create_range: array unimplemented
+    try ops_fn(allocator, &.{ // create_range: array unimplemented
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 654535, 655360 } } },
     });
 
-    try ops_fn(ctx, &.{ // create range: overflow
+    try ops_fn(allocator, &.{ // create range: overflow
         .{ .add = .{ .idx = 0, .val = 74473 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 262143, 262845 } } },
     });
 
-    try ops_fn(ctx, &.{ // container_add_range bitset
+    try ops_fn(allocator, &.{ // container_add_range bitset
         .{ .add = .{ .idx = 0, .val = 21571 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 230, 5661 } } },
     });
 
-    try ops_fn(ctx, &.{ // container_add_range bitset
+    try ops_fn(allocator, &.{ // container_add_range bitset
         .{ .add_many = .{ .idx = 0, .vals = &.{ 129631, 93925 } } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 87, 7994 } } },
@@ -1051,14 +1051,14 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 102782, 107350 } } },
     });
 
-    try ops_fn(ctx, &.{ // convert_run_optimize, bitset, update blockslen
+    try ops_fn(allocator, &.{ // convert_run_optimize, bitset, update blockslen
         .{ .add = .{ .idx = 0, .val = 21571 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 230, 5482 } } },
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 355102, 356802 } } },
     });
 
-    try ops_fn(ctx, &.{ // array_container_grow: use calc_capacity()
+    try ops_fn(allocator, &.{ // array_container_grow: use calc_capacity()
         .{ .add_many = .{ .idx = 0, .vals = &.{ 129631, 93925 } } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 87, 88 } } },
@@ -1067,7 +1067,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 102782, 103370 } } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: popcount not ctz
+    try ops_fn(allocator, &.{ // bitset_lenrange_cardinality: popcount not ctz
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 269193, 269194 } } },
         .{ .clear = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 246143, 479398, 519512, 479398, 2304, 93925 } } },
@@ -1089,19 +1089,19 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 102455, 103396 } } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: u64 to avoid overflow
+    try ops_fn(allocator, &.{ // bitset_lenrange_cardinality: u64 to avoid overflow
         .{ .add = .{ .idx = 0, .val = 75944 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 86940, 94246 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 87951, 94779 } } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_set_lenrange: use wrapping math to avoid overflow
+    try ops_fn(allocator, &.{ // bitset_set_lenrange: use wrapping math to avoid overflow
         .{ .add = .{ .idx = 0, .val = 29614 } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 63252, 71190 } } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
+    try ops_fn(allocator, &.{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
         .{ .add = .{ .idx = 0, .val = 232231 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11141, 11245 } } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 11245 } },
@@ -1109,7 +1109,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 192113, 199991 } } },
     });
 
-    try ops_fn(ctx, &.{ // remove_at_index @memmove length bug
+    try ops_fn(allocator, &.{ // remove_at_index @memmove length bug
         .{ .add = .{ .idx = 0, .val = 956902 } },
         .{ .shrink_to_fit = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 547367, 43854 } } },
@@ -1122,7 +1122,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 164928 } },
     });
 
-    try ops_fn(ctx, &.{ // Container.remove: skip assert_valid
+    try ops_fn(allocator, &.{ // Container.remove: skip assert_valid
         .{ .clear = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 188901, 624734, 783759 } } },
         .{ .shrink_to_fit = 0 },
@@ -1133,12 +1133,12 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 133236 } },
     });
 
-    try ops_fn(ctx, &.{
+    try ops_fn(allocator, &.{
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 720895, 723787 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 654236, 733271 } } },
     });
 
-    try ops_fn(ctx, &.{ // convert_run_optimize: blockslen double increment
+    try ops_fn(allocator, &.{ // convert_run_optimize: blockslen double increment
         .{ .add_many = .{ .idx = 0, .vals = &.{ 624980, 288844, 195140, 851109, 442054, 90431 } } },
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 973441, 976611 } } },
@@ -1161,7 +1161,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .run_optimize = 0 },
     });
 
-    try ops_fn(ctx, &.{ // bitset_container_clone crash
+    try ops_fn(allocator, &.{ // bitset_container_clone crash
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 365, 423 } } },
         .{ .portable_serialize = 1 },
@@ -1180,7 +1180,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // run_bitset_container_intersection handle uninit
+    try ops_fn(allocator, &.{ // run_bitset_container_intersection handle uninit
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 166, 192 } } },
         .{ .add = .{ .idx = 1, .val = 0 } },
@@ -1195,7 +1195,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_extract_intersection_setbits_uint16 overflow
+    try ops_fn(allocator, &.{ // bitset_extract_intersection_setbits_uint16 overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 35376531, 23019426, 96611749, 99425048, 22409478, 9441758 } } },
         .{ .clear = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 50517783, 87812310, 9441758, 14633378, 33887403 } } },
@@ -1204,7 +1204,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // run_bitset_container_intersection handle empty intersection
+    try ops_fn(allocator, &.{ // run_bitset_container_intersection handle empty intersection
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 9471775, 9561093 } } },
         .{ .clear = 0 },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 35376531, 23019426, 96611749, 99425048, 22409478, 9441758 } } },
@@ -1212,7 +1212,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 199973, 294236 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
-    try ops_fn(ctx, &.{ // add_range_closed set shift_tail gap to uninit
+    try ops_fn(allocator, &.{ // add_range_closed set shift_tail gap to uninit
         .{ .add_many = .{ .idx = 1, .vals = &.{ 83277985, 22079185, 12386, 98090159, 1409811, 46078391 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 59136871, 59264939 } } },
         .{ .clear = 0 },
@@ -1313,13 +1313,13 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 9085, 293552 } } },
     });
 
-    try ops_fn(ctx, &.{ // simple union
+    try ops_fn(allocator, &.{ // simple union
         .{ .add_many = .{ .idx = 1, .vals = &.{ 83277985, 22079185, 12386, 59147363, 1409811, 46078391 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 59136871, 59264939 } } },
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // run_container_union overflow
+    try ops_fn(allocator, &.{ // run_container_union overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
         .{ .run_optimize = 1 },
@@ -1360,7 +1360,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // run/bitset merge?
+    try ops_fn(allocator, &.{ // run/bitset merge?
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
         .{ .run_optimize = 1 },
@@ -1388,7 +1388,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // array/bitset merge?
+    try ops_fn(allocator, &.{ // array/bitset merge?
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
         .{ .run_optimize = 1 },
@@ -1414,7 +1414,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // run/bitset merge: run_container_create_given_capacity overflow nblocks_minus1
+    try ops_fn(allocator, &.{ // run/bitset merge: run_container_create_given_capacity overflow nblocks_minus1
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
         .{ .run_optimize = 1 },
@@ -1429,7 +1429,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset/run merge
+    try ops_fn(allocator, &.{ // bitset/run merge
         .{ .add_many = .{ .idx = 1, .vals = &.{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
         .{ .run_optimize = 1 },
@@ -1444,26 +1444,26 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .merge = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_container_create missing clear
+    try ops_fn(allocator, &.{ // bitset_container_create missing clear
         .{ .add = .{ .idx = 1, .val = 30060 } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 8356, 11049 } } },
         .{ .shrink_to_fit = 1 },
         .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // unclassified
+    try ops_fn(allocator, &.{ // unclassified
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 6, 140 } } },
         .{ .remove = .{ .idx = 1, .pick_existing = 75, .val = 63225675 } },
         .{ .merge = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // run_container_xor overflow
+    try ops_fn(allocator, &.{ // run_container_xor overflow
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7168203, 7188028 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7085752, 7177876 } } },
         .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_bitset_container_xor overflow
+    try ops_fn(allocator, &.{ // bitset_bitset_container_xor overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 71718449, 58120711, 93799294, 82023683 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 81247268, 81516798 } } },
         .{ .run_optimize = 0 },
@@ -1480,7 +1480,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18529397, 18801035 } } },
         .{ .xor = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     });
-    try ops_fn(ctx, &.{ //
+    try ops_fn(allocator, &.{ //
         .{ .add_many = .{ .idx = 1, .vals = &.{ 71718449, 58120711, 93799294, 82023683 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 81247268, 81516798 } } },
         .{ .run_optimize = 0 },
@@ -1498,7 +1498,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // array_array_container_xor: wrong source bitmap
+    try ops_fn(allocator, &.{ // array_array_container_xor: wrong source bitmap
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 58120711, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18529397, 18747336 } } },
         .{ .add_many = .{ .idx = 1, .vals = &.{ 82023683, 12430017, 7614144, 64009518 } } },
@@ -1514,7 +1514,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // ?
+    try ops_fn(allocator, &.{ // ?
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18745974 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1524,7 +1524,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_array_container_ixor segfault
+    try ops_fn(allocator, &.{ // bitset_array_container_ixor segfault
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18760729 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1540,7 +1540,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // run_bitset_container_xor oob
+    try ops_fn(allocator, &.{ // run_bitset_container_xor oob
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18807558 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1556,7 +1556,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ // run_bitset_container_andnot overflow
+    try ops_fn(allocator, &.{ // run_bitset_container_andnot overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785, 37353389, 99430495, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18788865 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1577,7 +1577,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_array_container_iandnot -> bitset_clear_list math bug
+    try ops_fn(allocator, &.{ // bitset_array_container_iandnot -> bitset_clear_list math bug
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785, 37353389, 18755785, 79900792, 18871839 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18589719, 18788865 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1598,7 +1598,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // bitset_run_container_andnot overflow
+    try ops_fn(allocator, &.{ // bitset_run_container_andnot overflow
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7614144, 14790787, 18755785, 37353389, 99430495, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18494244, 18788865 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1619,7 +1619,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     });
 
-    try ops_fn(ctx, &.{ //
+    try ops_fn(allocator, &.{ //
         .{ .add = .{ .idx = 1, .val = 78087016 } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7169557, 7169717 } } },
         .{ .add = .{ .idx = 1, .val = 7205703 } },
@@ -1629,7 +1629,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // differing container types at after and/or/xor/andnot
+    try ops_fn(allocator, &.{ // differing container types at after and/or/xor/andnot
         .{ .add_many = .{ .idx = 1, .vals = &.{ 37943695, 57909767, 18755785, 18871839, 75740164, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 18539809, 18746375 } } },
         .{ .intersect = .{ .idx = 0, .src1 = 1, .src2 = 1 } },
@@ -1670,43 +1670,43 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .frozen_serialize = 0 },
     });
 
-    try ops_fn(ctx, &.{ // bitset_container_rank: overflow
+    try ops_fn(allocator, &.{ // bitset_container_rank: overflow
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7093678, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 42284429, 42682699 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7202188, 7267639 } } },
         .{ .rank = .{ .idx = 0, .val = 7183487 } },
     });
 
-    try ops_fn(ctx, &.{ // is_subset correctness
+    try ops_fn(allocator, &.{ // is_subset correctness
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 488, 540 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 547, 33516 } } },
         .{ .is_subset = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     });
 
-    try ops_fn(ctx, &.{ // or_inplace correctness
+    try ops_fn(allocator, &.{ // or_inplace correctness
         .{ .add_many = .{ .idx = 1, .vals = &.{ 7182793, 23187854, 24741459, 89758140, 39202897 } } },
         .{ .add_many = .{ .idx = 0, .vals = &.{ 7182793, 54568437, 74860418, 89758140, 32761868, 57326811 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7144866, 7177608 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 0 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace correctness
+    try ops_fn(allocator, &.{ // or_inplace correctness
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7077888, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7077888, 7147593 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7145822, 7525739 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 0 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace correctness
+    try ops_fn(allocator, &.{ // or_inplace correctness
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7086795, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7145822, 7177947 } } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace stale pointer
+    try ops_fn(allocator, &.{ // or_inplace stale pointer
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7105944, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7176656, 7487236 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7208886, 7267639 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 0 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace stale pointer
+    try ops_fn(allocator, &.{ // or_inplace stale pointer
         .{ .add = .{ .idx = 0, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7169293, 7172107 } } },
         .{ .add = .{ .idx = 1, .val = 21340133 } },
@@ -1714,19 +1714,19 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 28974493 } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 0 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace run/array large capacity
+    try ops_fn(allocator, &.{ // or_inplace run/array large capacity
         .{ .add = .{ .idx = 0, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7169293, 7171383 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7144050, 7145330 } } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace run,run: wrong cardinality
+    try ops_fn(allocator, &.{ // or_inplace run,run: wrong cardinality
         .{ .add = .{ .idx = 0, .val = 55637861 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7169293, 7171383 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7144050, 7145330 } } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace run,run: run_container_append_first stale ptr
+    try ops_fn(allocator, &.{ // or_inplace run,run: run_container_append_first stale ptr
         .{ .add_many = .{ .idx = 1, .vals = &.{ 50997344, 0, 70597498, 48629650, 36986463, 12073007 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 22324, 143502 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11534795, 12073690 } } },
@@ -1753,22 +1753,22 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace array,array
+    try ops_fn(allocator, &.{ // or_inplace array,array
         .{ .add = .{ .idx = 1, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7169557, 7169717 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace array,array: array_array_container_inplace_union: stale pointer
+    try ops_fn(allocator, &.{ // or_inplace array,array: array_array_container_inplace_union: stale pointer
         .{ .add = .{ .idx = 1, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7166202, 7169717 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: array_array_container_inplace_union: capacity too big
+    try ops_fn(allocator, &.{ // or_inplace: array_array_container_inplace_union: capacity too big
         .{ .add = .{ .idx = 1, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7168653, 7169717 } } },
         .{ .or_inplace = .{ .idx = 1, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: run,array: stale pointer
+    try ops_fn(allocator, &.{ // or_inplace: run,array: stale pointer
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7077888, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7077888, 7147593 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7145822, 7525739 } } },
@@ -1777,7 +1777,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 57154776 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: array,array container cardinality
+    try ops_fn(allocator, &.{ // or_inplace: array,array container cardinality
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7077888, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7077888, 7147593 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7145822, 7525739 } } },
@@ -1786,7 +1786,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: run,bitset - expected bitset found run
+    try ops_fn(allocator, &.{ // or_inplace: run,bitset - expected bitset found run
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7077888, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7077888, 7147593 } } },
         .{ .add_range_closed = .{ .idx = 1, .val = .{ 7145822, 7525739 } } },
@@ -1795,7 +1795,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .xor = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: run_container_union_inplace: stale pointer
+    try ops_fn(allocator, &.{ // or_inplace: run_container_union_inplace: stale pointer
         .{ .add_many = .{ .idx = 1, .vals = &.{ 50997344, 0, 70597498, 48629650, 36986463, 12073007 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 22324, 143502 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11534795, 12073690 } } },
@@ -1822,7 +1822,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .andnot = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 0 } },
     });
-    try ops_fn(ctx, &.{ // or_inplace: run_array_conatiner_inplace_union: expected run found array
+    try ops_fn(allocator, &.{ // or_inplace: run_array_conatiner_inplace_union: expected run found array
         .{ .add_many = .{ .idx = 1, .vals = &.{ 50997344, 32761868, 7182793, 70597498, 53196648, 25068392 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7104820, 7145658 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 10109562, 10467748 } } },
@@ -1847,7 +1847,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add = .{ .idx = 0, .val = 89106020 } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // array_container_grow: stale pointer
+    try ops_fn(allocator, &.{ // array_container_grow: stale pointer
         .{ .add_many = .{ .idx = 1, .vals = &.{ 50997344, 0, 70597498, 48629650, 36986463, 55491585 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 63518, 160990 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11464487, 11774983 } } },
@@ -1880,7 +1880,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .add_many = .{ .idx = 1, .vals = &.{ 0, 45680492, 12537576, 7182793, 42248642 } } },
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
     });
-    try ops_fn(ctx, &.{ // array_container_grow: extend_array by nblocks() + moreblocks
+    try ops_fn(allocator, &.{ // array_container_grow: extend_array by nblocks() + moreblocks
         .{ .add_many = .{ .idx = 1, .vals = &.{ 50997344, 0, 70597498, 48629650, 36986463, 55491585 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 34031381, 34087663 } } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 11464487, 11774983 } } },
@@ -1914,7 +1914,7 @@ pub fn perform_crash_ops(ctx: anytype, ops_fn: fn (@TypeOf(ctx), []const FuzzOp)
         .{ .or_inplace = .{ .idx = 0, .src1 = 1 } },
         .{ .add = .{ .idx = 0, .val = 73772458 } },
     });
-    try ops_fn(ctx, &.{ // Container.is_full: array cardinality
+    try ops_fn(allocator, &.{ // Container.is_full: array cardinality
         .{ .add = .{ .idx = 0, .val = 7205703 } },
         .{ .add_range_closed = .{ .idx = 0, .val = .{ 7169293, 7172107 } } },
         .{ .add = .{ .idx = 1, .val = 7205703 } },
@@ -1929,6 +1929,13 @@ test "crash0" {
     // const ops_fn = cr_perform_ops;
     // const ctx = {};
 
+}
+
+test "allocation failures from crash reproductions" {
+    if (!@import("build-options").run_slow_tests) return error.SkipZigTest;
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try testing.checkAllAllocationFailures(testgpa, perform_crash_ops, .{ {}, cr_perform_ops });
 }
 
 const std = @import("std");
