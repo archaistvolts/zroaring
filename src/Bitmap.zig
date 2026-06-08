@@ -23,6 +23,13 @@ pub const Array = extern struct {
     blocks: flexible.Array(Block, .blockscapacity),
 };
 
+/// Context for bulk add operations.  Must be default init before use.
+pub const BulkContext = struct {
+    container: *Container = @constCast(&Container.uninit),
+    idx: u32 = 0,
+    key: u32 = 0,
+};
+
 pub const Model = flexible.Struct(Array);
 const emptybuf: Model.Buf(.{
     .capacity = 0,
@@ -270,8 +277,9 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize 
     trace(@src(), "vals={}:{?}..{?}", .{ vals.len, if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null });
     trace(@src(), "{f}", .{r.fmtLong()});
     var ret: usize = 0;
+    var ctx: BulkContext = .{};
     for (vals) |v| {
-        ret += @intFromBool(try r.add_checked(allocator, v));
+        ret += @intFromBool(try r.add_checked_bulk(allocator, &ctx, v));
     }
     return ret;
 }
@@ -325,6 +333,80 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     }
 
     assert(r.contains(value));
+}
+
+/// this is like roaring_bitmap_add, but it populates pointer arguments in such a
+/// way that we can recover the container touched, which, in turn can be used to
+/// accelerate some functions (when you repeatedly need to add to the same
+/// container)
+fn containerptr_add(r: *Bitmap, allocator: mem.Allocator, val: u32, index: *u32) !*Container {
+    const key: u16 = @truncate(val >> 16);
+    const i = misc.binarySearch(r.slice(.keys, .len), key);
+    if (i >= 0) {
+        // TODO //  ra_unshare_container_at_index(ra, @truncate(i));
+        const iu: u32 = @bitCast(i);
+        var c = &r.array.ptr(.containers)[iu];
+        const c2 = try c.add(allocator, r, @truncate(val));
+        c = &r.array.ptr(.containers)[iu];
+        index.* = iu;
+        if (c2 != c.*) {
+            c.deinit_blocks(r.*);
+            r.array.ptr(.containers)[iu] = c2;
+            return &r.array.ptr(.containers)[iu];
+        } else {
+            return c;
+        }
+    } else {
+        const blockslen = r.array.ptr(.blockslen).*;
+        const capacity = r.array.ptr(.capacity).*;
+        if (r.array.ptr(.len).* == capacity) {
+            try r.realloc_array(allocator, capacity + 1, blockslen + 1);
+        }
+
+        index.* = @intCast(-i - 1);
+        try r.insert_new_key_value_at(allocator, key, .{
+            .blockoffset = @intCast(blockslen),
+            .nblocks_minus1 = 0,
+            .cardinality = 0,
+            .typecode = .array,
+        }, index.*);
+        const newac = &r.array.ptr(.containers)[index.*];
+        _ = try newac.add(allocator, r, @truncate(val));
+        return &r.array.ptr(.containers)[index.*];
+    }
+}
+
+/// similar to `add_bulk_impl` from croaring
+pub fn add_checked_bulk(
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    context: *BulkContext,
+    val: u32,
+) !bool {
+    const key: u16 = @truncate(val >> 16);
+    if (context.container.* == Container.uninit or context.key != key) { // not found
+        context.container = try r.containerptr_add(allocator, val, &context.idx);
+        context.key = key;
+        return true;
+    } else {
+        // no need to seek the container, it is at hand
+        // because we already have the container at hand, we can do the
+        // insertion directly, bypassing roaring_bitmap_add
+        const card = context.container.cardinality;
+        const c2 = try context.container.add(allocator, r, @truncate(val));
+        context.container = &r.array.ptr(.containers)[context.idx];
+        if (c2 != context.container.*) {
+            // rare instance when we need to change the container
+            context.container.deinit_blocks(r.*);
+            r.array.ptr(.containers)[context.idx] = c2;
+            context.container.* = c2;
+        }
+        return context.container.cardinality != card;
+    }
+}
+
+pub fn add_bulk(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext, val: u32) !void {
+    _ = try r.add_checked_bulk(allocator, context, val);
 }
 
 fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
@@ -702,7 +784,7 @@ pub fn get_key_index(r: Bitmap, key: u16) i32 {
     return misc.binarySearch(keys, key);
 }
 
-/// returns the index of x, if not exist return -1.
+/// returns the index of x or -1 if not found.
 pub fn get_index(r: Bitmap, x: u32) i64 {
     var index: i64 = 0;
     const key: u16 = @truncate(x >> 16);
