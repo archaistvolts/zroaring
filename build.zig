@@ -68,7 +68,7 @@ pub fn build(b: *std.Build) !void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/fuzz.zig"),
                 .target = target,
-                .optimize = .Debug,
+                .optimize = .ReleaseSafe,
                 .link_libc = true,
                 .stack_check = false,
                 .fuzz = true,

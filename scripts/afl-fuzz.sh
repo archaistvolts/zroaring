@@ -2,7 +2,7 @@
 
 set -e
 
-zig build -Dfuzz-exe # --verbose
+zig build -Dfuzz-exe # -Dcpu=baseline # --verbose
 
 echo "NOTE: sudo required to appease AFL performance warnings"
 

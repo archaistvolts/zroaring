@@ -6,7 +6,10 @@ pub fn main(init: std.process.Init) !void {
 
     var file_index: usize = 0;
     const ctx: fuzz.AflCtx = .{ .dir = dir, .io = io, .file_index = &file_index };
-    try fuzz.perform_crash_ops(ctx, fuzz.writeOpFile);
+    const crash_corpus: []const []const fuzz.FuzzOp = @import("fuzz-crash-corpus.zon");
+    for (crash_corpus) |ops| {
+        try fuzz.writeOpFile(ctx, ops);
+    }
 }
 
 const std = @import("std");
