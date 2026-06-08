@@ -6,6 +6,8 @@ pub const DEFAULT_MAX_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(u16));
 pub const MAX_KEY_CARDINALITY = MAX_CONTAINER_SIZE * 8;
 pub const MAX_CONTAINERS = MAX_KEY_CARDINALITY;
 pub const MAX_VALUE_CARDINALITY = MAX_KEY_CARDINALITY * MAX_KEY_CARDINALITY;
+// 2048 = 8192/4
+pub const MAX_RUN_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Rle16));
 
 /// Length in bytes of a Block. Same as `@sizeOf(root.Block)`.
 /// 32 with avx2.
@@ -29,6 +31,7 @@ pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
 pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(root.Container.Cardinality);
+pub const OR_BITSET_CONVERSION_TO_FULL = false; // TODO build option
 
 pub const IS_X86 = builtin.cpu.arch.isX86();
 pub const HAS_AVX2 = if (IS_X86)

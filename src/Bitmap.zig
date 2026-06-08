@@ -335,24 +335,6 @@ fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
     r.array.ptr(.len).* += 1;
 }
 
-fn append_first(r: Bitmap, c: *Container, container_value: anytype) void {
-    switch (@TypeOf(container_value)) {
-        Rle16 => {
-            assert(c.typecode == .run);
-            const runs = c.blocks_as(.run, r);
-            runs[c.cardinality] = container_value;
-            c.cardinality += 1;
-        },
-        u16 => {
-            assert(c.typecode == .array);
-            const array = c.blocks_as(.array, r);
-            array[c.cardinality] = container_value;
-            c.cardinality += 1;
-        },
-        else => unreachable, // unsupported type
-    }
-}
-
 /// The new container contains the range [start,stop).
 /// It is required that stop>start, the caller is responsible for this check.
 /// It is required that stop <= (1<<16), the caller is responsibe for this
@@ -367,7 +349,7 @@ pub fn create_range(
     switch (tc) {
         .run => {
             var c = try Container.run_container_create_given_capacity(allocator, 1, r);
-            r.append_first(&c, Rle16{
+            c.append_first(r.*, Rle16{
                 .value = @truncate(start),
                 .length = @truncate(stop - start - 1),
             });
@@ -461,24 +443,6 @@ fn bitset_lenrange_cardinality(
     return @intCast(answer);
 }
 
-/// The new container consists of a single run [start,stop).
-/// It is required that stop>start, the caller is responsability for this check.
-/// It is required that stop <= (1<<16), the caller is responsability for this
-/// check. The cardinality of the created container is stop - start.
-fn run_container_create_range(
-    allocator: mem.Allocator,
-    start: u32,
-    stop: u32,
-    r: *Bitmap,
-) !Container {
-    var rc = try Container.run_container_create_given_capacity(allocator, 1, r);
-    r.append_first(&rc, root.Rle16{
-        .value = @intCast(start),
-        .length = @intCast(stop - start - 1),
-    });
-    return rc;
-}
-
 /// Adds all values in range [min,max] using hint:
 ///   nvals_less is the number of array values less than $min
 ///   nvals_greater is the number of array values greater than $max
@@ -566,7 +530,7 @@ fn container_add_range(
                 bitset_lenrange_cardinality(words.ptr, min, max - min);
 
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
-                return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
+                return try Container.run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else {
                 misc.bitset_set_lenrange(words.ptr, min, max - min);
                 c.cardinality = @intCast(union_cardinality);
@@ -582,7 +546,7 @@ fn container_add_range(
             const union_cardinality =
                 nvals_less + (max - min + 1) + nvals_greater;
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
-                return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
+                return try Container.run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
             } else if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
                 try r.array_container_add_range_nvals(allocator, c, min, max, nvals_less, nvals_greater);
                 return r.array.ptr(.containers)[cid];
@@ -1633,6 +1597,67 @@ pub fn merge(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bi
     }
 
     return answer;
+}
+
+/// Inplace version of `or`, modifies r1.
+pub fn or_inplace(x1: *Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !void {
+    trace(@src(), "x1: {f}", .{x1.fmtLong()});
+    trace(@src(), "x2: {f}", .{x2.fmtLong()});
+    const length2 = x2.array.ptr(.len).*;
+    if (length2 == 0) return;
+
+    var length1 = x1.array.ptr(.len).*;
+    if (length1 == 0) {
+        try x1.overwrite(allocator, x2.*);
+        return;
+    }
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    var key1 = x1.array.ptr(.keys)[pos1];
+    var key2 = x2.array.ptr(.keys)[pos2];
+    while (true) {
+        if (key1 == key2) {
+            const c1 = &x1.array.ptr(.containers)[pos1];
+            if (!c1.is_full(x1.*)) {
+                const c2 = &x2.array.ptr(.containers)[pos2];
+                const oldc = c1.*;
+                const c = if (c1.typecode == .shared)
+                    try Container.merge(c1, allocator, x1, c2, x2, x1)
+                else
+                    try Container.ior(c1, allocator, x1, c2, x2);
+                if (c.blockoffset != oldc.blockoffset)
+                    oldc.deinit_blocks(x1.*);
+                x1.array.ptr(.containers)[pos1] = c;
+            }
+            pos1 += 1;
+            pos2 += 1;
+            if (pos1 == length1) break;
+            if (pos2 == length2) break;
+            key1 = x1.array.ptr(.keys)[pos1];
+            key2 = x2.array.ptr(.keys)[pos2];
+        } else if (key1 < key2) {
+            pos1 += 1;
+            if (pos1 == length1) break;
+            key1 = x1.array.ptr(.keys)[pos1];
+        } else { // key1 > key2
+            var c2 = x2.array.ptr(.containers)[pos2];
+            c2 = try Container.get_copy_of_container(c2, allocator, x2, x1, x2.is_cow());
+            if (x2.is_cow())
+                x2.array.ptr(.containers)[pos2] = c2;
+            try x1.insert_new_key_value_at(allocator, key2, c2, pos1);
+            pos1 += 1;
+            length1 += 1;
+            pos2 += 1;
+
+            if (pos2 == length2) break;
+            key2 = x2.array.ptr(.keys)[pos2];
+        }
+    }
+
+    if (pos1 == length1) {
+        try x1.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
+    }
 }
 
 /// Returned Bitamp contains values present in one but not both inputs.

@@ -526,15 +526,15 @@ pub fn fast_union_uint16(
     buffer: []align(C.BLOCK_ALIGN) u16,
 ) usize {
     // compute union with smallest array first
-    const m = if (false and C.HAS_AVX2) // TODO
+    const unionfn = if (false and C.HAS_AVX2) // TODO
         union_vector16
     else
         union_uint16;
 
     if (set1.len < set2.len) {
-        return m(set1, set2, buffer);
+        return unionfn(set1, set2, buffer);
     } else {
-        return m(set2, set1, buffer);
+        return unionfn(set2, set1, buffer);
     }
 }
 
@@ -610,6 +610,33 @@ pub fn bitset_flip_list_withcard(
     return card_out;
 }
 
+/// set word bits from list
+pub fn bitset_set_list(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    list: []align(C.BLOCK_ALIGN) const u16,
+) void {
+    if (C.HAS_AVX2) {
+        // TODO _asm_bitset_set_list(words, list, length);
+    }
+    // _scalar_bitset_set_list(words, list, length);
+    var offset: u64 = 0;
+    var load: u64 = 0;
+    var newload: u64 = 0;
+    var pos: u64 = 0;
+    var index: u6 = 0;
+    const end = list.ptr + list.len;
+    var list1: [*]const u16 = list.ptr;
+    while (list1 != end) {
+        pos = list1[0];
+        offset = pos >> 6;
+        index = @truncate(pos % 64);
+        load = words[offset];
+        newload = load | @as(u64, 1) << index;
+        words[offset] = newload;
+        list1 += 1;
+    }
+}
+
 /// Clear bits at positions in list, return updated cardinality.
 pub fn bitset_clear_list(
     words: [*]align(C.BLOCK_ALIGN) u64,
@@ -633,17 +660,17 @@ pub fn bitset_clear_list(
 }
 
 pub const pshufb =
-    if (@import("builtin").zig_backend == .stage2_llvm)
+    if (C.HAS_AVX2 and @import("builtin").zig_backend == .stage2_llvm)
         struct {
             extern fn @"llvm.x86.avx2.pshuf.b"(a: Block, b: Block) Block;
             const pshufb = @"llvm.x86.avx2.pshuf.b";
         }.pshufb
-    else if (C.IS_X86)
-        pshufb_x86
+    else if (C.HAS_AVX2)
+        pshufb_avx2
     else
-        unreachable; // TODO non-llvm, non-x86
+        unreachable; // TODO non-llvm, non-avx2
 
-inline fn pshufb_x86(a: Block, b: Block) Block {
+inline fn pshufb_avx2(a: Block, b: Block) Block {
     return asm ("vpshufb %[mask], %[src], %[ret]"
         : [ret] "=x" (-> Block),
         : [src] "x" (a),
@@ -653,18 +680,17 @@ inline fn pshufb_x86(a: Block, b: Block) Block {
 
 /// computes absolute differences of u8s and sums them into 64-bit blocks
 pub const psadbw =
-    if (@import("builtin").zig_backend == .stage2_llvm)
+    if (C.HAS_AVX2 and @import("builtin").zig_backend == .stage2_llvm)
         struct {
             extern fn @"llvm.x86.avx2.psad.bw"(a: Block, b: Block) @Vector(4, u64);
-            extern fn @"llvm.x86.avx2.pshuf.b"(a: Block, b: Block) Block;
             const psadbw = @"llvm.x86.avx2.psad.bw";
         }.psadbw
-    else if (C.IS_X86)
-        psadbw_x86
+    else if (C.HAS_AVX2)
+        psadbw_avx2
     else
-        unreachable; // TODO non-llvm, non-x86
+        unreachable; // TODO non-llvm, non-avx2
 
-inline fn psadbw_x86(a: Block, b: Block) root.Block64 {
+inline fn psadbw_avx2(a: Block, b: Block) root.Block64 {
     return asm ("vpsadbw %[src2], %[src1], %[ret]"
         : [ret] "=x" (-> root.Block64),
         : [src1] "x" (a),
