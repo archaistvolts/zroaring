@@ -169,28 +169,28 @@ pub const Container = packed struct(u64) {
         copy: bool,
         r: *Bitmap,
     ) !void {
-        const run_cap = rc.calc_capacity();
-        var capacity = run_cap;
-        const newCapacity = @max(min, if (capacity == 0)
+        const runcap = rc.calc_capacity();
+        const capacity = @max(min, if (runcap == 0)
             0
-        else if (capacity < 64)
-            capacity * 2
-        else if (capacity < 1024)
-            capacity * 3 / 2
+        else if (runcap < 64)
+            runcap * 2
+        else if (runcap < 1024)
+            runcap * 3 / 2
         else
-            capacity * 5 / 4);
-        capacity = newCapacity;
-        const morecap = capacity - run_cap;
+            runcap * 5 / 4);
+        const morecap = capacity - runcap;
         const moreblocks = @min(
             C.BITSET_BLOCKS - rc.nblocks(),
             misc.numGroupsOfSize(morecap, C.BLOCK_LEN32),
         );
 
         if (copy) {
+            assert(moreblocks != 0);
             try add_container_blocks(r, allocator, rc, moreblocks);
         } else if (rc.* == uninit) {
             rc.* = try run_container_create_given_capacity(allocator, capacity, r);
-        } else {
+        } else if (moreblocks != 0) { // moreblocks might be 0 if there is already enough
+            //                           capacity. ie when min > C.BITSET_BLOCKS.
             rc.deinit_blocks(r.*);
             try r.extend_array(allocator, 0, moreblocks);
             rc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
@@ -2518,10 +2518,12 @@ pub const Container = packed struct(u64) {
         const card1 = src1.cardinality;
         const card2 = src2.cardinality;
         const src1id = src1 - x1.array.ptr(.containers);
+        const src2id = src2 - x2.array.ptr(.containers);
         try run_container_grow(dst, allocator, 2 * (card1 + card2), false, dstr);
         const src1b = &x1.array.ptr(.containers)[src1id];
+        const src2b = &x2.array.ptr(.containers)[src2id];
         const arr = src1b.blocks_as(.array, x1.*);
-        const srcruns = src2.blocks_as(.run, x2.*);
+        const srcruns = src2b.blocks_as(.run, x2.*);
         const dstruns = dst.blocks_as(.run, dstr.*);
         var rp: u32 = 0;
         var ap: u32 = 0;
@@ -2751,13 +2753,15 @@ pub const Container = packed struct(u64) {
         const maxoutput = src1.cardinality + src2.cardinality;
         const neededcapacity = maxoutput + src2.cardinality;
         assert(neededcapacity < C.MAX_RUN_SIZE);
+        const src1id = src1 - x1.array.ptr(.containers);
         const src2id = src2 - x2.array.ptr(.containers);
         if (src2.calc_capacity() < neededcapacity)
             try run_container_grow(src2, allocator, neededcapacity, true, x2);
 
+        const src1b = &x1.array.ptr(.containers)[src1id];
         const src2b = &x2.array.ptr(.containers)[src2id];
         const src2runs = src2b.blocks_as(.run, x2.*);
-        const src1arr = src1.blocks_as(.array, x1.*);
+        const src1arr = src1b.blocks_as(.array, x1.*);
 
         const inputsrc2 = src2runs.ptr + maxoutput;
         @memmove(inputsrc2, src2runs[0..src2b.cardinality]);
@@ -2776,7 +2780,7 @@ pub const Container = packed struct(u64) {
             arraypos += 1;
         }
 
-        while (rlepos < src2nruns and arraypos < src1.cardinality) {
+        while (rlepos < src2nruns and arraypos < src1b.cardinality) {
             if (inputsrc2[rlepos].value <= src1arr[arraypos]) {
                 run_container_append(src2b, src2runs.ptr, inputsrc2[rlepos], &previousrle);
                 rlepos += 1;
@@ -2785,7 +2789,7 @@ pub const Container = packed struct(u64) {
                 arraypos += 1;
             }
         }
-        if (arraypos < src1.cardinality) {
+        if (arraypos < src1b.cardinality) {
             while (arraypos < src1.cardinality) {
                 run_container_append_value(src2b, src2runs.ptr, src1arr[arraypos], &previousrle);
                 arraypos += 1;
@@ -2969,12 +2973,12 @@ pub const Container = packed struct(u64) {
                 return result;
             },
             misc.pair(.run, .array) => {
-                // limit blocks to [0, C.BITSET_BLOCKS).
-                // in croaring this branch is all thats needed.
+                // limit blocks to [0, C.BITSET_BLOCKS). in croaring this branch isn't needed.
                 if (c1.cardinality + 2 * c2.cardinality <= C.MAX_RUN_SIZE) {
                     const c1id = c1 - x1.array.ptr(.containers);
                     try array_run_container_inplace_union(c2, allocator, x2, c1, x1);
-                    return try x1.array.ptr(.containers)[c1id].convert_run_to_efficient_container(allocator, x1);
+                    return try x1.array.ptr(.containers)[c1id]
+                        .convert_run_to_efficient_container(allocator, x1);
                 }
                 return try run_array_conatiner_inplace_union(c1, allocator, x1, c2, x2);
             },
@@ -4834,13 +4838,13 @@ pub const Container = packed struct(u64) {
                 return result;
             },
             misc.pair(.array, .run) => {
-                result = try run_container_create_given_capacity(allocator, 1, dstr);
+                result = try run_container_create_given_capacity(allocator, 2 * (c1.cardinality + c2.cardinality), dstr);
                 try array_run_container_union(&result, allocator, dstr, c1, x1, c2, x2);
                 // skip convert_run_to_efficient_container since we are lazy
                 return result;
             },
             misc.pair(.run, .array) => {
-                result = try run_container_create_given_capacity(allocator, c2.cardinality, dstr);
+                result = try run_container_create_given_capacity(allocator, 2 * (c1.cardinality + c2.cardinality), dstr);
                 try array_run_container_union(&result, allocator, dstr, c2, x2, c1, x1);
                 // skip convert_run_to_efficient_container since we are lazy
                 return result;
