@@ -685,7 +685,10 @@ fn perform_op(
             var w = Io.Writer.Allocating.init(allocator);
             defer w.deinit();
             var runflags: zroaring.RunFlags = undefined;
-            const x = try rs[idx].portable_serialize(&w.writer, &runflags);
+            const x = rs[idx].portable_serialize(&w.writer, &runflags) catch |e| switch (e) {
+                // this allows test "allocation failures" to pass
+                error.WriteFailed => return error.OutOfMemory,
+            };
             const buf = try allocator.alloc(u8, x);
             defer allocator.free(buf);
             if (is_cr) {
