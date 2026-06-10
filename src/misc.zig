@@ -379,8 +379,8 @@ pub fn union_uint16(
     buffer: []u16,
 ) usize {
     var pos: usize = 0;
-    var idx_1: usize = 0;
-    var idx_2: usize = 0;
+    var idx1: usize = 0;
+    var idx2: usize = 0;
 
     if (set2.len == 0) {
         @memmove(buffer[0..set1.len], set1[0..set1.len]);
@@ -391,40 +391,40 @@ pub fn union_uint16(
         return set2.len;
     }
 
-    var val_1 = set1[idx_1];
-    var val_2 = set2[idx_2];
+    var val1 = set1[idx1];
+    var val2 = set2[idx2];
 
     while (true) {
-        if (val_1 < val_2) {
-            buffer[pos] = val_1;
+        if (val1 < val2) {
+            buffer[pos] = val1;
             pos += 1;
-            idx_1 += 1;
-            if (idx_1 >= set1.len) break;
-            val_1 = set1[idx_1];
-        } else if (val_2 < val_1) {
-            buffer[pos] = val_2;
+            idx1 += 1;
+            if (idx1 >= set1.len) break;
+            val1 = set1[idx1];
+        } else if (val2 < val1) {
+            buffer[pos] = val2;
             pos += 1;
-            idx_2 += 1;
-            if (idx_2 >= set2.len) break;
-            val_2 = set2[idx_2];
+            idx2 += 1;
+            if (idx2 >= set2.len) break;
+            val2 = set2[idx2];
         } else {
-            buffer[pos] = val_1;
+            buffer[pos] = val1;
             pos += 1;
-            idx_1 += 1;
-            idx_2 += 1;
-            if (idx_1 >= set1.len or idx_2 >= set2.len) break;
-            val_1 = set1[idx_1];
-            val_2 = set2[idx_2];
+            idx1 += 1;
+            idx2 += 1;
+            if (idx1 >= set1.len or idx2 >= set2.len) break;
+            val1 = set1[idx1];
+            val2 = set2[idx2];
         }
     }
 
-    if (idx_1 < set1.len) {
-        const n_elems = set1.len - idx_1;
-        @memmove(buffer[pos..][0..n_elems], set1[idx_1..][0..n_elems]);
+    if (idx1 < set1.len) {
+        const n_elems = set1.len - idx1;
+        @memmove(buffer[pos..][0..n_elems], set1[idx1..][0..n_elems]);
         pos += n_elems;
-    } else if (idx_2 < set2.len) {
-        const n_elems = set2.len - idx_2;
-        @memmove(buffer[pos..][0..n_elems], set2[idx_2..][0..n_elems]);
+    } else if (idx2 < set2.len) {
+        const n_elems = set2.len - idx2;
+        @memmove(buffer[pos..][0..n_elems], set2[idx2..][0..n_elems]);
         pos += n_elems;
     }
 
@@ -521,7 +521,7 @@ pub fn difference_uint16(
 }
 
 pub fn fast_union_uint16(
-    set1: []align(C.BLOCK_ALIGN) const u16,
+    set1: []const u16,
     set2: []align(C.BLOCK_ALIGN) const u16,
     buffer: []align(C.BLOCK_ALIGN) u16,
 ) usize {

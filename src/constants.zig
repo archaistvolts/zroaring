@@ -32,6 +32,9 @@ pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
 pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(root.Container.Cardinality);
 pub const OR_BITSET_CONVERSION_TO_FULL = false; // TODO build option
+/// whether lazy container-container operations force a bitset conversion
+pub const LAZY_OR_BITSET_CONVERSION_TO_FULL = false; // TODO build option
+pub const ARRAY_LAZY_LOWERBOUND = 1024;
 
 pub const IS_X86 = builtin.cpu.arch.isX86();
 pub const HAS_AVX2 = if (IS_X86)

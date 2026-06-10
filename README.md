@@ -27,6 +27,7 @@ const exe_mod = b.createModule(.{
     },
 });
 ```
+With an Allocator
 ```zig
 // app.zig
 const zroaring = @import("zroaring");
@@ -91,7 +92,8 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [x] in memory layout - a single allocation, resizable struct to model state - serialization friendly, single write, single read.
 * [x] Transition to a more from-scratch approach.  But try to follow the CRoaring API.
 * [x] validation: fix failing checkAllAllocationFailures test
-* [ ] checkAllAllocationFailures - why so slow?
+* [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
+* [x] allocation failures test with crash reproductions.
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
 * [ ] Support more set sizes than just u32 with generics - Bitmap(T)
@@ -103,5 +105,5 @@ Human contributions are very welcome.  Please open a pull request or issue on co
     * [ ] keep track of benchmarks over time
 * [ ] documentation needs a lot of work
 * [ ] audit endian sensitive methods.  aim for endian awareness throughout.
-* [ ] audit unreachable code paths.  fuzzing will help.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex
+* [ ] strategy for reclaiming blocks to reduce memory usage.  depending on users calling shrink_to_fit() isn't viable.

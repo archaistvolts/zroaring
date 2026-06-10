@@ -85,6 +85,7 @@ pub const FuzzOp = union(enum) {
     merge: BinOp,
     xor: BinOp,
     andnot: BinOp,
+    lazy_or: BinOp,
     or_inplace: BinOpInplace,
     is_subset: BinOp,
     clear: u8,
@@ -159,7 +160,13 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             } }, &oracles, &rs, allocator),
-            inline .intersect, .merge, .xor, .andnot, .is_subset => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{
+            inline .intersect,
+            .merge,
+            .xor,
+            .andnot,
+            .is_subset,
+            .lazy_or,
+            => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
@@ -259,7 +266,13 @@ const AflSmith = struct {
                 .pick_existing = smith.value(u8) orelse return null,
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null,
             } },
-            inline .intersect, .merge, .xor, .andnot, .is_subset => |t| @unionInit(FuzzOp, @tagName(t), .{
+            inline .intersect,
+            .merge,
+            .xor,
+            .andnot,
+            .is_subset,
+            .lazy_or,
+            => |t| @unionInit(FuzzOp, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
@@ -397,6 +410,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .xor,
         .andnot,
         .is_subset,
+        .lazy_or,
         => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .or_inplace,
         => |o| try writer.writeAll(&.{ o.idx, o.src1 }),
@@ -440,6 +454,7 @@ fn perform_op(
         .merge,
         .xor,
         .andnot,
+        .lazy_or,
         .or_inplace,
         .is_subset,
         .clear,
@@ -518,28 +533,39 @@ fn perform_op(
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
-        .intersect, .merge, .xor, .andnot => |o| {
-            const method = switch (op) {
-                .intersect => &Bitmap.intersect,
-                .merge => &Bitmap.merge,
-                .xor => &Bitmap.xor,
-                .andnot => &Bitmap.andnot,
+        .intersect, .merge, .xor, .andnot, .lazy_or => |o| {
+            var res = try switch (op) {
+                .intersect => Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
+                .merge => Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
+                .xor => Bitmap.xor(&rs[o.src1], allocator, &rs[o.src2]),
+                .andnot => Bitmap.andnot(&rs[o.src1], allocator, &rs[o.src2]),
+                .lazy_or => Bitmap.lazy_or(
+                    &rs[o.src1],
+                    allocator,
+                    &rs[o.src2],
+                    zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
+                ),
                 else => unreachable,
             };
-            const crmethod = if (!is_cr) {} else switch (op) {
-                .intersect => &c.roaring_bitmap_and,
-                .merge => &c.roaring_bitmap_or,
-                .xor => &c.roaring_bitmap_xor,
-                .andnot => &c.roaring_bitmap_andnot,
-                else => unreachable,
-            };
-            var res = try method(&rs[o.src1], allocator, &rs[o.src2]);
             defer res.deinit(allocator);
 
             if (is_cr) {
-                const cr_res = crmethod(oracles[o.src1], oracles[o.src2]);
+                const cr_res = switch (op) {
+                    .intersect => c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]),
+                    .merge => c.roaring_bitmap_or(oracles[o.src1], oracles[o.src2]),
+                    .xor => c.roaring_bitmap_xor(oracles[o.src1], oracles[o.src2]),
+                    .andnot => c.roaring_bitmap_andnot(oracles[o.src1], oracles[o.src2]),
+                    .lazy_or => c.roaring_bitmap_lazy_or(
+                        oracles[o.src1],
+                        oracles[o.src2],
+                        zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
+                    ),
+                    else => unreachable,
+                };
+
                 if (oracles[o.idx]) |old| c.roaring_bitmap_free(old);
                 oracles[o.idx] = cr_res;
+                if (op == .lazy_or) c.roaring_bitmap_repair_after_lazy(oracles[o.idx]);
             } else switch (op) {
                 .intersect => {
                     var ret = HashMapOracle.empty;
@@ -555,7 +581,7 @@ fn perform_op(
                     oracles[o.idx].deinit(allocator);
                     oracles[o.idx] = ret;
                 },
-                .merge => {
+                .merge, .lazy_or => {
                     var ret = HashMapOracle.empty;
                     try ret.ensureTotalCapacity(
                         allocator,
@@ -603,6 +629,8 @@ fn perform_op(
             }
             rs[o.idx].deinit(allocator);
             rs[o.idx] = try res.copy(allocator);
+            if (op == .lazy_or)
+                try rs[o.idx].repair_after_lazy(allocator);
         },
         .or_inplace => |o| {
             try rs[o.idx].or_inplace(allocator, &rs[o.src1]);
@@ -775,14 +803,13 @@ fn perform_op(
             }
         },
     }
-    for (0..NUM_BITMAPS) |i|
-        try std.testing.expectEqual(
-            if (is_cr)
-                c.roaring_bitmap_get_cardinality(oracles[i])
-            else
-                oracles[i].count(),
-            rs[i].get_cardinality(),
-        );
+    for (0..NUM_BITMAPS) |i| {
+        const oc = if (is_cr)
+            c.roaring_bitmap_get_cardinality(oracles[i])
+        else
+            oracles[i].count();
+        try std.testing.expectEqual(oc, rs[i].get_cardinality());
+    }
     if (is_cr) {
         for (rs, oracles) |r, oracle| {
             const ra = &oracle.*.high_low_container;
@@ -795,10 +822,12 @@ fn perform_op(
             for (r.slice(.containers, .len), 0..) |zc, i| {
                 //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
                 try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
-                try testing.expectEqual(
-                    @as(u32, @intCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i]))),
-                    zc.get_cardinality(r),
-                );
+                const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
+                const cr_card: u32 = if (cr_raw == std.math.maxInt(u32)) // convert -1 (u32 max) to u30 max
+                    zroaring.constants.BITSET_UNKNOWN_CARDINALITY
+                else
+                    cr_raw;
+                try testing.expectEqual(cr_card, zc.get_cardinality(r));
             }
         }
     }
@@ -852,12 +881,11 @@ test "crash reproductions" {
 }
 
 test "crash0" {
-    // try cr_perform_ops(
-    //     testgpa,
-    //     &.{
-
-    //     },
-    // );
+    if (true) return error.SkipZigTest;
+    const corpustmp: []const []const FuzzOp = @import("fuzz-crash-corpus-tmp.zon");
+    for (corpustmp) |ops| {
+        try cr_perform_ops(testgpa, ops);
+    }
 }
 
 test "allocation failures from crash reproductions" {

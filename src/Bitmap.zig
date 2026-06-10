@@ -335,7 +335,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     assert(r.contains(value));
 }
 
-/// this is like roaring_bitmap_add, but it populates pointer arguments in such a
+/// this is like `add`, but it populates pointer arguments in such a
 /// way that we can recover the container touched, which, in turn can be used to
 /// accelerate some functions (when you repeatedly need to add to the same
 /// container)
@@ -391,7 +391,7 @@ pub fn add_checked_bulk(
     } else {
         // no need to seek the container, it is at hand
         // because we already have the container at hand, we can do the
-        // insertion directly, bypassing roaring_bitmap_add
+        // insertion directly, bypassing `add`
         const card = context.container.cardinality;
         const c2 = try context.container.add(allocator, r, @truncate(val));
         context.container = &r.array.ptr(.containers)[context.idx];
@@ -963,14 +963,15 @@ pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
 }
 
 /// Get the cardinality of the bitmap (number of elements).
-pub fn cardinality(r: Bitmap) u64 {
-    var card: u64 = 0;
+pub fn get_cardinality(r: Bitmap) u64 {
+    var card: i64 = 0; // signed for sign extension, matching C i32->u64
     for (r.slice(.containers, .len)) |c| {
-        card += c.compute_cardinality(r);
+        // sign extend C.BITSET_UNKNOWN_CARDINALITY, u30 max, to i64 min.
+        const cc: Container.ICardinality = @bitCast(c.get_cardinality(r));
+        card += @as(i64, cc);
     }
-    return card;
+    return @bitCast(card);
 }
-pub const get_cardinality = cardinality;
 
 /// Whether you want to use flag: copy-on-write or frozen.
 /// Saves memory and avoids copies, but needs more care in a threaded context.
@@ -1536,17 +1537,17 @@ pub fn is_subset(r1: Bitmap, r2: Bitmap) bool {
     var pos1: u32 = 0;
     var pos2: u32 = 0;
     while (pos1 < containers1.len and pos2 < containers2.len) {
-        const s1 = keys1[pos1];
-        const s2 = keys2[pos2];
-        if (s1 == s2) {
+        const key1 = keys1[pos1];
+        const key2 = keys2[pos2];
+        if (key1 == key2) {
             if (!containers1[pos1].is_subset(r1, containers2[pos2], r2))
                 return false;
             pos1 += 1;
             pos2 += 1;
-        } else if (s1 < s2) {
+        } else if (key1 < key2) {
             return false;
         } else {
-            pos2 = misc.advanceUntil(keys2, pos2, s1);
+            pos2 = misc.advanceUntil(keys2, pos2, key1);
         }
     }
     return pos1 == containers1.len;
@@ -1592,9 +1593,9 @@ pub fn intersect(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap)
             }
             pos1 += 1;
             pos2 += 1;
-        } else if (key1 < key2) { // s1 < s2
+        } else if (key1 < key2) { // key1 < key2
             pos1 = x1.advance_until(key2, pos1);
-        } else { // s1 > s2
+        } else { // s1 > key2
             pos2 = x2.advance_until(key1, pos2);
         }
     }
@@ -1619,15 +1620,14 @@ fn append_copy_range(
     }
     try ra.extend_array(allocator, end_index - start_index, cnblocks);
 
-    const rakeys = ra.array.ptr(.keys);
-    const racontainers = ra.array.ptr(.containers);
     for (start_index..end_index) |i| {
         const pos = ra.array.ptr(.len).*;
-        rakeys[pos] = sakeys[i];
-        racontainers[pos] = if (copy_on_write)
-            try Container.get_copy_of_container(sacontainers[i], allocator, sa, ra, copy_on_write)
+        ra.array.ptr(.keys)[pos] = sakeys[i];
+        const c = if (copy_on_write)
+            try sacontainers[i].get_copy_of_container(allocator, sa, ra, copy_on_write)
         else
-            try Container.clone(sacontainers[i], allocator, sa, ra);
+            try sacontainers[i].clone(allocator, sa, ra);
+        ra.array.ptr(.containers)[pos] = c;
         ra.array.ptr(.len).* += 1;
     }
 }
@@ -1888,6 +1888,116 @@ pub fn rank(bm: Bitmap, x: u32) u64 {
         }
     }
     return size;
+}
+
+/// (For users who seek high performance.)
+///
+/// Computes the union between two bitmaps and returns new bitmap. The caller is
+/// responsible for memory management.
+///
+/// The lazy version defers some computations such as the maintenance of the
+/// cardinality counts. Thus you must call `repair_after_lazy()`
+/// after executing "lazy" computations.
+///
+/// It is safe to repeatedly call lazy_or_inplace on the result.
+///
+/// `bitsetconversion` is a flag which determines whether container-container
+/// operations force a bitset conversion. see
+/// `zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL`
+pub fn lazy_or(
+    x1: *Bitmap,
+    allocator: mem.Allocator,
+    x2: *const Bitmap,
+    bitsetconversion: bool,
+) !Bitmap {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    trace(@src(), "x1={f}", .{x1.fmtLong()});
+    trace(@src(), "x2={f}", .{x2.fmtLong()});
+    defer x1.assert_valid();
+    if (0 == length1)
+        return try x2.copy(allocator);
+
+    if (0 == length2)
+        return try x1.copy(allocator);
+
+    var answer = try create_with_capacity(allocator, length1 + length2);
+    defer trace(@src(), "answer={f}", .{answer.fmtLong()});
+    defer answer.assert_valid();
+    answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+
+    var key1 = x1.array.ptr(.keys)[pos1];
+    var key2 = x2.array.ptr(.keys)[pos2];
+    while (true) {
+        if (key1 == key2) {
+            const c1: *Container = &x1.array.ptr(.containers)[pos1];
+            const c2: *Container = &x2.array.ptr(.containers)[pos2];
+            var c: Container = .uninit;
+            if (bitsetconversion and c1.typecode == .bitset and c2.typecode == .bitset) {
+                var newc1 = c1.*; // TODO // container_mutable_unwrap_shared(c1);
+                newc1 = try newc1.to_bitset(allocator, &answer);
+                c = try newc1.lazy_ior(allocator, &answer, c2, x2);
+                if (c != newc1) { // should not happen
+                    newc1.deinit_blocks(answer);
+                }
+            } else {
+                c = try c1.lazy_or(allocator, x1, c2, x2, &answer);
+            }
+            // since we assume that the initial containers are non-empty, the
+            // result here can only be non-empty
+            assert(c != Container.uninit);
+            try answer.append(allocator, key1, c);
+            pos1 += 1;
+            pos2 += 1;
+            if (pos1 == length1) break;
+            if (pos2 == length2) break;
+            key1 = x1.array.ptr(.keys)[pos1];
+            key2 = x2.array.ptr(.keys)[pos2];
+        } else if (key1 < key2) {
+            var c1 = x1.array.ptr(.containers)[pos1];
+            c1 = try c1.get_copy_of_container(allocator, x1, &answer, x1.is_cow());
+            if (x1.is_cow()) {
+                x1.array.ptr(.containers)[pos1] = c1;
+            }
+            try answer.append(allocator, key1, c1);
+            pos1 += 1;
+            key1 = x1.array.ptr(.keys)[pos1];
+            if (pos1 == length1) break;
+        } else { // key1 > key2
+            var c2 = x2.array.ptr(.containers)[pos2];
+            c2 = try c2.get_copy_of_container(allocator, x2, &answer, x2.is_cow());
+            if (x2.is_cow()) {
+                x2.array.ptr(.containers)[pos2] = c2;
+            }
+            try answer.append(allocator, key2, c2);
+
+            pos2 += 1;
+            if (pos2 == length2) break;
+            key2 = x2.array.ptr(.keys)[pos2];
+        }
+    }
+    if (pos1 == length1) {
+        try answer.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
+    } else if (pos2 == length2) {
+        try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
+    }
+    return answer;
+}
+
+/// (For users who seek high performance.)
+///
+/// Execute maintenance on a bitmap created from `lazy_or()`
+/// or modified with `lazy_or_inplace()`.
+pub fn repair_after_lazy(r: *Bitmap, allocator: mem.Allocator) !void {
+    const len = r.array.ptr(.len).*;
+    for (0..len) |i| {
+        // read before write! avoids write to stale pointer.
+        const c = try r.array.ptr(.containers)[i].repair_after_lazy(allocator, r);
+        r.array.ptr(.containers)[i] = c;
+    }
+    r.assert_valid();
 }
 
 /// Selects the element at the specified rank (0-based).

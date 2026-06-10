@@ -38,7 +38,7 @@ fn validateRoundTrip(
     if (run_optimize) _ = try zr.run_optimize(allocator);
 
     if (!zr.has_run_container())
-        try testing.expectEqual(values.len, zr.cardinality());
+        try testing.expectEqual(values.len, zr.get_cardinality());
 
     // build coaring bitmap
     const cr = c.roaring_bitmap_create().?;
@@ -72,7 +72,7 @@ fn validateRoundTrip(
     const cr2 = c.roaring_bitmap_portable_deserialize_safe(@ptrCast(zr_serbuf.ptr), zr_serbuf.len);
     try testing.expect(cr2 != null);
     defer c.roaring_bitmap_free(cr2);
-    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr2), zr.cardinality());
+    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr2), zr.get_cardinality());
     for (values) |v| try testing.expect(c.roaring_bitmap_contains(cr2, v));
 
     // deserialize croaring bytes with zroaring. check equal.
@@ -83,7 +83,7 @@ fn validateRoundTrip(
     try crfr.seekTo(0);
     var zr2 = try Bitmap.portable_deserialize_file_reader(allocator, &crfr);
     defer zr2.deinit(allocator);
-    try testing.expectEqual(zr2.cardinality(), zr.cardinality());
+    try testing.expectEqual(zr2.get_cardinality(), zr.get_cardinality());
     try testing.expect(zr2.equals(zr));
 
     // compare to cr/zr2 after shrink_to_fit()
@@ -142,7 +142,7 @@ fn validateRangeRoundTrip(
     const cr2 = c.roaring_bitmap_portable_deserialize_safe(@ptrCast(zr_buf.ptr), zr_size);
     try testing.expect(cr2 != null);
     defer c.roaring_bitmap_free(cr2);
-    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr2), zr.cardinality());
+    try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr2), zr.get_cardinality());
 
     // deserialize croaring bytes with zr
     // write cr_buf to file

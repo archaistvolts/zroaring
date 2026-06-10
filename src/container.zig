@@ -13,6 +13,7 @@ pub const Container = packed struct(u64) {
 
     pub const uninit: Container = @bitCast(@as(u64, std.math.maxInt(u64)));
     pub const Cardinality = @Int(.unsigned, 64 - @bitSizeOf(BlockOffset) - @bitSizeOf(BlockIndex) - @bitSizeOf(Typecode));
+    pub const ICardinality = @Int(.signed, @bitSizeOf(Cardinality));
     pub const BlockOffset = std.math.IntFittingRange(0, C.MAX_BLOCKS - 1);
     pub const BlockIndex = std.math.IntFittingRange(0, C.BITSET_BLOCKS - 1);
     pub const Element = union(root.Typecode) {
@@ -62,7 +63,7 @@ pub const Container = packed struct(u64) {
         return @ptrCast(c.get_blocks(r));
     }
 
-    pub fn get_cardinality(c: Container, r: Bitmap) u32 {
+    pub fn get_cardinality(c: Container, r: Bitmap) Cardinality {
         return switch (c.typecode) {
             .bitset, .array => c.cardinality,
             .run => run_container_cardinality(c, c.blocks_as(.run, r).ptr),
@@ -180,7 +181,10 @@ pub const Container = packed struct(u64) {
             capacity * 5 / 4);
         capacity = newCapacity;
         const morecap = capacity - run_cap;
-        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
+        const moreblocks = @min(
+            C.BITSET_BLOCKS - rc.nblocks(),
+            misc.numGroupsOfSize(morecap, C.BLOCK_LEN32),
+        );
 
         if (copy) {
             try add_container_blocks(r, allocator, rc, moreblocks);
@@ -548,19 +552,21 @@ pub const Container = packed struct(u64) {
                 // typecode = shared_container.typecode;
             },
             .bitset => {
-                if (!(0 < v.cardinality and v.cardinality <= C.MAX_KEY_CARDINALITY)) { // <= 65536
-                    reason.* = "bitset cardinality";
-                    return false;
-                }
-                const cc = v.compute_cardinality(r);
-                if (v.cardinality != cc) {
-                    trace(@src(), "{} != {}", .{ v.cardinality, cc });
-                    reason.* = "bitset cardinality is incorrect";
-                    return false;
-                }
-                if (v.cardinality <= C.DEFAULT_MAX_SIZE) {
-                    reason.* = "cardinality is too small for a bitset container";
-                    return false;
+                if (v.cardinality != C.BITSET_UNKNOWN_CARDINALITY) {
+                    if (!(0 < v.cardinality and v.cardinality <= C.MAX_KEY_CARDINALITY)) { // <= 65536
+                        reason.* = "bitset cardinality";
+                        return false;
+                    }
+                    const cc = v.compute_cardinality(r);
+                    if (v.cardinality != cc) {
+                        trace(@src(), "{} != {}", .{ v.cardinality, cc });
+                        reason.* = "bitset cardinality is incorrect";
+                        return false;
+                    }
+                    if (v.cardinality <= C.DEFAULT_MAX_SIZE) {
+                        reason.* = "cardinality is too small for a bitset container";
+                        return false;
+                    }
                 }
 
                 // Attempt to forcibly load the first and last words, hopefully causing
@@ -1054,11 +1060,11 @@ pub const Container = packed struct(u64) {
         result.cardinality = card;
         // TODO avx512 version?
         // sse version ends up being slower here because of the sparsity of the data
-        _ = bitset_extract_setbits_uint16(
+        assert(card == bitset_extract_setbits_uint16(
             @ptrCast(r.array.ptr(.blocks)[bo..][0..C.BITSET_BLOCKS].ptr),
             result.blocks_as(.array, r.*)[0..card],
             0,
-        );
+        ));
         return result;
     }
 
@@ -1587,7 +1593,7 @@ pub const Container = packed struct(u64) {
                 }
                 assert(@intFromPtr(blocksout) == @intFromPtr(dst + C.BITSET_CONTAINER_SIZE_IN_WORDS));
                 dstc.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
-                return C.BITSET_UNKNOWN_CARDINALITY;
+                return dstc.cardinality;
             }
         };
     }
@@ -2272,13 +2278,14 @@ pub const Container = packed struct(u64) {
         const card1 = src1.cardinality;
         const card2 = src2.cardinality;
         const max_card = card1 + card2;
-
+        const c1id = src1 - x1.array.ptr(.containers);
+        const c2id = src2 - x2.array.ptr(.containers);
         if (dst.calc_capacity() < max_card)
             try dst.array_container_grow(allocator, dstr, max_card, false);
 
         dst.cardinality = @intCast(misc.fast_union_uint16(
-            src1.blocks_as(.array, x1.*)[0..card1],
-            src2.blocks_as(.array, x2.*)[0..card2],
+            x1.array.ptr(.containers)[c1id].blocks_as(.array, x1.*)[0..card1],
+            x2.array.ptr(.containers)[c2id].blocks_as(.array, x2.*)[0..card2],
             dst.blocks_as(.array, dstr.*),
         ));
     }
@@ -2430,9 +2437,9 @@ pub const Container = packed struct(u64) {
 
     fn bitset_set_list_withcard(
         words: []align(C.BLOCK_ALIGN) u64,
-        card: u32,
+        card: u64,
         list: []align(C.BLOCK_ALIGN) const u16,
-    ) u32 {
+    ) u64 {
         if (C.HAS_AVX2) {
             // TODO _asm_bitset_set_list_withcard
         }
@@ -4519,6 +4526,344 @@ pub const Container = packed struct(u64) {
             misc.pair(.run, .bitset) => run_container_is_subset_bitset(c1, r1, c2, r2),
             misc.pair(.run, .run) => run_container_is_subset(c1, r1, c2, r2),
             misc.pair(.run, .shared) => unreachable,
+            else => unreachable,
+        };
+    }
+
+    /// no matter what the initial container was, convert it to a bitset if a
+    /// new container is produced, caller responsible for freeing the previous
+    /// one container should not be a shared container
+    pub fn to_bitset(c: Container, allocator: mem.Allocator, r: *Bitmap) !Container {
+        return switch (c.typecode) {
+            .bitset => c,
+            .array => try c.bitset_container_from_array(allocator, r),
+            .run => try c.bitset_container_from_run(allocator, r, r),
+            .shared => unreachable,
+        };
+    }
+
+    /// Compute the union between two containers, with result in the first container.
+    /// If the returned container is identical to c1, then the container has been
+    /// modified.
+    ///
+    /// If the returned container is different from c1, then a new container has been
+    /// created and the caller is responsible for freeing it.
+    /// The type of the first container may change. Returns the modified
+    /// (and possibly new) container
+    ///
+    /// This lazy version delays some operations such as the maintenance of the
+    /// cardinality. It requires repair later on the generated containers.
+    pub fn lazy_ior(
+        c1: *Container,
+        allocator: mem.Allocator,
+        x1: *Bitmap,
+        c2: *const Container,
+        x2: *const Bitmap,
+    ) !Container {
+        assert(c1.typecode != .shared);
+        // c1 = get_writable_copy_if_shared(c1,&type1);
+        // TODO // c2 = container_unwrap_shared(c2, &type2);
+        var result: Container = .uninit;
+        const c1id = c1 - x1.array.ptr(.containers);
+        const c2id = c2 - x2.array.ptr(.containers);
+        switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.bitset, .bitset) => {
+                if (C.LAZY_OR_BITSET_CONVERSION_TO_FULL) {
+                    // if we have two bitsets, we might as well compute the cardinality
+                    bitset_container_or(c1, x1, c2, x2, c1, x1);
+                    // it is possible that two bitsets can lead to a full container
+                    if (c1.cardinality == C.MAX_KEY_CARDINALITY) { // we convert
+                        return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, x1);
+                    }
+                }
+                const c1words = c1.blocks_as(.bitset, x1.*).ptr;
+                const c2words = c2.blocks_as(.bitset, x2.*).ptr;
+                _ = bitset_container_or_nocard(c1words, c2words, c1, c1words);
+                return c1.*;
+            },
+            misc.pair(.array, .array) => {
+                try array_array_container_lazy_inplace_union(c1, allocator, x1, c2, x2, &result, x1);
+                const c1b = x1.array.ptr(.containers)[c1id];
+                if (result == uninit and c1b.typecode == .array)
+                    return c1b; // the computation was done in-place!
+                return result;
+            },
+            misc.pair(.run, .run) => {
+                try run_container_union_inplace(c1, allocator, x1, c2, x2);
+                return try convert_run_to_efficient_container(x1.array.ptr(.containers)[c1id], allocator, x1);
+            },
+            misc.pair(.bitset, .array) => {
+                array_bitset_container_lazy_union(c2, x2, c1, x1, c1, x1); // is lazy
+                return c1.*;
+            },
+            misc.pair(.array, .bitset) => {
+                // c1 is an array, so no in-place possible
+                result = try bitset_container_create(allocator, x1);
+                const c1b = &x1.array.ptr(.containers)[c1id];
+                const c2b = &x2.array.ptr(.containers)[c2id];
+                array_bitset_container_lazy_union(c1b, x1, c2b, x2, &result, x1); // is lazy
+                return result;
+            },
+            misc.pair(.bitset, .run) => {
+                if (run_container_is_full(c2.*, x2.*)) {
+                    result = try run_container_create_given_capacity(allocator, c2.cardinality, x1);
+                    const c2b = x2.array.ptr(.containers)[c2id];
+                    try run_container_copy(c2b, allocator, &result, c2b.blocks_as(.run, x2.*).ptr, x1);
+                    return result;
+                }
+                run_bitset_container_lazy_union(c1, x1, c2, x2, c1, x1); // allowed //  lazy
+                return c1.*;
+            },
+            misc.pair(.run, .bitset) => {
+                if (run_container_is_full(c1.*, x1.*)) {
+                    return c1.*;
+                }
+                result = try bitset_container_create(allocator, x1);
+                const c1b = &x1.array.ptr(.containers)[c1id];
+                const c2b = &x2.array.ptr(.containers)[c2id];
+                run_bitset_container_lazy_union(&result, x1, c1b, x1, c2b, x2); //  lazy
+                return result;
+            },
+            misc.pair(.array, .run) => {
+                result = try run_container_create_given_capacity(allocator, c2.cardinality, x1);
+                const c1b = &x1.array.ptr(.containers)[c1id];
+                const c2b = &x2.array.ptr(.containers)[c2id];
+                try array_run_container_union(&result, allocator, x1, c1b, x1, c2b, x2);
+                // skip convert_run_to_efficient_container since we are lazy
+                return result;
+            },
+            misc.pair(.run, .array) => {
+                try array_run_container_inplace_union(c2, allocator, x2, c1, x1);
+                // skip convert_run_to_efficient_container since we are lazy
+                return x1.array.ptr(.containers)[c1id];
+            },
+            else => unreachable,
+        }
+    }
+
+    fn array_array_container_lazy_inplace_union(
+        src1: *Container,
+        allocator: mem.Allocator,
+        x1: *Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+        dst: *Container,
+        dstr: *Bitmap,
+    ) !void {
+        const totalCardinality = src1.cardinality + src2.cardinality;
+        assert(dst.* == uninit);
+        trace(@src(), "totalCardinality={} src1.calc_capacity()={}", .{ totalCardinality, src1.calc_capacity() });
+        if (totalCardinality <= C.ARRAY_LAZY_LOWERBOUND) {
+            if (src1.calc_capacity() < totalCardinality) {
+                // be purposefully generous
+                dst.* = try array_container_create_given_capacity(allocator, 2 * totalCardinality, dstr);
+                try array_container_union(dst, allocator, dstr, src1, x1, src2, x2);
+                return;
+            } else {
+                const arr1 = src1.blocks_as(.array, x1.*);
+                const arr2 = src2.blocks_as(.array, x2.*)[0..src2.cardinality];
+                @memmove(arr1.ptr + src2.cardinality, arr1[0..src1.cardinality]);
+                src1.cardinality = @intCast(misc.fast_union_uint16(
+                    arr1[src2.cardinality..][0..src1.cardinality],
+                    arr2,
+                    arr1[0..src1.cardinality],
+                ));
+                return;
+            }
+        }
+        dst.* = try bitset_container_create(allocator, x1);
+        const dstwords = dst.blocks_as(.bitset, x1.*);
+        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array, x1.*)[0..src1.cardinality]);
+        misc.bitset_set_list(dstwords.ptr, src2.blocks_as(.array, x2.*)[0..src2.cardinality]);
+        dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
+    }
+
+    fn array_array_container_lazy_union(
+        src1: *const Container,
+        allocator: mem.Allocator,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+        dst: *Container,
+        dstr: *Bitmap,
+    ) !void {
+        const totalCardinality = src1.cardinality + src2.cardinality;
+        //
+        // We assume that operations involving bitset containers will be faster than
+        // operations involving solely array containers, except maybe when array
+        // containers are small. Indeed, for example, it is cheap to compute the
+        // union between an array and a bitset container, generally more so than
+        // between a large array and another array. So it is advantageous to favour
+        // bitset containers during the computation. Of course, if we convert array
+        // containers eagerly to bitset containers, we may later need to revert the
+        // bitset containers to array containerr to satisfy the Roaring format
+        // requirements, but such one-time conversions at the end may not be overly
+        // expensive. We arrived to this design based on extensive benchmarking.
+        //
+        const src1id = src1 - x1.array.ptr(.containers);
+        const src2id = src2 - x2.array.ptr(.containers);
+        if (totalCardinality <= C.ARRAY_LAZY_LOWERBOUND) {
+            dst.* = try array_container_create_given_capacity(allocator, totalCardinality, dstr);
+            const src1b = &x1.array.ptr(.containers)[src1id];
+            const src2b = &x2.array.ptr(.containers)[src2id];
+            try array_container_union(dst, allocator, dstr, src1b, x1, src2b, x2);
+            return;
+        }
+
+        dst.* = try bitset_container_create(allocator, dstr);
+        const dstwords = dst.blocks_as(.bitset, dstr.*);
+        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array, x1.*)[0..src1.cardinality]);
+        misc.bitset_set_list(dstwords.ptr, src2.blocks_as(.array, x2.*)[0..src2.cardinality]);
+        dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
+    }
+
+    /// Compute the union of src1 and src2 and write the result to
+    /// dst. It is allowed for src2 to be dst.  This version does not
+    /// update the cardinality of dst (it is set to BITSET_UNKNOWN_CARDINALITY).
+    fn array_bitset_container_lazy_union(
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+        dst: *Container,
+        dstr: *Bitmap,
+    ) void {
+        if (src2 != dst) bitset_container_copy(dst, dstr, src2.*, x2.*);
+        const dstwords = dst.blocks_as(.bitset, dstr.*);
+        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array, x1.*)[0..src1.cardinality]);
+        dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
+    }
+
+    fn run_bitset_container_lazy_union(
+        dst: *Container,
+        dstr: *Bitmap,
+        src1: *const Container,
+        x1: *const Bitmap,
+        src2: *const Container,
+        x2: *const Bitmap,
+    ) void {
+        if (src2 != dst) bitset_container_copy(dst, dstr, src2.*, x2.*);
+        const runs = src1.blocks_as(.run, x1.*)[0..src1.cardinality];
+        const dstwords = dst.blocks_as(.bitset, dstr.*);
+        for (runs) |rle| {
+            misc.bitset_set_lenrange(dstwords.ptr, rle.value, rle.length);
+        }
+        dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
+    }
+
+    /// Compute union between two containers, generate a new container. This
+    /// allocates new memory, caller is responsible for deallocation.
+    ///
+    /// This lazy version delays some operations such as the maintenance of the
+    /// cardinality. It requires repair later on the generated containers.
+    pub fn lazy_or(
+        c1: *Container,
+        allocator: mem.Allocator,
+        x1: *Bitmap,
+        c2: *const Container,
+        x2: *const Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        assert(c1.typecode != .shared);
+        // c1 = get_writable_copy_if_shared(c1,&type1);
+        // TODO // c2 = container_unwrap_shared(c2, &type2);
+        var result: Container = .uninit;
+        const c1id = c1 - x1.array.ptr(.containers);
+        const c2id = c2 - x2.array.ptr(.containers);
+        switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.bitset, .bitset) => {
+                result = try bitset_container_create(allocator, dstr);
+                _ = bitset_container_or_nocard(
+                    c1.blocks_as(.bitset, x1.*).ptr,
+                    c2.blocks_as(.bitset, x2.*).ptr,
+                    &result,
+                    result.blocks_as(.bitset, dstr.*).ptr,
+                );
+                return result;
+            },
+            misc.pair(.array, .array) => {
+                try array_array_container_lazy_union(c1, allocator, x1, c2, x2, &result, dstr);
+                if (result == uninit and c1.typecode == .array)
+                    return x1.array.ptr(.containers)[c1id]; // the computation was done in-place!
+                return result;
+            },
+            misc.pair(.run, .run) => {
+                result = try run_container_create_given_capacity(
+                    allocator,
+                    @max(c1.cardinality, c2.cardinality),
+                    dstr,
+                );
+                try run_container_union(&result, allocator, dstr, c1, x1, c2, x2);
+                return try convert_run_to_efficient_container_and_free(result, allocator, dstr);
+            },
+            misc.pair(.bitset, .array) => {
+                result = try bitset_container_create(allocator, dstr);
+                array_bitset_container_lazy_union(c2, x2, c1, x1, &result, dstr); // is lazy
+                return result;
+            },
+            misc.pair(.array, .bitset) => {
+                // c1 is an array, so no in-place possible
+                result = try bitset_container_create(allocator, dstr);
+                array_bitset_container_lazy_union(c1, x1, c2, x2, &result, dstr); // is lazy
+                return result;
+            },
+            misc.pair(.bitset, .run) => {
+                if (run_container_is_full(c2.*, x2.*)) {
+                    result = try run_container_create_given_capacity(allocator, c2.cardinality, dstr);
+                    const c2b = x2.array.ptr(.containers)[c2id];
+                    const c2runs = c2b.blocks_as(.run, x2.*).ptr;
+                    try run_container_copy(c2b, allocator, &result, c2runs, dstr);
+                    return result;
+                }
+                result = try bitset_container_create(allocator, dstr);
+                const c1b = &x1.array.ptr(.containers)[c1id];
+                const c2b = &x2.array.ptr(.containers)[c2id];
+                run_bitset_container_lazy_union(&result, dstr, c2b, x2, c1b, x1); // is lazy
+                return result;
+            },
+            misc.pair(.run, .bitset) => {
+                if (run_container_is_full(c1.*, x1.*)) {
+                    result = try run_container_create_given_capacity(allocator, c1.cardinality, dstr);
+                    const c1b = x1.array.ptr(.containers)[c1id];
+                    const c1runs = c1b.blocks_as(.run, x1.*).ptr;
+                    try run_container_copy(c1b, allocator, &result, c1runs, dstr);
+                    return result;
+                }
+                result = try bitset_container_create(allocator, dstr);
+                run_bitset_container_lazy_union(&result, dstr, c1, x1, c2, x2); //  lazy
+                return result;
+            },
+            misc.pair(.array, .run) => {
+                result = try run_container_create_given_capacity(allocator, 1, dstr);
+                try array_run_container_union(&result, allocator, dstr, c1, x1, c2, x2);
+                // skip convert_run_to_efficient_container since we are lazy
+                return result;
+            },
+            misc.pair(.run, .array) => {
+                result = try run_container_create_given_capacity(allocator, c2.cardinality, dstr);
+                try array_run_container_union(&result, allocator, dstr, c2, x2, c1, x1);
+                // skip convert_run_to_efficient_container since we are lazy
+                return result;
+            },
+            else => unreachable,
+        }
+    }
+
+    /// "repair" the container after lazy operations.
+    pub fn repair_after_lazy(c: *Container, allocator: mem.Allocator, r: *Bitmap) !Container {
+        return switch (c.typecode) {
+            .bitset => bc: {
+                c.cardinality = bitset_container_compute_cardinality(c.blocks_as(.bitset, r.*).ptr);
+                if (c.cardinality <= C.DEFAULT_MAX_SIZE) {
+                    const cid = c - r.array.ptr(.containers);
+                    const bc = try c.array_container_from_bitset(allocator, r);
+                    r.array.ptr(.containers)[cid].deinit_blocks(r.*);
+                    break :bc bc;
+                }
+                break :bc c.*;
+            },
+            .array => c.*,
+            .run => try c.convert_run_to_efficient_container_and_free(allocator, r),
             else => unreachable,
         };
     }
