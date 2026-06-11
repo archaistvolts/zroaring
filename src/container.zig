@@ -107,7 +107,7 @@ pub const Container = packed struct(u64) {
         const cid = c - r.array.ptr(.containers);
         const blockslen = r.array.ptr(.blockslen).*;
         if (blockslen + c.nblocks() + moreblocks >= r.array.ptr(.blockscapacity).*) {
-            try r.extend_array(allocator, 0, moreblocks);
+            try r.ensure_unused_capacity(allocator, 0, moreblocks);
         }
         // move blocks and update blocks info
         const blocks = r.slice(.blocks, .blockscapacity);
@@ -154,7 +154,7 @@ pub const Container = packed struct(u64) {
         } else {
             ac.deinit_blocks(r.*);
             const acid = ac - r.array.ptr(.containers);
-            try r.extend_array(allocator, 0, ac.nblocks() + moreblocks);
+            try r.ensure_unused_capacity(allocator, 0, ac.nblocks() + moreblocks);
             const ac1 = &r.array.ptr(.containers)[acid];
             ac1.blockoffset = @intCast(r.array.ptr(.blockslen).*);
             ac1.nblocks_minus1 += @intCast(moreblocks);
@@ -162,6 +162,7 @@ pub const Container = packed struct(u64) {
         }
     }
 
+    // min: (n_runs) is clamped from [0,C.BITSET_BLOCKS).
     pub fn run_container_grow(
         rc: *Container,
         allocator: mem.Allocator,
@@ -170,7 +171,7 @@ pub const Container = packed struct(u64) {
         r: *Bitmap,
     ) !void {
         const runcap = rc.calc_capacity();
-        const capacity = @max(min, if (runcap == 0)
+        const newcap = @max(min, if (runcap == 0)
             0
         else if (runcap < 64)
             runcap * 2
@@ -178,7 +179,7 @@ pub const Container = packed struct(u64) {
             runcap * 3 / 2
         else
             runcap * 5 / 4);
-        const morecap = capacity - runcap;
+        const morecap = newcap - runcap;
         const moreblocks = @min(
             C.BITSET_BLOCKS - rc.nblocks(),
             misc.numGroupsOfSize(morecap, C.BLOCK_LEN32),
@@ -188,11 +189,10 @@ pub const Container = packed struct(u64) {
             assert(moreblocks != 0);
             try add_container_blocks(r, allocator, rc, moreblocks);
         } else if (rc.* == uninit) {
-            rc.* = try run_container_create_given_capacity(allocator, capacity, r);
-        } else if (moreblocks != 0) { // moreblocks might be 0 if there is already enough
-            //                           capacity. ie when min > C.BITSET_BLOCKS.
+            rc.* = try run_container_create_given_capacity(allocator, newcap, r);
+        } else if (moreblocks != 0) { // moreblocks might be 0 if already at capacity.
             rc.deinit_blocks(r.*);
-            try r.extend_array(allocator, 0, moreblocks);
+            try r.ensure_unused_capacity(allocator, 0, rc.nblocks() + moreblocks); // FIXME: moreblocks
             rc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
             rc.nblocks_minus1 += @intCast(moreblocks);
             r.array.ptr(.blockslen).* += rc.nblocks();
@@ -882,7 +882,7 @@ pub const Container = packed struct(u64) {
         r: *Bitmap,
     ) !Container {
         const numblocks = misc.numGroupsOfSize(capacity * @sizeOf(u16), C.BLOCK_SIZE);
-        try r.extend_array(allocator, 1, numblocks);
+        try r.ensure_unused_capacity(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
         return .{
             .typecode = .array,
@@ -901,7 +901,7 @@ pub const Container = packed struct(u64) {
             C.BITSET_BLOCKS,
             misc.numGroupsOfSize(nruns_capacity * @sizeOf(root.Rle16), C.BLOCK_SIZE),
         );
-        try r.extend_array(allocator, 1, numblocks);
+        try r.ensure_unused_capacity(allocator, 1, numblocks);
         defer r.array.ptr(.blockslen).* += numblocks;
         return .{
             .typecode = .run,
@@ -919,7 +919,7 @@ pub const Container = packed struct(u64) {
         allocator: mem.Allocator,
         r: *Bitmap,
     ) !Container {
-        try r.extend_array(allocator, 1, C.BITSET_BLOCKS);
+        try r.ensure_unused_capacity(allocator, 1, C.BITSET_BLOCKS);
         defer r.array.ptr(.blockslen).* += C.BITSET_BLOCKS;
         const bc = Container{
             .typecode = .bitset,
@@ -1109,7 +1109,7 @@ pub const Container = packed struct(u64) {
                 return c;
             }
             // convert array to run container
-            try r.extend_array(allocator, 0, nrunblocks);
+            try r.ensure_unused_capacity(allocator, 0, nrunblocks);
 
             var prev: i32 = -2;
             var run_start: i32 = -1;
@@ -2139,7 +2139,7 @@ pub const Container = packed struct(u64) {
                 .nblocks_minus1 = @intCast(cnblocks - 1),
                 .typecode = .array,
             };
-            try r.extend_array(allocator, 0, cnblocks);
+            try r.ensure_unused_capacity(allocator, 0, cnblocks);
             r.array.ptr(.blockslen).* += cnblocks;
             const array = answer.blocks_as(.array, r.*);
             const runs = c.blocks_as(.run, r.*);
@@ -4082,7 +4082,7 @@ pub const Container = packed struct(u64) {
         x: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
-        try dstr.extend_array(allocator, 0, C.BITSET_BLOCKS);
+        try dstr.ensure_unused_capacity(allocator, 0, C.BITSET_BLOCKS);
         var bc = Container{
             .typecode = .bitset,
             .cardinality = c.cardinality,

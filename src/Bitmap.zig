@@ -13,7 +13,7 @@ pub const Array = extern struct {
     /// blocks capacity. [0, 1<<24]
     blockscapacity: u32,
     magic: root.Magic,
-    /// a bitset of `Flag`
+    /// a bitset of `Flag`.
     flags: u8,
     /// container keys.
     keys: flexible.Array(u16, .capacity) align(C.BLOCK_ALIGN),
@@ -259,7 +259,7 @@ pub fn insert_new_key_value_at(
     c: Container,
     i: u32,
 ) !void {
-    try r.extend_array(allocator, 1, 1);
+    try r.ensure_unused_capacity(allocator, 1, 1);
     const len = r.array.ptr(.len).*;
     const ks = r.array.ptr(.keys)[0..len];
     const cs = r.array.ptr(.containers)[0..len];
@@ -410,7 +410,7 @@ pub fn add_bulk(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext, val
 }
 
 fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
-    try r.extend_array(allocator, 1, 0);
+    try r.ensure_unused_capacity(allocator, 1, 0);
     const pos = r.array.ptr(.len).*;
     r.array.ptr(.keys)[pos] = key;
     r.array.ptr(.containers)[pos] = c;
@@ -1156,9 +1156,12 @@ pub fn realloc_array(
     r.array = newarray;
 }
 
+/// similar to croaring.extend_array.
+///
 /// ensure the bitmap has room for more containers and more blocks. may modify
-/// `Array` capacity and blockscapacity, nothing else.
-pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_blockslen: u32) !void {
+/// `Array` capacity and blockscapacity.
+// TODO audit callsites and blockslen usage
+pub fn ensure_unused_capacity(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_blockslen: u32) !void {
     const len = r.array.ptr(.len).*;
     const capacity = r.array.ptr(.capacity).*;
     const blockslen = r.array.ptr(.blockslen).*;
@@ -1196,7 +1199,7 @@ pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_bl
 /// Modifies Bitmap len, adding distance.
 pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i32) !void {
     if (distance > 0) {
-        try r.extend_array(allocator, @bitCast(distance), 0);
+        try r.ensure_unused_capacity(allocator, @bitCast(distance), 0);
     }
     const len = r.array.ptr(.len);
     const srcpos = len.* - count;
@@ -1618,7 +1621,7 @@ fn append_copy_range(
     for (sacontainers[start_index..end_index]) |c| {
         cnblocks += c.nblocks();
     }
-    try ra.extend_array(allocator, end_index - start_index, cnblocks);
+    try ra.ensure_unused_capacity(allocator, end_index - start_index, cnblocks);
 
     for (start_index..end_index) |i| {
         const pos = ra.array.ptr(.len).*;
