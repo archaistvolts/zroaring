@@ -34,6 +34,7 @@ pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(root.Container.Cardinalit
 pub const OR_BITSET_CONVERSION_TO_FULL = false; // TODO build option
 /// whether lazy container-container operations force a bitset conversion
 pub const LAZY_OR_BITSET_CONVERSION_TO_FULL = false; // TODO build option
+pub const LAZY_OR_BITSET_CONVERSION = true; // TODO build option
 pub const ARRAY_LAZY_LOWERBOUND = 1024;
 
 pub const IS_X86 = builtin.cpu.arch.isX86();

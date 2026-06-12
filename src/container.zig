@@ -103,10 +103,10 @@ pub const Container = packed struct(u64) {
         moreblocks: u32,
     ) !void {
         assert(moreblocks != 0);
-        // TODO move this logic to extend_array?
+        // TODO move this logic to ensure_unused_capacity?
         const cid = c - r.array.ptr(.containers);
         const blockslen = r.array.ptr(.blockslen).*;
-        if (blockslen + c.nblocks() + moreblocks >= r.array.ptr(.blockscapacity).*) {
+        if (blockslen + moreblocks >= r.array.ptr(.blockscapacity).*) {
             try r.ensure_unused_capacity(allocator, 0, moreblocks);
         }
         // move blocks and update blocks info
@@ -147,11 +147,10 @@ pub const Container = packed struct(u64) {
         const newcap = std.math.clamp(grow_capacity(cap), mincapacity, max);
         const morecap = newcap - cap;
         const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN16);
-        // trace(@src(), "mincapacity={} newcap={} morecap={} moreblocks={}", .{ mincapacity, newcap, morecap, moreblocks });
-        // trace(@src(), "c={}", .{c});
         if (preserve) {
             try add_container_blocks(r, allocator, ac, moreblocks);
-        } else {
+        } else if (moreblocks != 0) {
+            // move container blocks to the end of blocks without copying contents
             ac.deinit_blocks(r.*);
             const acid = ac - r.array.ptr(.containers);
             try r.ensure_unused_capacity(allocator, 0, ac.nblocks() + moreblocks);
@@ -185,17 +184,20 @@ pub const Container = packed struct(u64) {
             misc.numGroupsOfSize(morecap, C.BLOCK_LEN32),
         );
 
-        if (copy) {
-            assert(moreblocks != 0);
-            try add_container_blocks(r, allocator, rc, moreblocks);
-        } else if (rc.* == uninit) {
+        if (rc.* == uninit) {
             rc.* = try run_container_create_given_capacity(allocator, newcap, r);
         } else if (moreblocks != 0) { // moreblocks might be 0 if already at capacity.
-            rc.deinit_blocks(r.*);
-            try r.ensure_unused_capacity(allocator, 0, rc.nblocks() + moreblocks); // FIXME: moreblocks
-            rc.blockoffset = @intCast(r.array.ptr(.blockslen).*);
-            rc.nblocks_minus1 += @intCast(moreblocks);
-            r.array.ptr(.blockslen).* += rc.nblocks();
+            if (copy) {
+                try add_container_blocks(r, allocator, rc, moreblocks);
+            } else { // move container blocks to the end of blocks without copying contents
+                rc.deinit_blocks(r.*);
+                const rcid = rc - r.array.ptr(.containers);
+                try r.ensure_unused_capacity(allocator, 0, rc.nblocks() + moreblocks);
+                const rc1 = &r.array.ptr(.containers)[rcid];
+                rc1.blockoffset = @intCast(r.array.ptr(.blockslen).*);
+                rc1.nblocks_minus1 += @intCast(moreblocks);
+                r.array.ptr(.blockslen).* += rc1.nblocks();
+            }
         }
     }
 
@@ -4578,10 +4580,11 @@ pub const Container = packed struct(u64) {
                     if (c1.cardinality == C.MAX_KEY_CARDINALITY) { // we convert
                         return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, x1);
                     }
+                } else {
+                    const c1words = c1.blocks_as(.bitset, x1.*).ptr;
+                    const c2words = c2.blocks_as(.bitset, x2.*).ptr;
+                    _ = bitset_container_or_nocard(c1words, c2words, c1, c1words);
                 }
-                const c1words = c1.blocks_as(.bitset, x1.*).ptr;
-                const c2words = c2.blocks_as(.bitset, x2.*).ptr;
-                _ = bitset_container_or_nocard(c1words, c2words, c1, c1words);
                 return c1.*;
             },
             misc.pair(.array, .array) => {
@@ -4869,6 +4872,20 @@ pub const Container = packed struct(u64) {
             .run => try c.convert_run_to_efficient_container_and_free(allocator, r),
             else => unreachable,
         };
+    }
+
+    fn shared_container_extract_copy(sc: Container, allocator: mem.Allocator, r: Bitmap) !Container {
+        _ = sc;
+        _ = r;
+        _ = allocator;
+        unreachable;
+    }
+
+    pub fn get_writable_copy_if_shared(c1: Container, allocator: mem.Allocator, x1: Bitmap) !Container {
+        return if (c1.typecode == .shared)
+            try c1.shared_container_extract_copy(allocator, x1)
+        else
+            c1;
     }
 };
 

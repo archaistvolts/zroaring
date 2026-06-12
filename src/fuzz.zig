@@ -363,7 +363,10 @@ test "AFL fuzz crashes" {
     // if (true) return error.SkipZigTest;
     const afl_output_path = "afl/output/default";
     const io = testing.io;
-    var dir = try Io.Dir.cwd().openDir(io, afl_output_path, .{ .iterate = true });
+    var dir = Io.Dir.cwd().openDir(io, afl_output_path, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound => return,
+        else => return e,
+    };
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
