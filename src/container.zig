@@ -443,8 +443,10 @@ pub const Container = packed struct(u64) {
         dstr: *Bitmap,
     ) !Container {
         const limit = ac.cardinality;
+        const acid = ac - r.array.ptr(.containers);
         var ans = try bitset_container_create(allocator, dstr);
-        const array = ac.blocks_as(.array, r.*);
+        const ac1 = r.array.ptr(.containers)[acid];
+        const array = ac1.blocks_as(.array, r.*);
         const words = ans.blocks_as(.bitset, dstr.*);
         for (array[0..limit]) |v| bitset_container_set(&ans, v, words);
         return ans;
@@ -784,7 +786,7 @@ pub const Container = packed struct(u64) {
 
             switch (c.typecode) {
                 .array => {
-                    try w.print("{t: <6} {: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" });
+                    try w.print("{t: <6} #:{: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" });
                     const vals0 = c.blocks_as(.array, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
@@ -816,7 +818,7 @@ pub const Container = packed struct(u64) {
                     }
                 },
                 .run => {
-                    try w.print("{t: <6} {: <7} @{: <3}-{: <3} {: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
+                    try w.print("{t: <6} #:{: <7} @{: <3}-{: <3} runs:{: <5}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
                     const vals0 = c.blocks_as(.run, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
@@ -834,9 +836,9 @@ pub const Container = packed struct(u64) {
                 },
                 .bitset => {
                     if (c.cardinality == C.BITSET_UNKNOWN_CARDINALITY)
-                        try w.print("{t: <6} #{s: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, unknown, c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" })
+                        try w.print("{t: <6} #:{s: <7} @{: <3}-{: <3}", .{ c.typecode, unknown, c.blockoffset, c.blockoffset + f.c.nblocks_minus1 })
                     else
-                        try w.print("{t: <6} {: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" });
+                        try w.print("{t: <6} #:{: <7} @{: <3}-{: <3}", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1 });
                 },
                 .shared => {
                     try w.writeAll("TODO: shared");
@@ -3158,8 +3160,9 @@ pub const Container = packed struct(u64) {
         const totalCardinality = card1 + card2;
 
         if (totalCardinality <= C.DEFAULT_MAX_SIZE) {
+            const src1id = src1 - x1.array.ptr(.containers);
             dst.* = try array_container_create_given_capacity(allocator, totalCardinality, dstr);
-            try array_container_xor(src1, allocator, x1, src2, x2, dst, dstr);
+            try array_container_xor(&x1.array.ptr(.containers)[src1id], allocator, x1, src2, x2, dst, dstr);
             return;
         }
 
@@ -3411,7 +3414,11 @@ pub const Container = packed struct(u64) {
             // iterator
 
             const temp = try array_container_from_run(src2, allocator, x2, dstr);
-            try array_array_container_xor(&temp, allocator, dstr, src1, x1, dst, dstr);
+            // avoid using stack pointer: temporarily insert temp into dstr containers
+            const tmpcid = dstr.array.ptr(.len).*;
+            try dstr.insert_new_key_value_at(allocator, undefined, temp, tmpcid);
+            defer dstr.remove_at_index(tmpcid);
+            try array_array_container_xor(&dstr.array.ptr(.containers)[tmpcid], allocator, dstr, src1, x1, dst, dstr);
         } else { // guess that it will end up as a bitset
             const result = try bitset_container_from_run(src2, allocator, x2, dstr);
             try bitset_array_container_ixor(&result, allocator, dstr, src1, x1, dst, dstr);

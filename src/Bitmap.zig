@@ -1249,7 +1249,7 @@ pub const FmtLong = struct {
             Model.calcSize(r.array.calcLens()),
         });
 
-        try w.writeAll("\nindex key   type   card    location nruns  : contents");
+        // try w.writeAll("\nindex key   type   card    location nruns  : contents");
         for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
             try w.print("\n{: <5} {: <5} {f}", .{ i, key, c.fmtLong(r, key) });
         }
@@ -2060,7 +2060,7 @@ pub fn lazy_or_inplace(
                 } else {
                     // convert to bitset
                     const oldc = c1;
-                    c1 = try c1.to_bitset(allocator, x1, x1);
+                    c1 = try x1.array.ptr(.containers)[pos1].to_bitset(allocator, x1, x1);
                     if (c1 != oldc) {
                         oldc.deinit_blocks(x1.*);
                     }
