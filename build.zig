@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) !void {
         // an oblect file that contains the test function
         const afl_obj = b.addObject(.{
             .name = "fuzz_obj",
+            .use_llvm = use_llvm,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/fuzz.zig"),
                 .target = target,
@@ -80,6 +81,7 @@ pub fn build(b: *std.Build) !void {
             }),
         });
         // afl_obj.root_module.linkLibrary(libcroaring);
+        afl_obj.sanitize_coverage_trace_pc_guard = true;
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
         const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{
@@ -124,4 +126,19 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(gen_corpus);
     b.step("gen-afl-corpus", "Generate afl/input/ corpus files.")
         .dependOn(&b.addRunArtifact(gen_corpus).step);
+
+    const afl_main = b.addExecutable(.{
+        .name = "afl-main",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz-main.zig"),
+            .target = target,
+            .imports = &.{
+                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                .{ .name = "build-options", .module = options.createModule() },
+            },
+        }),
+    });
+    b.installArtifact(afl_main);
+    b.step("afl-main", "fuzz a single afl/output file")
+        .dependOn(&b.addRunArtifact(afl_main).step);
 }

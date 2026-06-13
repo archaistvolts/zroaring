@@ -50,7 +50,7 @@ fn loadCorpus(io: Io, dirpath: []const u8) ![]const []const u8 {
     return ret.toOwnedSlice(testgpa);
 }
 
-fn croaringOracleFile(io: Io, path: []const u8) !void {
+fn croaringFuzzFile(io: Io, path: []const u8) !void {
     const contents = loadPath(io, path) catch return;
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
@@ -58,7 +58,7 @@ fn croaringOracleFile(io: Io, path: []const u8) !void {
 }
 
 test "croaring oracle crash - current" {
-    try croaringOracleFile(testing.io, ".zig-cache/f/crash");
+    try croaringFuzzFile(testing.io, ".zig-cache/f/crash");
 }
 
 test "croaring oracle crashes" {
@@ -72,7 +72,7 @@ test "croaring oracle crashes" {
         var buf: [256]u8 = undefined;
         var fbs = Io.Writer.fixed(&buf);
         try fbs.print("{s}/{s}", .{ path, e.name });
-        try croaringOracleFile(io, fbs.buffered());
+        try croaringFuzzFile(io, fbs.buffered());
     }
 }
 
@@ -217,7 +217,7 @@ var arena_impl: std.heap.ArenaAllocator = .{
 };
 export fn zig_fuzz_init() void {}
 
-export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
+pub export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
     zig_fuzz_test1(dataptr[0..size]) catch unreachable;
 }
 
@@ -580,7 +580,7 @@ fn perform_op(
                 ),
                 else => unreachable,
             };
-            defer res.deinit(allocator);
+            errdefer res.deinit(allocator);
 
             if (is_cr) {
                 const cr_res = switch (op) {
@@ -660,8 +660,10 @@ fn perform_op(
                 },
                 else => unreachable,
             }
+
             rs[o.idx].deinit(allocator);
-            rs[o.idx] = try res.copy(allocator);
+            rs[o.idx] = res;
+
             if (op == .lazy_or)
                 try rs[o.idx].repair_after_lazy(allocator);
         },
