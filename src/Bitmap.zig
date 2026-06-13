@@ -1249,8 +1249,9 @@ pub const FmtLong = struct {
             Model.calcSize(r.array.calcLens()),
         });
 
+        try w.writeAll("\nindex key   type   card    location nruns  : contents");
         for (r.slice(.containers, .len), r.array.ptr(.keys), 0..) |*c, key, i| {
-            try w.print("\n{: <5} {: <5}:{f}", .{ i, key, c.fmtLong(r, key) });
+            try w.print("\n{: <5} {: <5} {f}", .{ i, key, c.fmtLong(r, key) });
         }
     }
 };
@@ -1949,7 +1950,7 @@ pub fn lazy_or(
             var c: Container = .uninit;
             if (bitsetconversion and c1.typecode != .bitset and c2.typecode != .bitset) {
                 var newc1 = c1.*; // TODO // container_mutable_unwrap_shared(c1);
-                newc1 = try newc1.to_bitset(allocator, &answer);
+                newc1 = try newc1.to_bitset(allocator, x1, &answer);
                 c = try newc1.lazy_ior(allocator, &answer, c2, x2);
                 if (c != newc1) { // should not happen
                     newc1.deinit_blocks(answer);
@@ -2059,7 +2060,7 @@ pub fn lazy_or_inplace(
                 } else {
                     // convert to bitset
                     const oldc = c1;
-                    c1 = try c1.to_bitset(allocator, x1);
+                    c1 = try c1.to_bitset(allocator, x1, x1);
                     if (c1 != oldc) {
                         oldc.deinit_blocks(x1.*);
                     }

@@ -162,6 +162,8 @@ pub const Container = packed struct(u64) {
     }
 
     // min: (n_runs) is clamped from [0,C.BITSET_BLOCKS).
+    //
+    // asserts that `rc` needs to grow to hold `min` runs.
     pub fn run_container_grow(
         rc: *Container,
         allocator: mem.Allocator,
@@ -170,6 +172,7 @@ pub const Container = packed struct(u64) {
         r: *Bitmap,
     ) !void {
         const runcap = rc.calc_capacity();
+        assert(runcap < min);
         const newcap = @max(min, if (runcap == 0)
             0
         else if (runcap < 64)
@@ -777,9 +780,11 @@ pub const Container = packed struct(u64) {
                 return;
             }
             const hi = @as(u32, f.key) << 16;
-            try w.print("{t: <6} #{: <5} @{: <3} - {: <3} n{: <4}:", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
+            const unknown = "unknown";
+
             switch (c.typecode) {
                 .array => {
+                    try w.print("{t: <6} {: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" });
                     const vals0 = c.blocks_as(.array, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
@@ -811,6 +816,7 @@ pub const Container = packed struct(u64) {
                     }
                 },
                 .run => {
+                    try w.print("{t: <6} {: <7} @{: <3}-{: <3} {: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, c.cardinality });
                     const vals0 = c.blocks_as(.run, f.r);
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
@@ -826,7 +832,12 @@ pub const Container = packed struct(u64) {
                         },
                     }
                 },
-                .bitset => {},
+                .bitset => {
+                    if (c.cardinality == C.BITSET_UNKNOWN_CARDINALITY)
+                        try w.print("{t: <6} #{s: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, unknown, c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" })
+                    else
+                        try w.print("{t: <6} {: <7} @{: <3}-{: <3} {s: <7}: ", .{ c.typecode, c.get_cardinality(f.r), c.blockoffset, c.blockoffset + f.c.nblocks_minus1, "" });
+                },
                 .shared => {
                     try w.writeAll("TODO: shared");
                 },
@@ -2521,7 +2532,8 @@ pub const Container = packed struct(u64) {
         const card2 = src2.cardinality;
         const src1id = src1 - x1.array.ptr(.containers);
         const src2id = src2 - x2.array.ptr(.containers);
-        try run_container_grow(dst, allocator, 2 * (card1 + card2), false, dstr);
+        if (dst.calc_capacity() < 2 * (card1 + card2))
+            try run_container_grow(dst, allocator, 2 * (card1 + card2), false, dstr);
         const src1b = &x1.array.ptr(.containers)[src1id];
         const src2b = &x2.array.ptr(.containers)[src2id];
         const arr = src1b.blocks_as(.array, x1.*);
@@ -3260,7 +3272,8 @@ pub const Container = packed struct(u64) {
         dst: *Container,
         dstr: *Bitmap,
     ) !void {
-        try run_container_grow(dst, allocator, src1.cardinality + src2.cardinality, false, dstr);
+        if (dst.calc_capacity() < src1.cardinality + src2.cardinality)
+            try run_container_grow(dst, allocator, src1.cardinality + src2.cardinality, false, dstr);
         dst.cardinality = 0;
 
         const dstruns = dst.blocks_as(.run, dstr.*);
@@ -3325,11 +3338,13 @@ pub const Container = packed struct(u64) {
         runr: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
+        const runid = run - runr.array.ptr(.containers);
         const runs = run.blocks_as(.run, runr.*);
         const card = run_container_cardinality(run.*, runs.ptr);
         var answer = try bitset_container_create(allocator, dstr);
         const words = answer.blocks_as(.bitset, dstr.*);
-        for (runs[0..run.cardinality]) |rle| {
+        const run2 = runr.array.ptr(.containers)[runid];
+        for (run2.blocks_as(.run, runr.*)[0..run2.cardinality]) |rle| {
             misc.bitset_set_lenrange(words.ptr, rle.value, rle.length);
         }
         answer.cardinality = card;
@@ -4538,11 +4553,13 @@ pub const Container = packed struct(u64) {
     /// no matter what the initial container was, convert it to a bitset if a
     /// new container is produced, caller responsible for freeing the previous
     /// one container should not be a shared container
-    pub fn to_bitset(c: Container, allocator: mem.Allocator, r: *Bitmap) !Container {
+    ///
+    /// c is allocated in r. returned container is allocated in dstr.
+    pub fn to_bitset(c: *const Container, allocator: mem.Allocator, r: *const Bitmap, dstr: *Bitmap) !Container {
         return switch (c.typecode) {
-            .bitset => c,
-            .array => try c.bitset_container_from_array(allocator, r),
-            .run => try c.bitset_container_from_run(allocator, r, r),
+            .bitset => c.*,
+            .array => try c.bitset_container_from_array2(allocator, r, dstr),
+            .run => try c.bitset_container_from_run(allocator, r, dstr),
             .shared => unreachable,
         };
     }

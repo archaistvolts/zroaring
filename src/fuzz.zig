@@ -87,8 +87,8 @@ pub const FuzzOp = union(enum) {
     andnot: BinOp,
     lazy_or: BinOp,
     or_inplace: BinOpInplace,
-    or_many: ManyOp,
     is_subset: BinOp,
+    or_many: ManyOp,
     clear: u8,
     run_optimize: u8,
     shrink_to_fit: u8,
@@ -126,7 +126,7 @@ const crash_corpus: []const []const FuzzOp = @import("fuzz-crash-corpus.zon");
 
 const MAX_VAL = 100_000_000;
 const MAX_RANGE_LEN = 500_000;
-const NUM_BITMAPS = 2;
+const NUM_BITMAPS = 8;
 
 fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     var rs: [NUM_BITMAPS]Bitmap = @splat(.empty);
@@ -177,11 +177,12 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }), &oracles, &rs, allocator),
-            .or_many => |t| try perform_op(@unionInit(FuzzOp, @tagName(t), .{ .idxs = blk: {
-                const buf = try allocator.alloc(u8, smith.valueRangeLessThan(u8, 0, NUM_BITMAPS));
-                const len = smith.slice(buf);
-                break :blk buf[0..len];
-            } }), &oracles, &rs, allocator),
+            inline .or_many => |t| {
+                var idxs: [NUM_BITMAPS + 1]u8 = undefined;
+                const len = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS + 1);
+                for (idxs[0..len]) |*x| x.* = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS);
+                try perform_op(@unionInit(FuzzOp, @tagName(t), .{ .idxs = idxs[0..len] }), &oracles, &rs, allocator);
+            },
             inline .clear,
             .run_optimize,
             .shrink_to_fit,
@@ -244,8 +245,10 @@ const AflSmith = struct {
         return ret;
     }
 
-    pub fn slice(smith: *AflSmith, len: usize) ?[]u8 {
-        return smith.bytes.take(len) catch null;
+    pub fn slice(smith: *AflSmith, len: usize, at_least: u8, less_than: u8) ?[]u8 {
+        const bytes = smith.bytes.take(len) catch return null;
+        for (bytes) |*b| b.* = smith.valueRangeLessThan(u8, at_least, less_than) orelse return null;
+        return bytes;
     }
 
     pub fn valueRangeLessThan(smith: *AflSmith, T: type, at_least: T, less_than: T) ?T {
@@ -293,7 +296,11 @@ const AflSmith = struct {
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             }),
             inline .or_many => |t| @unionInit(FuzzOp, @tagName(t), .{
-                .idxs = smith.slice(smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null) orelse return null,
+                .idxs = smith.slice(
+                    smith.valueRangeLessThan(u8, 0, NUM_BITMAPS + 1) orelse return null,
+                    0,
+                    NUM_BITMAPS,
+                ) orelse return null,
             }),
             inline .clear,
             .run_optimize,
@@ -434,7 +441,10 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .or_inplace,
         => |o| try writer.writeAll(&.{ o.idx, o.src1 }),
         .or_many,
-        => |o| try writer.writeAll(o.idxs),
+        => |o| {
+            try writer.writeByte(@intCast(o.idxs.len));
+            try writer.writeAll(o.idxs);
+        },
         .contains,
         .rank,
         .select,
@@ -464,9 +474,9 @@ fn perform_op(
     rs: *[NUM_BITMAPS]Bitmap,
     allocator: mem.Allocator,
 ) !void {
-    const O = @TypeOf(oracles);
-    const is_cr = O == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
-    const is_hashmap = O == *[NUM_BITMAPS]HashMapOracle;
+    const Os = @TypeOf(oracles);
+    const is_cr = Os == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
+    const is_hashmap = Os == *[NUM_BITMAPS]HashMapOracle;
     comptime assert(is_cr or is_hashmap);
     switch (op) {
         .add, // only print ops which may modify
@@ -568,11 +578,6 @@ fn perform_op(
                     &rs[o.src2],
                     zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
                 ),
-                .or_many => |m| blk: {
-                    var buf: [NUM_BITMAPS]Bitmap = undefined;
-                    for (m.idxs) |*idx| buf[idx - m.idxs.ptr] = rs[idx.*];
-                    break :blk if (true) unreachable else Bitmap.or_many(allocator, buf[0..m.idxs.len]);
-                },
                 else => unreachable,
             };
             defer res.deinit(allocator);
@@ -674,18 +679,34 @@ fn perform_op(
             }
         },
         .or_many => |o| {
-            var buf: [NUM_BITMAPS]Bitmap = undefined;
-            for (o.idxs) |idx| buf[&idx - o.idxs.ptr] = rs[idx];
-            try rs[o.idxs[0]].or_many(allocator, buf[0..o.idxs.len]);
+            if (o.idxs.len == 0) return; // nothing to do
+
+            var rsbuf: [NUM_BITMAPS + 1]Bitmap = undefined;
+            var osbuf: [NUM_BITMAPS + 1]@TypeOf(oracles[0]) = undefined;
+            for (o.idxs) |*idx| {
+                rsbuf[idx - o.idxs.ptr] = rs[idx.*];
+                osbuf[idx - o.idxs.ptr] = oracles[idx.*];
+            }
+
+            const result = try Bitmap.or_many(allocator, rsbuf[0..o.idxs.len]);
+            rs[o.idxs[0]].deinit(allocator);
+            rs[o.idxs[0]] = result;
+
             if (is_cr) {
-                c.roaring_bitmap_or_inplace(oracles[o.idx], oracles[o.src1]);
+                const ret = c.roaring_bitmap_or_many(o.idxs.len, @ptrCast(&osbuf));
+                if (oracles[o.idxs[0]]) |old| c.roaring_bitmap_free(old);
+                oracles[o.idxs[0]] = ret;
             } else {
-                try oracles[o.idx].ensureUnusedCapacity(
-                    allocator,
-                    oracles[o.src1].count() * 5 / 4,
-                );
-                for (oracles[o.src1].keys()) |key|
-                    oracles[o.idx].putAssumeCapacity(key, {});
+                var cap: usize = 0;
+                for (o.idxs) |src| cap += oracles[src].count();
+                var ret = HashMapOracle.empty;
+                try ret.ensureTotalCapacity(allocator, cap);
+                for (o.idxs) |src| {
+                    for (oracles[src].keys()) |key|
+                        ret.putAssumeCapacity(key, {});
+                }
+                oracles[o.idxs[0]].deinit(allocator);
+                oracles[o.idxs[0]] = ret;
             }
         },
         .is_subset => |o| {
