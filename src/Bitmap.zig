@@ -46,7 +46,7 @@ pub const Flag = enum(u8) {
 
 pub const free = deinit;
 
-pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
+pub fn deinit(r: *Bitmap, allocator: Allocator) void {
     if (r.is_empty()) return;
     r.array.destroy(allocator);
     r.array = empty.array;
@@ -65,7 +65,7 @@ fn zero_init(m: *Model) void {
 }
 
 /// Allocates room for container_count containers and blocks, with minimum of 16.
-pub fn create_with_capacity(allocator: mem.Allocator, container_count: u32) !Bitmap {
+pub fn create_with_capacity(allocator: Allocator, container_count: u32) !Bitmap {
     const capacity = @max(16, container_count);
     const m = try Model.create(allocator, .{
         .capacity = capacity,
@@ -120,7 +120,7 @@ pub fn info_from_file_reader(freader: *Io.File.Reader) !Info {
 /// seekable/positional file. `read_buf` is a temporary buffer.
 /// TODO non-positional/streaming files.
 pub fn portable_deserialize(
-    allocator: mem.Allocator,
+    allocator: Allocator,
     io: Io,
     bitmap_file: Io.File,
     read_buf: []u8,
@@ -133,7 +133,7 @@ pub fn portable_deserialize(
 /// seekable/positional file.
 /// TODO non-positional/streaming files.
 pub fn portable_deserialize_file_reader(
-    allocator: mem.Allocator,
+    allocator: Allocator,
     bitmap_file_reader: *Io.File.Reader,
 ) !Bitmap {
     const ainfo = try info_from_file_reader(bitmap_file_reader);
@@ -255,7 +255,7 @@ pub fn deserialize_file_reader(
 /// insert key and container at index i, increment array.len by 1.
 pub fn insert_new_key_value_at(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     key: u16,
     c: Container,
     i: u32,
@@ -272,7 +272,7 @@ pub fn insert_new_key_value_at(
 }
 
 /// add `vals` to bitmap.  returns count of unique `vals` added.
-pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize {
+pub fn add_many(r: *Bitmap, allocator: Allocator, vals: []const u32) !usize {
     // TODO estimate how many containers and blocks are needed, preallocate and then use assume capacity api.
     trace(@src(), "vals={}:{?}..{?}", .{ vals.len, if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null });
     trace(@src(), "{f}", .{r.fmtLong()});
@@ -285,12 +285,12 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize 
 }
 
 /// add val to bitmap.
-pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
+pub fn add(r: *Bitmap, allocator: Allocator, val: u32) !void {
     _ = try r.add_checked(allocator, val);
 }
 
 /// returns true when `value` was added to the bitmap, false if already present.
-pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
+pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
     defer r.assert_valid();
 
     if (r.is_empty()) {
@@ -336,7 +336,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
 /// way that we can recover the container touched, which, in turn can be used to
 /// accelerate some functions (when you repeatedly need to add to the same
 /// container)
-fn containerptr_add(r: *Bitmap, allocator: mem.Allocator, val: u32, index: *u32) !*Container {
+fn containerptr_add(r: *Bitmap, allocator: Allocator, val: u32, index: *u32) !*Container {
     const key: u16 = @truncate(val >> 16);
     const i = misc.binarySearch(r.slice(.keys, .len), key);
     if (i >= 0) {
@@ -374,7 +374,7 @@ fn containerptr_add(r: *Bitmap, allocator: mem.Allocator, val: u32, index: *u32)
 /// similar to `add_bulk_impl` from croaring
 pub fn add_checked_bulk(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     context: *BulkContext,
     val: u32,
 ) !bool {
@@ -400,11 +400,11 @@ pub fn add_checked_bulk(
     }
 }
 
-pub fn add_bulk(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext, val: u32) !void {
+pub fn add_bulk(r: *Bitmap, allocator: Allocator, context: *BulkContext, val: u32) !void {
     _ = try r.add_checked_bulk(allocator, context, val);
 }
 
-fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
+fn append(r: *Bitmap, allocator: Allocator, key: u16, c: Container) !void {
     try r.ensure_unused_capacity(allocator, 1, 0);
     const pos = r.array.ptr(.len).*;
     r.array.ptr(.keys)[pos] = key;
@@ -418,7 +418,7 @@ fn append(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container) !void {
 /// check. The cardinality of the created container is stop - start.
 pub fn create_range(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     tc: Typecode,
     start: u32,
     stop: u32,
@@ -453,7 +453,7 @@ pub fn create_range(
 /// smaller
 pub fn range_of_ones(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     range_start: u32,
     range_end: u32,
 ) !Container {
@@ -469,7 +469,7 @@ pub fn range_of_ones(
 /// distance k*step from min.
 pub fn from_range(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     min: u32,
     max: u32,
     step: u16,
@@ -525,7 +525,7 @@ fn bitset_lenrange_cardinality(
 ///   nvals_greater is the number of array values greater than $max
 fn array_container_add_range_nvals(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     ac: *Container,
     min: u32,
     max: u32,
@@ -552,7 +552,7 @@ fn array_container_add_range_nvals(
 
 fn container_from_run_range(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     run: Container,
     min: u32,
     max: u32,
@@ -590,7 +590,7 @@ fn container_from_run_range(
 /// (and possibly new) container.
 fn container_add_range(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     c: *Container,
     min: u32,
     max: u32,
@@ -661,7 +661,7 @@ fn replace_key_and_container_at_index(r: Bitmap, i: u32, key: u16, c: Container)
 }
 
 /// Add all values in range [min, max]
-pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
+pub fn add_range_closed(r: *Bitmap, allocator: Allocator, min: u32, max: u32) !void {
     assert_valid(r.*);
     defer assert_valid(r.*);
 
@@ -726,7 +726,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
 }
 
 /// Add all values in range [min, max)
-pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
+pub fn add_range(r: *Bitmap, allocator: Allocator, min: u64, max: u64) !void {
     trace(@src(), "{} {}", .{ min, max });
 
     if (!(min < max and min <= C.MAX_VALUE_CARDINALITY)) {
@@ -943,7 +943,7 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
 ///
 /// Returns true if the result has at least one run container.
 /// Additional savings might be possible by calling `shrink_to_fit()`.
-pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
+pub fn run_optimize(r: *Bitmap, allocator: Allocator) !bool {
     r.assert_valid();
     trace(@src(), "{f}", .{r.fmtLong()});
     defer r.assert_valid();
@@ -1114,7 +1114,7 @@ pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
 /// modifies `Array` capacity and blockscapacity.
 pub fn realloc_array(
     r: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     new_capacity: u32,
     new_blockscapacity: u32,
 ) !void {
@@ -1156,7 +1156,7 @@ pub fn realloc_array(
 /// ensure the bitmap has room for more containers and more blocks. may modify
 /// `Array` capacity and blockscapacity.
 // TODO audit callsites and blockslen usage
-pub fn ensure_unused_capacity(r: *Bitmap, allocator: mem.Allocator, more_len: u32, more_blockslen: u32) !void {
+pub fn ensure_unused_capacity(r: *Bitmap, allocator: Allocator, more_len: u32, more_blockslen: u32) !void {
     const len = r.array.ptr(.len).*;
     const capacity = r.array.ptr(.capacity).*;
     const blockslen = r.array.ptr(.blockslen).*;
@@ -1192,7 +1192,7 @@ pub fn ensure_unused_capacity(r: *Bitmap, allocator: mem.Allocator, more_len: u3
 /// Allocates distance new containers when distance > 0.
 ///
 /// Modifies Bitmap len, adding distance.
-pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i32) !void {
+pub fn shift_tail(r: *Bitmap, allocator: Allocator, count: u32, distance: i32) !void {
     if (distance > 0) {
         try r.ensure_unused_capacity(allocator, @bitCast(distance), 0);
     }
@@ -1376,7 +1376,7 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
 }
 
 /// shrink containers if they use extra blocks then copy used blocks to a new allocation.
-pub fn shrink_to_fit(r: *Bitmap, allocator: mem.Allocator) !usize {
+pub fn shrink_to_fit(r: *Bitmap, allocator: Allocator) !usize {
     const capacity = r.array.ptr(.capacity).*;
     const blockscapacity = r.array.ptr(.blockscapacity).*;
     const len = r.array.ptr(.len).*;
@@ -1449,7 +1449,7 @@ fn clear_containers(r: Bitmap) void {
     }
 }
 
-pub fn clear(r: *Bitmap, allocator: mem.Allocator) void {
+pub fn clear(r: *Bitmap, allocator: Allocator) void {
     if (r.is_empty()) return;
     r.clear_containers();
     r.array.ptr(.len).* = 0;
@@ -1465,11 +1465,11 @@ pub fn clear_retaining_capacity(r: *Bitmap) void {
     r.array.ptr(.blockslen).* = 0;
 }
 
-pub fn remove(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
+pub fn remove(r: *Bitmap, allocator: Allocator, val: u32) !void {
     _ = try r.remove_checked(allocator, val);
 }
 
-pub fn remove_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
+pub fn remove_checked(r: *Bitmap, allocator: Allocator, val: u32) !bool {
     r.assert_valid();
     defer r.assert_valid();
     trace(@src(), "val={}", .{val});
@@ -1512,7 +1512,7 @@ fn advance_until(ra: Bitmap, x: u16, pos: u32) u32 {
     return misc.advanceUntil(ra.slice(.keys, .len), pos, x);
 }
 
-pub fn copy(r: Bitmap, allocator: mem.Allocator) !Bitmap {
+pub fn copy(r: Bitmap, allocator: Allocator) !Bitmap {
     if (r.is_empty()) return r;
     const lens = r.array.calcLens();
     const buflen = Bitmap.Model.calcSize(lens);
@@ -1522,7 +1522,7 @@ pub fn copy(r: Bitmap, allocator: mem.Allocator) !Bitmap {
     return ret;
 }
 
-pub fn overwrite(r: *Bitmap, allocator: mem.Allocator, src: Bitmap) !void {
+pub fn overwrite(r: *Bitmap, allocator: Allocator, src: Bitmap) !void {
     const new_copy = try src.copy(allocator);
     r.deinit(allocator);
     r.* = new_copy;
@@ -1565,7 +1565,7 @@ pub const @"and" = intersect;
 /// bitmaps, two-by-two, it is best to start with the smallest bitmap.
 /// You may also rely on and_inplace to avoid creating many temporary bitmaps.
 // there should be some SIMD optimizations possible here
-pub fn intersect(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+pub fn intersect(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     var answer = try create_with_capacity(allocator, @max(length1, length2));
@@ -1605,7 +1605,7 @@ pub fn intersect(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap)
 /// indexes [start_index, end_index)
 fn append_copy_range(
     ra: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     sa: *const Bitmap,
     start_index: u32,
     end_index: u32,
@@ -1635,7 +1635,7 @@ fn append_copy_range(
 /// responsible for memory management.
 pub const @"or" = merge;
 
-pub fn merge(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+pub fn merge(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     trace(@src(), "x1={f}", .{x1.fmtLong()});
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.ptr(.len).*;
@@ -1683,7 +1683,7 @@ pub fn merge(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bi
 }
 
 /// Inplace version of `or`, modifies r1.
-pub fn or_inplace(x1: *Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !void {
+pub fn or_inplace(x1: *Bitmap, allocator: Allocator, x2: *const Bitmap) !void {
     trace(@src(), "x1: {f}", .{x1.fmtLong()});
     trace(@src(), "x2: {f}", .{x2.fmtLong()});
     const length2 = x2.array.ptr(.len).*;
@@ -1744,7 +1744,7 @@ pub fn or_inplace(x1: *Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !voi
 }
 
 /// Returned Bitamp contains values present in one but not both inputs.
-pub fn xor(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+pub fn xor(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     trace(@src(), "x1={f}", .{x1.fmtLong()});
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.ptr(.len).*;
@@ -1797,7 +1797,7 @@ pub fn xor(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitm
 
 /// Computes the difference (andnot) between two bitmaps and returns new bitmap.
 /// Caller is responsible for freeing the result.
-pub fn andnot(x1: *const Bitmap, allocator: mem.Allocator, x2: *const Bitmap) !Bitmap {
+pub fn andnot(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     if (length1 == 0) {
@@ -1918,7 +1918,7 @@ pub fn select(bm: Bitmap, target_rank: u32) ?u32 {
 /// `zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL`
 pub fn lazy_or(
     x1: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     x2: *const Bitmap,
     bitsetconversion: bool,
 ) !Bitmap {
@@ -2003,7 +2003,7 @@ pub fn lazy_or(
 ///
 /// Execute maintenance on a bitmap created from `lazy_or()`
 /// or modified with `lazy_or_inplace()`.
-pub fn repair_after_lazy(r: *Bitmap, allocator: mem.Allocator) !void {
+pub fn repair_after_lazy(r: *Bitmap, allocator: Allocator) !void {
     const len = r.array.ptr(.len).*;
     for (0..len) |i| {
         // read before write! avoids write to stale pointer.
@@ -2029,7 +2029,7 @@ pub fn repair_after_lazy(r: *Bitmap, allocator: mem.Allocator) !void {
 /// `zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL`
 pub fn lazy_or_inplace(
     x1: *Bitmap,
-    allocator: mem.Allocator,
+    allocator: Allocator,
     x2: *const Bitmap,
     bitsetconversion: bool,
 ) !void {
@@ -2053,7 +2053,6 @@ pub fn lazy_or_inplace(
     while (true) {
         if (key1 == key2) {
             var c1 = x1.array.ptr(.containers)[pos1];
-            trace(@src(), "c1={}", .{c1});
             if (!c1.is_full(x1.*)) {
                 if (!bitsetconversion or c1.typecode == .bitset) {
                     c1 = try c1.get_writable_copy_if_shared(allocator, x1.*);
@@ -2106,7 +2105,7 @@ pub fn lazy_or_inplace(
 }
 
 /// Compute the union of 'number' bitmaps.
-pub fn or_many(allocator: mem.Allocator, xs: []Bitmap) !Bitmap {
+pub fn or_many(allocator: Allocator, xs: []Bitmap) !Bitmap {
     const number = xs.len;
     trace(@src(), "number={}", .{number});
     if (number == 0)

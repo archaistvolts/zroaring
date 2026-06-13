@@ -98,7 +98,7 @@ pub const Container = packed struct(u64) {
     /// container blockoffsets.
     fn add_container_blocks(
         r: *Bitmap,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         c: *Container,
         moreblocks: u32,
     ) !void {
@@ -134,7 +134,7 @@ pub const Container = packed struct(u64) {
     /// when false, deinit blocks and extend array.
     pub fn array_container_grow(
         ac: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
         mincapacity: u32,
         preserve: bool,
@@ -166,7 +166,7 @@ pub const Container = packed struct(u64) {
     // asserts that `rc` needs to grow to hold `min` runs.
     pub fn run_container_grow(
         rc: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         min: u32,
         copy: bool,
         r: *Bitmap,
@@ -204,7 +204,7 @@ pub const Container = packed struct(u64) {
         }
     }
 
-    pub fn append(c: *Container, allocator: mem.Allocator, r: *Bitmap, value: u16) !void {
+    pub fn append(c: *Container, allocator: Allocator, r: *Bitmap, value: u16) !void {
         switch (c.typecode) {
             .array => {
                 const cid = c - r.array.ptr(.containers);
@@ -231,7 +231,7 @@ pub const Container = packed struct(u64) {
     ///  * -1 -- value was not added because cardinality would exceed max_cardinality
     pub fn array_container_try_add(
         ac: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
         value: u16,
         maxcard: u32,
@@ -288,7 +288,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Moves the data so that we can write data at index
-    fn makeRoomAtIndex(run: *Container, allocator: mem.Allocator, r: *Bitmap, index: u16) !void {
+    fn makeRoomAtIndex(run: *Container, allocator: Allocator, r: *Bitmap, index: u16) !void {
         // This function calls realloc + memmove sequentially to move by one index.
         // Potentially copying the array twice.
         const cindex = run - r.array.ptr(.containers);
@@ -304,7 +304,7 @@ pub const Container = packed struct(u64) {
     /// Add all values in range [min, max] using hint.
     pub fn run_container_add_range_nruns(
         run: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
         min: u32,
         max: u32,
@@ -342,7 +342,7 @@ pub const Container = packed struct(u64) {
 
     pub fn run_container_add(
         run: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         pos: u16,
         r: *Bitmap,
     ) !bool {
@@ -424,7 +424,7 @@ pub const Container = packed struct(u64) {
     /// convert ac to a bitset in r.  assumes ac is in r.
     pub fn bitset_container_from_array(
         ac: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         var ans = try bitset_container_create(allocator, r);
@@ -438,7 +438,7 @@ pub const Container = packed struct(u64) {
     /// convert ac to a bitset in dst.  ac is in r.
     pub fn bitset_container_from_array2(
         ac: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -453,7 +453,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Note: when an array container becomes full, it is converted to a bitset in place.
-    pub fn add(c: *Container, allocator: mem.Allocator, r: *Bitmap, value: u16) !Container {
+    pub fn add(c: *Container, allocator: Allocator, r: *Bitmap, value: u16) !Container {
         // TODO // c = c.get_writable_copy_if_shared();
         const cid = c - r.array.ptr(.containers);
         switch (c.typecode) {
@@ -892,7 +892,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn array_container_create_given_capacity(
-        allocator: mem.Allocator,
+        allocator: Allocator,
         capacity: u32,
         r: *Bitmap,
     ) !Container {
@@ -908,7 +908,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn run_container_create_given_capacity(
-        allocator: mem.Allocator,
+        allocator: Allocator,
         nruns_capacity: u32,
         r: *Bitmap,
     ) !Container {
@@ -931,7 +931,7 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn bitset_container_create(
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         try r.ensure_unused_capacity(allocator, 1, C.BITSET_BLOCKS);
@@ -994,7 +994,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// Remove `pos' from `run'. Returns true if `pos' was present.
-    fn run_container_remove(run: *Container, allocator: mem.Allocator, pos: u16, r: *Bitmap) !bool {
+    fn run_container_remove(run: *Container, allocator: Allocator, pos: u16, r: *Bitmap) !bool {
         const runs = run.blocks_as(.run, r.*)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) {
@@ -1063,7 +1063,7 @@ pub const Container = packed struct(u64) {
 
     pub fn array_container_from_bitset(
         bc: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         const card = bc.cardinality;
@@ -1101,7 +1101,7 @@ pub const Container = packed struct(u64) {
     ///
     // TODO: split into run- array- and bitset- subfunctions for sanity;
     // a few function calls won't really matter.
-    pub fn convert_run_optimize(cid: u32, allocator: mem.Allocator, r: *Bitmap) !Container {
+    pub fn convert_run_optimize(cid: u32, allocator: Allocator, r: *Bitmap) !Container {
         const c = r.array.ptr(.containers)[cid];
         if (c.typecode == .run) {
             const newc = try c.convert_run_to_efficient_container(allocator, r);
@@ -1214,7 +1214,7 @@ pub const Container = packed struct(u64) {
     /// memory deallocation
     ///
     /// Returned container may not be valid.  caller must ensure bitmap is valid.
-    pub fn remove(c: *Container, allocator: mem.Allocator, val: u16, r: *Bitmap) !Container {
+    pub fn remove(c: *Container, allocator: Allocator, val: u16, r: *Bitmap) !Container {
         c.assert_valid(r.*);
         const cid = c - r.array.ptr(.containers);
         trace(@src(), "{}", .{val});
@@ -1638,7 +1638,7 @@ pub const Container = packed struct(u64) {
     /// otherwise is a array_container_t.
     fn bitset_bitset_container_intersection(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -1698,7 +1698,7 @@ pub const Container = packed struct(u64) {
     /// computes the intersection of array1 and array2 and return the result in dst.
     fn array_container_intersection(
         ac1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         ac2: *const Container,
         x2: *const Bitmap,
@@ -1748,7 +1748,7 @@ pub const Container = packed struct(u64) {
     /// Copy one container into another. We assume that they are distinct.
     fn array_container_copy(
         src: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         dst: *Container,
         srcarray: [*]align(C.BLOCK_ALIGN) const u16,
         dstr: *Bitmap,
@@ -1764,7 +1764,7 @@ pub const Container = packed struct(u64) {
     /// returns the computed intersection of src1 and src2
     fn run_container_intersection(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -1851,7 +1851,7 @@ pub const Container = packed struct(u64) {
     /// Copy one container into another. We assume that they are distinct.
     fn run_container_copy(
         src: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         dst: *Container,
         srcruns: [*]align(C.BLOCK_ALIGN) root.Rle16,
         dstr: *Bitmap,
@@ -1866,7 +1866,7 @@ pub const Container = packed struct(u64) {
     /// Compute the intersection of src1 and src2 and write the result to dst.
     fn array_bitset_container_intersection(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2000,7 +2000,7 @@ pub const Container = packed struct(u64) {
     /// dst. If dst == src2, an in-place processing is attempted.
     fn run_bitset_container_intersection(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2079,7 +2079,7 @@ pub const Container = packed struct(u64) {
     /// valid container.
     fn array_run_container_intersection(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2132,7 +2132,7 @@ pub const Container = packed struct(u64) {
     /// container and he becomes responsible to free the new one.
     pub fn convert_run_to_efficient_container(
         c: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         assert(c.typecode == .run);
@@ -2187,7 +2187,7 @@ pub const Container = packed struct(u64) {
     // like convert_run_to_efficient_container but frees the old result if needed
     fn convert_run_to_efficient_container_and_free(
         c: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         const answer = try c.convert_run_to_efficient_container(allocator, r);
@@ -2199,7 +2199,7 @@ pub const Container = packed struct(u64) {
     /// This allocates new memory, caller is responsible for deallocation.
     pub fn intersect(
         c1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -2283,7 +2283,7 @@ pub const Container = packed struct(u64) {
     /// Merge two sorted array containers into one sorted array.
     fn array_container_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2309,7 +2309,7 @@ pub const Container = packed struct(u64) {
     /// Writes result into dst. Returns true if result is a bitset.
     fn array_array_container_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2381,7 +2381,7 @@ pub const Container = packed struct(u64) {
 
     fn run_container_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2518,7 +2518,7 @@ pub const Container = packed struct(u64) {
 
     fn array_run_container_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2677,7 +2677,7 @@ pub const Container = packed struct(u64) {
     /// It is required that stop <= (1<<16), the caller is responsability for this
     /// check. The cardinality of the created container is stop - start.
     pub fn run_container_create_range(
-        allocator: mem.Allocator,
+        allocator: Allocator,
         start: u32,
         stop: u32,
         r: *Bitmap,
@@ -2693,7 +2693,7 @@ pub const Container = packed struct(u64) {
     /// Compute the union of src1 and src2 and write the result to src1
     fn run_container_union_inplace(
         src1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2760,7 +2760,7 @@ pub const Container = packed struct(u64) {
     /// Merge src1's array values into src2's runs in place.
     fn array_run_container_inplace_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *Container,
         x2: *Bitmap,
@@ -2824,7 +2824,7 @@ pub const Container = packed struct(u64) {
     // TODO can we do better than this?
     fn run_array_conatiner_inplace_union(
         c1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -2844,7 +2844,7 @@ pub const Container = packed struct(u64) {
 
     fn array_array_container_inplace_union(
         src1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -2923,7 +2923,7 @@ pub const Container = packed struct(u64) {
     /// old blocks when blockoffset differs from original.
     pub fn ior(
         c1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -3005,7 +3005,7 @@ pub const Container = packed struct(u64) {
     /// perform an 'or' operation (union) on the container.
     pub fn merge(
         c1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -3079,7 +3079,7 @@ pub const Container = packed struct(u64) {
 
     fn bitset_bitset_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3097,7 +3097,7 @@ pub const Container = packed struct(u64) {
 
     fn array_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3124,7 +3124,7 @@ pub const Container = packed struct(u64) {
     /// has no container initially).
     fn array_bitset_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3148,7 +3148,7 @@ pub const Container = packed struct(u64) {
 
     fn array_array_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3186,7 +3186,7 @@ pub const Container = packed struct(u64) {
     /// have any container.
     fn run_bitset_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3211,7 +3211,7 @@ pub const Container = packed struct(u64) {
 
     fn run_run_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3227,7 +3227,7 @@ pub const Container = packed struct(u64) {
     /// and `src2`.
     fn run_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3268,7 +3268,7 @@ pub const Container = packed struct(u64) {
 
     fn array_run_container_lazy_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3315,7 +3315,7 @@ pub const Container = packed struct(u64) {
 
     fn array_container_from_run(
         run: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         runr: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -3337,7 +3337,7 @@ pub const Container = packed struct(u64) {
 
     fn bitset_container_from_run(
         run: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         runr: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -3361,7 +3361,7 @@ pub const Container = packed struct(u64) {
     /// cases, the caller is responsible for deallocating dst.
     fn bitset_array_container_ixor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3387,7 +3387,7 @@ pub const Container = packed struct(u64) {
     /// can become any kind of container.
     fn array_run_container_xor(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3446,7 +3446,7 @@ pub const Container = packed struct(u64) {
     /// dst does not initially have any container.
     fn bitset_bitset_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3468,7 +3468,7 @@ pub const Container = packed struct(u64) {
     /// array dst. Array dst does not need to be distinct from src1
     fn array_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3489,7 +3489,7 @@ pub const Container = packed struct(u64) {
     /// dst is a valid array container and may be the same as src1
     fn array_array_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3504,7 +3504,7 @@ pub const Container = packed struct(u64) {
     /// starts uninit.
     fn bitset_array_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3530,7 +3530,7 @@ pub const Container = packed struct(u64) {
     /// dst, a valid array container that could be the same as dst.
     fn array_bitset_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3555,7 +3555,7 @@ pub const Container = packed struct(u64) {
     /// may be either a bitset or an array container. dst starts uninit.
     fn bitset_run_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3580,7 +3580,7 @@ pub const Container = packed struct(u64) {
 
     fn run_bitset_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3634,7 +3634,7 @@ pub const Container = packed struct(u64) {
     /// dst must be a valid array container, allowed to be src1
     fn array_run_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3749,7 +3749,7 @@ pub const Container = packed struct(u64) {
     /// cases, the caller is responsible for deallocating dst.
     fn bitset_array_container_iandnot(
         src1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3774,7 +3774,7 @@ pub const Container = packed struct(u64) {
     /// can become any type of container.
     fn run_array_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3872,7 +3872,7 @@ pub const Container = packed struct(u64) {
     /// dst starts uninit and can become any kind of container.
     fn run_run_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3887,7 +3887,7 @@ pub const Container = packed struct(u64) {
     /// Run-level andnot operation on run containers.
     fn run_container_andnot(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -3967,7 +3967,7 @@ pub const Container = packed struct(u64) {
 
     pub fn xor(
         c1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -4012,7 +4012,7 @@ pub const Container = packed struct(u64) {
     /// deallocation.
     pub fn andnot(
         c1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -4058,7 +4058,7 @@ pub const Container = packed struct(u64) {
     /// Create an copy of a c and it's blocks allocated in dstr.
     pub fn get_copy_of_container(
         c: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x: *const Bitmap,
         dstr: *Bitmap,
         copy_on_write: bool,
@@ -4072,7 +4072,7 @@ pub const Container = packed struct(u64) {
 
     fn array_container_clone(
         c: Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -4087,7 +4087,7 @@ pub const Container = packed struct(u64) {
 
     fn run_container_clone(
         c: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -4102,7 +4102,7 @@ pub const Container = packed struct(u64) {
 
     fn bitset_container_clone(
         c: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x: *const Bitmap,
         dstr: *Bitmap,
     ) !Container {
@@ -4118,7 +4118,7 @@ pub const Container = packed struct(u64) {
         return bc;
     }
 
-    pub fn clone(c: Container, allocator: mem.Allocator, x: *const Bitmap, dstr: *Bitmap) !Container {
+    pub fn clone(c: Container, allocator: Allocator, x: *const Bitmap, dstr: *Bitmap) !Container {
         return switch (c.typecode) {
             .array => c.array_container_clone(allocator, x, dstr),
             .run => c.run_container_clone(allocator, x, dstr),
@@ -4562,7 +4562,7 @@ pub const Container = packed struct(u64) {
     /// one container should not be a shared container
     ///
     /// c is allocated in r. returned container is allocated in dstr.
-    pub fn to_bitset(c: *const Container, allocator: mem.Allocator, r: *const Bitmap, dstr: *Bitmap) !Container {
+    pub fn to_bitset(c: *const Container, allocator: Allocator, r: *const Bitmap, dstr: *Bitmap) !Container {
         return switch (c.typecode) {
             .bitset => c.*,
             .array => try c.bitset_container_from_array2(allocator, r, dstr),
@@ -4584,7 +4584,7 @@ pub const Container = packed struct(u64) {
     /// cardinality. It requires repair later on the generated containers.
     pub fn lazy_ior(
         c1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -4673,7 +4673,7 @@ pub const Container = packed struct(u64) {
 
     fn array_array_container_lazy_inplace_union(
         src1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -4710,7 +4710,7 @@ pub const Container = packed struct(u64) {
 
     fn array_array_container_lazy_union(
         src1: *const Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *const Bitmap,
         src2: *const Container,
         x2: *const Bitmap,
@@ -4788,7 +4788,7 @@ pub const Container = packed struct(u64) {
     /// cardinality. It requires repair later on the generated containers.
     pub fn lazy_or(
         c1: *Container,
-        allocator: mem.Allocator,
+        allocator: Allocator,
         x1: *Bitmap,
         c2: *const Container,
         x2: *const Bitmap,
@@ -4880,7 +4880,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// "repair" the container after lazy operations.
-    pub fn repair_after_lazy(c: *Container, allocator: mem.Allocator, r: *Bitmap) !Container {
+    pub fn repair_after_lazy(c: *Container, allocator: Allocator, r: *Bitmap) !Container {
         return switch (c.typecode) {
             .bitset => bc: {
                 c.cardinality = bitset_container_compute_cardinality(c.blocks_as(.bitset, r.*).ptr);
@@ -4898,14 +4898,14 @@ pub const Container = packed struct(u64) {
         };
     }
 
-    fn shared_container_extract_copy(sc: Container, allocator: mem.Allocator, r: Bitmap) !Container {
+    fn shared_container_extract_copy(sc: Container, allocator: Allocator, r: Bitmap) !Container {
         _ = sc;
         _ = r;
         _ = allocator;
         unreachable;
     }
 
-    pub fn get_writable_copy_if_shared(c1: Container, allocator: mem.Allocator, x1: Bitmap) !Container {
+    pub fn get_writable_copy_if_shared(c1: Container, allocator: Allocator, x1: Bitmap) !Container {
         return if (c1.typecode == .shared)
             try c1.shared_container_extract_copy(allocator, x1)
         else
@@ -4915,6 +4915,7 @@ pub const Container = packed struct(u64) {
 
 const std = @import("std");
 const mem = std.mem;
+const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const root = @import("root.zig");
 const Block = root.Block;
