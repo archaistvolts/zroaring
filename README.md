@@ -1,7 +1,5 @@
 # About
-A Roaring Bitmap implementation in zig with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring).
-
-Implemented with [resizable struct](https://github.com/archaistvolts/resizable-struct), the Bitmap and all container data share a single, serialization friendly allocation.
+A Roaring Bitmap with a flat, pointerless layout and API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring).  Implemented with [resizable struct](https://codeberg.org/ziglang/zig/pulls/30823) [2](https://github.com/archaistvolts/resizable-struct), all Bitmap data shares a single, serialization and simd friendly allocation.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -10,8 +8,6 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 
 # Use
 With zig version 0.16.0
-
-:warning: **Be sure to test your application in debug mode as there may be unreachable code paths left as TODOs**.
 
 ### fetch package
 ```console
@@ -45,7 +41,7 @@ try std.testing.expect(!zr.contains(2));
 ```console
 $ zig build test -Doptimize=ReleaseSafe --fuzz --webui=[::1]:40313 -j1 -Dfuzzprint
 ```
-`-Dfuzzprint` prints reproductions which can be copied to [src/fuzz.zig](src/fuzz.zig), test "crash reproductions".
+`-Dfuzzprint` prints reproductions which can be copied to [src/fuzz.zig](src/fuzz-crash-corpus.zig), test "crash reproductions".
 #### With nix-shell and AFL++:
 
 ```console
@@ -53,27 +49,32 @@ $ nix-shell
 $ ./scripts/afl-fuzz.sh
 ```
 
-AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead `CRoaring` as an oracle due to some zig-0.16 fuzzer missing c symbols.  Also reproducing from AFL crash/hang files hasn't been implemented yet.
+AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead `CRoaring` as an oracle due to some fuzzer build issues.
+
+#### Reproducing with an AFL crash/hang file
+```console
+$ zig build && zig-out/bin/afl-main afl/output/default/crashes.2026-06-12-18\:09\:25/id:000000,sig:06,src:000003,time:565011,execs:101066,op:havoc,rep:1
+```
 
 # CRoaring API coverage
 ```console
-# 5/29/2026
+# 6/13/2026
 $ zig build run -- api-coverage
 
 parsed command:
-  api-coverage --filter='API-COVERAGE-FILTER-NONE'
+  api-coverage --filter API-COVERAGE-FILTER-NONE
 
 symbols coverage:
   prefix              : found / total / %   :
 ---------------------------------------------
-  roaring_bitmap_     : 31    / 93    / 33.3%
-  ra_                 : 13    / 40    / 32.5%
-  container_          : 22    / 64    / 34.4%
-  run_container_      : 24    / 60    / 40.0%
-  bitset_container_   : 20    / 66    / 30.3%
-  array_container_    : 24    / 58    / 41.4%
+  roaring_bitmap_     : 46    / 93    / 49.5%
+  ra_                 : 14    / 40    / 35.0%
+  container_          : 32    / 64    / 50.0%
+  run_container_      : 31    / 60    / 51.7%
+  bitset_container_   : 28    / 66    / 42.4%
+  array_container_    : 28    / 58    / 48.3%
 ---------------------------------------------
-  total               : 134   / 381   / 35.2%
+  total               : 179   / 381   / 47.0%
 ---------------------------------------------
   filtered            : 0     / 0     / -nan%
 ```
@@ -94,6 +95,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [x] validation: fix failing checkAllAllocationFailures test
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
 * [x] allocation failures test with crash reproductions.
+* [x] container: match croaring binop param ordering: src1, src2, dst
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
 * [ ] Support more set sizes than just u32 with generics - Bitmap(T)
@@ -107,3 +109,4 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [ ] audit endian sensitive methods.  aim for endian awareness throughout.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex
 * [ ] strategy for reclaiming blocks to reduce memory usage.  depending on users calling shrink_to_fit() isn't viable.
+* [ ] afl fuzzer - use croaring, address build issues, remove HashMapOracle
