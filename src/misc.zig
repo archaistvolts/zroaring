@@ -321,8 +321,47 @@ pub fn intersect_skewed_uint16(
     return pos;
 }
 
+// TODO: this could be accelerated, possibly, by using binarySearch4 as above.
+pub fn intersect_skewed_uint16_cardinality(
+    small: []align(C.BLOCK_ALIGN) const u16,
+    large: []align(C.BLOCK_ALIGN) const u16,
+) u32 {
+    var pos: u32 = 0;
+    var idx_l: u32 = 0;
+    var idx_s: u32 = 0;
+    const size_l: u32 = @intCast(large.len);
+    const size_s: u32 = @intCast(small.len);
+
+    if (0 == small.len)
+        return 0;
+
+    var val_l = large[idx_l];
+    var val_s = small[idx_s];
+    while (true) {
+        if (val_l < val_s) {
+            idx_l = advanceUntil(large, idx_l, val_s);
+            if (idx_l == size_l) break;
+            val_l = large[idx_l];
+        } else if (val_s < val_l) {
+            idx_s += 1;
+            if (idx_s == size_s) break;
+            val_s = small[idx_s];
+        } else {
+            pos += 1;
+            idx_s += 1;
+            if (idx_s == size_s) break;
+            val_s = small[idx_s];
+            idx_l = advanceUntil(large, idx_l, val_s);
+            if (idx_l == size_l) break;
+            val_l = large[idx_l];
+        }
+    }
+
+    return pos;
+}
+
 /// Generic intersection function.
-/// attempts to reproduce but `goto SKIP_FIRST_COMPARE`
+/// attempts to reproduce `goto SKIP_FIRST_COMPARE`
 pub fn intersect_uint16(
     A: []align(C.BLOCK_ALIGN) const u16,
     B: []align(C.BLOCK_ALIGN) const u16,
@@ -355,9 +394,43 @@ pub fn intersect_uint16(
             if (a == aend or b == bend) return @intCast(out - OUT.ptr);
         } else {
             // a > b happened after b advanced.  advance a once to catch up.
-            // emulates `goto SKIP_FIRST_COMPARE` from croaring.
+            // imitates croaring `goto SKIP_FIRST_COMPARE`.
             a += 1;
             if (a == aend) return @intCast(out - OUT.ptr);
+        }
+    }
+}
+
+// TODO simd with blocks?
+pub fn intersect_uint16_cardinality(
+    A: []const u16,
+    B: []const u16,
+) u32 {
+    var answer: u32 = 0;
+    if (A.len == 0 or B.len == 0) return 0;
+    const endA = A.ptr + A.len;
+    const endB = B.ptr + B.len;
+    var a = A.ptr;
+    var b = B.ptr;
+    while (true) {
+        while (a[0] < b[0]) {
+            a += 1;
+            if (a == endA) return answer;
+        }
+        while (a[0] > b[0]) {
+            b += 1;
+            if (b == endB) return answer;
+        }
+        if (a[0] == b[0]) {
+            answer += 1;
+            a += 1;
+            b += 1;
+            if (a == endA or b == endB) return answer;
+        } else {
+            // a > b after b advanced; advance a once to catch up.
+            // imitates croaring `goto SKIP_FIRST_COMPARE`.
+            a += 1;
+            if (a == endA) return answer;
         }
     }
 }
@@ -536,6 +609,31 @@ pub fn fast_union_uint16(
     } else {
         return unionfn(set2, set1, buffer);
     }
+}
+
+/// Find the cardinality of the bitset in [begin,begin+lenminusone]
+pub fn bitset_lenrange_cardinality(
+    words: [*]align(C.BLOCK_ALIGN) u64,
+    start: u32,
+    lenminusone: u32,
+) u32 {
+    const firstword = start / 64;
+    const endword = (start + lenminusone) / 64;
+    if (firstword == endword) {
+        return @popCount(words[firstword] &
+            ((~@as(u64, 0)) >>
+                @truncate((63 - lenminusone) % 64)) <<
+                @truncate(start % 64));
+    }
+    var answer: u64 =
+        @popCount(words[firstword] & ((~@as(u64, 0)) << @truncate(start % 64)));
+    for (firstword + 1..endword) |i| {
+        answer += @popCount(words[i]);
+    }
+    answer += @popCount(words[endword] &
+        (~@as(u64, 0)) >>
+            @truncate(((~start +% 1) -% lenminusone -% 1) % 64));
+    return @intCast(answer);
 }
 
 /// Set all bits in indexes [begin,begin+lenminusone] to true.

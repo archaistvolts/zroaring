@@ -38,6 +38,7 @@ pub const LAZY_OR_BITSET_CONVERSION = true; // TODO build option
 pub const ARRAY_LAZY_LOWERBOUND = 1024;
 
 pub const IS_X86 = builtin.cpu.arch.isX86();
+pub const IS_X64 = builtin.cpu.arch == .x86_64;
 pub const HAS_AVX2 = if (IS_X86)
     std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)
 else

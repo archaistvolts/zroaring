@@ -495,31 +495,6 @@ pub fn from_range(
     }
 }
 
-/// Find the cardinality of the bitset in [begin,begin+lenminusone]
-fn bitset_lenrange_cardinality(
-    words: [*]align(C.BLOCK_ALIGN) u64,
-    start: u32,
-    lenminusone: u32,
-) u32 {
-    const firstword = start / 64;
-    const endword = (start + lenminusone) / 64;
-    if (firstword == endword) {
-        return @popCount(words[firstword] &
-            ((~@as(u64, 0)) >>
-                @truncate((63 - lenminusone) % 64)) <<
-                @truncate(start % 64));
-    }
-    var answer: u64 =
-        @popCount(words[firstword] & ((~@as(u64, 0)) << @truncate(start % 64)));
-    for (firstword + 1..endword) |i| {
-        answer += @popCount(words[i]);
-    }
-    answer += @popCount(words[endword] &
-        (~@as(u64, 0)) >>
-            @truncate(((~start +% 1) -% lenminusone -% 1) % 64));
-    return @intCast(answer);
-}
-
 /// Adds all values in range [min,max] using hint:
 ///   nvals_less is the number of array values less than $min
 ///   nvals_greater is the number of array values greater than $max
@@ -570,7 +545,7 @@ fn container_from_run_range(
     }
     union_cardinality += @intCast(max - min + 1);
     union_cardinality -=
-        bitset_lenrange_cardinality(words.ptr, min, max - min);
+        misc.bitset_lenrange_cardinality(words.ptr, min, max - min);
     misc.bitset_set_lenrange(words.ptr, min, max - min);
     bitset.cardinality = @intCast(union_cardinality);
     if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
@@ -604,7 +579,7 @@ fn container_add_range(
             union_cardinality += c.cardinality;
             union_cardinality += max - min + 1;
             union_cardinality -=
-                bitset_lenrange_cardinality(words.ptr, min, max - min);
+                misc.bitset_lenrange_cardinality(words.ptr, min, max - min);
 
             if (union_cardinality == C.MAX_KEY_CARDINALITY) {
                 return try Container.run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY, r);
@@ -2166,6 +2141,53 @@ pub fn contains_range(r: Bitmap, range_start: u64, range_end: u64) bool {
     if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1)
         return true;
     return r.contains_range_closed(@intCast(range_start), @intCast(range_end - 1));
+}
+
+pub fn and_cardinality(x1: Bitmap, x2: Bitmap) u64 {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    var answer: u64 = 0;
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    while (pos1 < length1 and pos2 < length2) {
+        const key1 = x1.array.ptr(.keys)[pos1];
+        const key2 = x2.array.ptr(.keys)[pos2];
+
+        if (key1 == key2) {
+            const c1 = x1.array.ptr(.containers)[pos1];
+            const c2 = x2.array.ptr(.containers)[pos2];
+            answer += c1.and_cardinality(x1, c2, x2);
+            pos1 += 1;
+            pos2 += 1;
+        } else if (key1 < key2) {
+            pos1 = x1.advance_until(key2, pos1);
+        } else { // key1 > key2
+            pos2 = x2.advance_until(key1, pos2);
+        }
+    }
+    return answer;
+}
+
+pub fn jaccard_index(x1: Bitmap, x2: Bitmap) f64 {
+    @setFloatMode(.strict);
+    const inter = x1.and_cardinality(x2);
+    return @as(f64, @floatFromInt(inter)) / @as(f64, @floatFromInt(
+        x1.get_cardinality() + x2.get_cardinality() - inter,
+    ));
+}
+
+pub fn or_cardinality(x1: Bitmap, x2: Bitmap) u64 {
+    return x1.get_cardinality() + x2.get_cardinality() -
+        x1.and_cardinality(x2);
+}
+
+pub fn andnot_cardinality(x1: Bitmap, x2: Bitmap) u64 {
+    return x1.get_cardinality() - x1.and_cardinality(x2);
+}
+
+pub fn xor_cardinality(x1: Bitmap, x2: Bitmap) u64 {
+    return x1.get_cardinality() + x2.get_cardinality() -
+        2 * x1.and_cardinality(x2);
 }
 
 fn validateTestdataFile(rb: Bitmap) !void {

@@ -5008,6 +5008,190 @@ pub const Container = packed struct(u64) {
             .shared => unreachable,
         };
     }
+
+    /// computes the size of the intersection of array1 and array2
+    fn array_container_intersection_cardinality(
+        c1: Container,
+        x1: Bitmap,
+        c2: Container,
+        x2: Bitmap,
+    ) Cardinality {
+        const card_1 = c1.cardinality;
+        const card_2 = c2.cardinality;
+        const threshold = 64; // subject to tuning
+        const c1array = c1.blocks_as(.array, x1)[0..card_1];
+        const c2array = c2.blocks_as(.array, x2)[0..card_2];
+        return @intCast(if (card_1 * threshold < card_2)
+            misc.intersect_skewed_uint16_cardinality(c1array, c2array)
+        else if (card_2 * threshold < card_1)
+            misc.intersect_skewed_uint16_cardinality(c2array, c1array)
+        else if (C.IS_X64)
+            // TODO // if (C.HAS_AVX2)
+            //     misc.intersect_vector16_cardinality(c1array, c2array)
+            // else
+            misc.intersect_uint16_cardinality(c1array, c2array)
+        else
+            misc.intersect_uint16_cardinality(c1array, c2array));
+    }
+
+    /// Compute the size of the intersection between src1 and src2
+    fn array_run_container_intersection_cardinality(src1: Container, x1: Bitmap, src2: Container, x2: Bitmap) u32 {
+        if (src2.run_container_is_full(x2))
+            return src1.cardinality;
+        if (src2.cardinality == 0)
+            return 0;
+
+        var rlepos: u32 = 0;
+        var arraypos: u32 = 0;
+        const src2runs = src2.blocks_as(.run, x2);
+        var rle = src2runs[rlepos];
+        var newcard: u32 = 0;
+        const src1array = src1.blocks_as(.array, x1);
+        while (arraypos < src1.cardinality) {
+            const arrayval = src1array[arraypos];
+            while (rle.value + rle.length < arrayval) {
+                // this will frequently be false
+                @branchHint(.unlikely); // TODO bench
+                rlepos += 1;
+                if (rlepos == src2.cardinality)
+                    return newcard;
+                rle = src2runs[rlepos];
+            }
+            if (rle.value > arrayval) {
+                arraypos = misc.advanceUntil(src1array.ptr[0..arraypos], src1.cardinality, rle.value);
+            } else {
+                newcard += 1;
+                arraypos += 1;
+            }
+        }
+        return newcard;
+    }
+
+    /// Compute the size of the intersection of src1 and src2
+    fn run_container_intersection_cardinality(src1: Container, x1: Bitmap, src2: Container, x2: Bitmap) u32 {
+        const if1 = src1.run_container_is_full(x1);
+        const if2 = src2.run_container_is_full(x2);
+        const src1runs = src1.blocks_as(.run, x1)[0..src1.cardinality];
+        const src2runs = src2.blocks_as(.run, x2)[0..src2.cardinality];
+        if (if1 or if2) {
+            if (if1)
+                return src2.run_container_cardinality(src2runs.ptr);
+
+            if (if2)
+                return run_container_cardinality(src1, src1runs.ptr);
+        }
+        var answer: u32 = 0;
+        var xrlepos: u32 = 0;
+        var rlepos: u32 = 0;
+        var start: u32 = src1runs[rlepos].value;
+        var end: u32 = start + src1runs[rlepos].length + 1;
+        var xstart: u32 = src2runs[xrlepos].value;
+        var xend: u32 = xstart + src2runs[xrlepos].length + 1;
+        while (rlepos < src1.cardinality and xrlepos < src2.cardinality) {
+            if (end <= xstart) {
+                rlepos += 1;
+                if (rlepos < src1.cardinality) {
+                    start = src1runs[rlepos].value;
+                    end = start + src1runs[rlepos].length + 1;
+                }
+            } else if (xend <= start) {
+                xrlepos += 1;
+                if (xrlepos < src2.cardinality) {
+                    xstart = src2runs[xrlepos].value;
+                    xend = xstart + src2runs[xrlepos].length + 1;
+                }
+            } else { // they overlap
+                const lateststart = @max(start, xstart);
+                var earliestend: u32 = undefined;
+                if (end == xend) { // improbable
+                    @branchHint(.unlikely);
+                    earliestend = end;
+                    rlepos += 1;
+                    xrlepos += 1;
+                    if (rlepos < src1.cardinality) {
+                        start = src1runs[rlepos].value;
+                        end = start + src1runs[rlepos].length + 1;
+                    }
+                    if (xrlepos < src2.cardinality) {
+                        xstart = src2runs[xrlepos].value;
+                        xend = xstart + src2runs[xrlepos].length + 1;
+                    }
+                } else if (end < xend) {
+                    earliestend = end;
+                    rlepos += 1;
+                    if (rlepos < src1.cardinality) {
+                        start = src1runs[rlepos].value;
+                        end = start + src1runs[rlepos].length + 1;
+                    }
+                } else { // end > xend
+                    earliestend = xend;
+                    xrlepos += 1;
+                    if (xrlepos < src2.cardinality) {
+                        xstart = src2runs[xrlepos].value;
+                        xend = xstart + src2runs[xrlepos].length + 1;
+                    }
+                }
+                answer += earliestend - lateststart;
+            }
+        }
+        return answer;
+    }
+
+    /// Compute the size of the intersection of src1 and src2.
+    fn array_bitset_container_intersection_cardinality(src1: Container, x1: Bitmap, src2: Container, x2: Bitmap) u32 {
+        var newcard: u32 = 0;
+        const origcard = src1.cardinality;
+        const src1array = src1.blocks_as(.array, x1);
+        for (0..origcard) |i| {
+            const key = src1array[i];
+            newcard += @intFromBool(src2.bitset_container_contains(key, x2));
+        }
+        return newcard;
+    }
+
+    /// Compute the intersection  between src1 and src2
+    fn run_bitset_container_intersection_cardinality(src1: Container, x1: Bitmap, src2: Container, x2: Bitmap) u32 {
+        if (run_container_is_full(src1, x1))
+            return src2.cardinality;
+
+        var answer: u32 = 0;
+        const src1runs = src1.blocks_as(.run, x1)[0..src1.cardinality];
+        const src2words = src2.blocks_as(.bitset, x2);
+        for (0..src1.cardinality) |rlepos| {
+            const rle = src1runs[rlepos];
+            answer += misc.bitset_lenrange_cardinality(src2words.ptr, rle.value, rle.length);
+        }
+        return answer;
+    }
+
+    /// Compute the size of the intersection between two containers.
+    pub fn and_cardinality(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) u32 {
+        // TODO // c1 = container_unwrap_shared(c1, &type1);
+        // TODO // c2 = container_unwrap_shared(c2, &type2);
+        return switch (misc.pair(c1.typecode, c2.typecode)) {
+            misc.pair(.bitset, .bitset) => bitset_container_and_justcard(
+                c1.blocks_as(.bitset, x1).ptr,
+                c2.blocks_as(.bitset, x2).ptr,
+            ),
+            misc.pair(.array, .array),
+            => array_container_intersection_cardinality(c1, x1, c2, x2),
+            misc.pair(.run, .run),
+            => run_container_intersection_cardinality(c1, x1, c2, x2),
+            misc.pair(.bitset, .array),
+            => array_bitset_container_intersection_cardinality(c2, x2, c1, x1),
+            misc.pair(.array, .bitset),
+            => array_bitset_container_intersection_cardinality(c1, x1, c2, x2),
+            misc.pair(.bitset, .run),
+            => run_bitset_container_intersection_cardinality(c2, x2, c1, x1),
+            misc.pair(.run, .bitset),
+            => run_bitset_container_intersection_cardinality(c1, x1, c2, x2),
+            misc.pair(.array, .run),
+            => array_run_container_intersection_cardinality(c1, x1, c2, x2),
+            misc.pair(.run, .array),
+            => array_run_container_intersection_cardinality(c2, x2, c1, x1),
+            else => unreachable,
+        };
+    }
 };
 
 const std = @import("std");
