@@ -5058,7 +5058,7 @@ pub const Container = packed struct(u64) {
                 rle = src2runs[rlepos];
             }
             if (rle.value > arrayval) {
-                arraypos = misc.advanceUntil(src1array.ptr[0..arraypos], src1.cardinality, rle.value);
+                arraypos = misc.advanceUntil(src1array.ptr[0..src1.cardinality], arraypos, rle.value);
             } else {
                 newcard += 1;
                 arraypos += 1;
@@ -5192,7 +5192,311 @@ pub const Container = packed struct(u64) {
             else => unreachable,
         };
     }
+
+    /// Initializes the iterator at the first entry in the container.
+    pub fn init_iterator(c: Container, r: Bitmap, value: *u16) Iterator {
+        switch (c.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset, r);
+                var wordindex: u32 = 0;
+                var word = words[wordindex];
+                while (word == 0) {
+                    wordindex += 1;
+                    word = words[wordindex];
+                }
+                const index = wordindex * 64 + @ctz(word);
+                value.* = @intCast(index);
+                return .{ .index = @intCast(index) };
+            },
+            .array => {
+                const array = c.blocks_as(.array, r);
+                value.* = array[0];
+                return .{ .index = 0 };
+            },
+            .run => {
+                const runs = c.blocks_as(.run, r);
+                value.* = runs[0].value;
+                return .{ .index = 0 };
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Initializes the iterator at the last entry in the container.
+    pub fn init_iterator_last(c: Container, r: Bitmap, value: *u16) Iterator {
+        switch (c.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset, r);
+                var wordindex: u32 = C.BITSET_CONTAINER_SIZE_IN_WORDS - 1;
+                var word = words[wordindex];
+                while (word == 0) {
+                    wordindex -= 1;
+                    word = words[wordindex];
+                }
+                const index = wordindex * 64 + 63 - @clz(word);
+                value.* = @intCast(index);
+                return .{ .index = @intCast(index) };
+            },
+            .array => {
+                const array = c.blocks_as(.array, r);
+                const index = c.cardinality - 1;
+                value.* = array[index];
+                return .{ .index = @intCast(index) };
+            },
+            .run => {
+                const runs = c.blocks_as(.run, r);
+                const run_index = c.cardinality - 1;
+                value.* = runs[run_index].value + runs[run_index].length;
+                return .{ .index = @intCast(run_index) };
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Moves the iterator to the next entry. Returns true if a value is present.
+    fn iterator_next(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
+        switch (c.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset, r);
+                it.index += 1;
+                var wordindex: u32 = it.index / 64;
+                if (wordindex >= C.BITSET_CONTAINER_SIZE_IN_WORDS) return false;
+                var word = words[wordindex] & (~@as(u64, 0) << @truncate(it.index));
+                while (word == 0 and (wordindex + 1 < C.BITSET_CONTAINER_SIZE_IN_WORDS)) {
+                    wordindex += 1;
+                    word = words[wordindex];
+                }
+                if (word != 0) {
+                    it.index = wordindex * 64 + @ctz(word);
+                    value.* = @intCast(it.index);
+                    return true;
+                }
+                return false;
+            },
+            .array => {
+                const array = c.blocks_as(.array, r);
+                it.index += 1;
+                if (it.index < c.cardinality) {
+                    value.* = array[it.index];
+                    return true;
+                }
+                return false;
+            },
+            .run => {
+                if (value.* == std.math.maxInt(u16)) return false;
+                const runs = c.blocks_as(.run, r);
+                const limit = runs[it.index].value + runs[it.index].length;
+                if (value.* < limit) {
+                    value.* += 1;
+                    return true;
+                }
+                it.index += 1;
+                if (it.index < c.cardinality) {
+                    value.* = runs[it.index].value;
+                    return true;
+                }
+                return false;
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Moves the iterator to the previous entry. Returns true if a value is present.
+    fn iterator_prev(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
+        switch (c.typecode) {
+            .bitset => {
+                it.index -= 1;
+                if (it.index == std.math.maxInt(u32)) return false;
+                const words = c.blocks_as(.bitset, r);
+                var wordindex: u32 = it.index / 64;
+                var word = words[wordindex] & (~@as(u64, 0) >> @as(u6, @intCast(63 - (it.index % 64))));
+                while (word == 0) {
+                    if (wordindex == 0) return false;
+                    wordindex -= 1;
+                    word = words[wordindex];
+                }
+                it.index = wordindex * 64 + 63 - @clz(word);
+                value.* = @intCast(it.index);
+                return true;
+            },
+            .array => {
+                it.index -%= 1;
+                if (it.index == std.math.maxInt(u32)) return false;
+                const array = c.blocks_as(.array, r);
+                value.* = array[it.index];
+                return true;
+            },
+            .run => {
+                if (value.* == 0) return false;
+                const runs = c.blocks_as(.run, r);
+                value.* -= 1;
+                if (value.* >= runs[it.index].value) return true;
+                it.index -%= 1;
+                if (it.index == std.math.maxInt(u32)) return false;
+                value.* = runs[it.index].value + runs[it.index].length;
+                return true;
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Moves the iterator to the first element >= val. Returns true if found.
+    fn iterator_lower_bound(c: Container, r: Bitmap, it: *Iterator, value_out: *u16, val: u16) bool {
+        switch (c.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset, r);
+                const idx = bitset_container_index_equalorlarger(words.ptr, val);
+                if (idx < 0) return false;
+                it.index = @bitCast(idx);
+                value_out.* = @intCast(it.index);
+                return true;
+            },
+            .array => {
+                const array = c.blocks_as(.array, r);
+                const idx = array_container_index_equalorlarger(array.ptr, c.cardinality, val);
+                if (idx < 0) return false;
+                it.index = @bitCast(idx);
+                value_out.* = array[it.index];
+                return true;
+            },
+            .run => {
+                const runs = c.blocks_as(.run, r);
+                const idx = run_container_index_equalorlarger(runs.ptr, c.cardinality, val);
+                if (idx < 0) return false;
+                it.index = @bitCast(idx);
+                value_out.* = if (runs[it.index].value <= val) val else runs[it.index].value;
+                return true;
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Reads next values from iterator into buf. Returns true if iterator still has values after.
+    pub fn iterator_read_into_uint32(
+        c: Container,
+        r: Bitmap,
+        it: *Iterator,
+        high16: u32,
+        buf: []u32,
+        consumed: *u32,
+        value_out: *u16,
+    ) bool {
+        consumed.* = 0;
+        if (buf.len == 0) return false;
+
+        var buf1 = buf.ptr;
+        switch (c.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset, r);
+                var wordindex: u32 = it.index / 64;
+                var word = words[wordindex] & (~@as(u64, 0) << @as(u6, @intCast(it.index % 64)));
+                while (true) {
+                    while (word != 0 and consumed.* < buf.len) {
+                        buf1[0] = high16 | (wordindex * 64 + @ctz(word));
+                        word &= word - 1;
+                        consumed.* += 1;
+                        buf1 += 1;
+                    }
+                    while (word == 0 and wordindex + 1 < C.BITSET_CONTAINER_SIZE_IN_WORDS) {
+                        wordindex += 1;
+                        word = words[wordindex];
+                    }
+                    if (word == 0 or consumed.* >= buf.len) break;
+                }
+                if (word != 0) {
+                    it.index = wordindex * 64 + @ctz(word);
+                    value_out.* = @intCast(it.index);
+                    return true;
+                }
+                return false;
+            },
+            .array => {
+                const array = c.blocks_as(.array, r);
+                const num_values = @min(c.cardinality - it.index, buf.len);
+                var i: u32 = 0;
+                while (i < num_values) : (i += 1) {
+                    buf1[i] = high16 | array[it.index + i];
+                }
+                consumed.* = num_values;
+                it.index += num_values;
+                if (it.index < c.cardinality) {
+                    value_out.* = array[it.index];
+                    return true;
+                }
+                return false;
+            },
+            .run => {
+                const runs = c.blocks_as(.run, r);
+                while (true) {
+                    const largest_run_value = @as(u32, runs[it.index].value) + runs[it.index].length;
+                    const num_values: u32 = @intCast(@min(
+                        (largest_run_value - value_out.*) + 1,
+                        buf.len - consumed.*,
+                    ));
+
+                    var i: u32 = 0;
+                    while (i < num_values) : (i += 1) {
+                        buf1[i] = high16 | (value_out.* + i);
+                    }
+                    value_out.* = value_out.* +% @as(u16, @intCast(num_values));
+                    buf1 += num_values;
+                    consumed.* += num_values;
+                    if (value_out.* > largest_run_value or value_out.* == 0) {
+                        it.index += 1;
+                        if (it.index < c.cardinality) {
+                            value_out.* = runs[it.index].value;
+                        } else {
+                            return false;
+                        }
+                    }
+                    if (consumed.* >= buf.len) break;
+                }
+                return true;
+            },
+            else => unreachable,
+        }
+    }
 };
+
+/// For bitset and array containers this is the index of the bit / entry.
+/// For run containers this points at the run.
+pub const Iterator = struct { index: u32 };
+
+/// Returns the index of the first element >= x, or -1 if not found.
+fn bitset_container_index_equalorlarger(words: [*]align(C.BLOCK_ALIGN) const u64, x: u16) i32 {
+    var k: u32 = x / 64;
+    var word = words[k] >> @as(u6, @intCast(x % 64)) << @as(u6, @intCast(x % 64));
+    while (word == 0) {
+        k += 1;
+        if (k == C.BITSET_CONTAINER_SIZE_IN_WORDS) return -1;
+        word = words[k];
+    }
+    return @intCast(k * 64 + @ctz(word));
+}
+
+/// Returns the index of the first element >= x, or -1 if not found.
+fn array_container_index_equalorlarger(array: [*]align(C.BLOCK_ALIGN) const u16, cardinality: u32, x: u16) i32 {
+    const idx = misc.binarySearch(array[0..cardinality], x);
+    if (idx >= 0) return idx;
+    const candidate = -idx - 1;
+    if (candidate < cardinality) return candidate;
+    return -1;
+}
+
+/// Returns the index of the first element >= x, or -1 if not found.
+fn run_container_index_equalorlarger(runs: [*]align(C.BLOCK_ALIGN) const Rle16, n_runs: u32, x: u16) i32 {
+    var idx = misc.interleavedBinarySearch(runs[0..n_runs], x);
+    if (idx >= 0) return idx;
+    idx = -idx - 2;
+    if (idx != -1) {
+        const offset = x - runs[@intCast(idx)].value;
+        const le = runs[@intCast(idx)].length;
+        if (offset <= le) return idx;
+    }
+    idx += 1;
+    if (idx < n_runs) return idx;
+    return -1;
+}
 
 const std = @import("std");
 const mem = std.mem;

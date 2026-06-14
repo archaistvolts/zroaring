@@ -2190,6 +2190,8 @@ pub fn xor_cardinality(x1: Bitmap, x2: Bitmap) u64 {
         2 * x1.and_cardinality(x2);
 }
 
+pub const iterator = Iterator.init;
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata
@@ -2249,3 +2251,4 @@ const Container = root.container.Container;
 const Block = root.Block;
 const Rle16 = root.Rle16;
 const Cardinality = Container.Cardinality;
+const Iterator = @import("Iterator.zig");
