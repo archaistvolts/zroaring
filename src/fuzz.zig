@@ -102,6 +102,7 @@ pub const FuzzOp = union(enum) {
     // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
     // get_index, // TODO
     contains: Val,
+    contains_range: Vals2,
     contains_many: Vals,
 
     const Val = struct { idx: u8, val: u32 };
@@ -150,12 +151,12 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 try perform_op(.{ .add_many = .{ .idx = idx, .vals = vals[0..len] } }, &oracles, &rs, allocator);
             },
-            .add_range_closed => {
+            inline .add_range_closed, .contains_range => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
                 const val1 = smith.valueRangeLessThan(u32, start, start + len);
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
-                try perform_op(.{ .add_range_closed = .{ .idx = idx, .val = .{ val1, val2 } } }, &oracles, &rs, allocator);
+                try perform_op(@unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = .{ val1, val2 } }), &oracles, &rs, allocator);
             },
             .remove => try perform_op(.{ .remove = .{
                 .idx = idx,
@@ -268,12 +269,12 @@ const AflSmith = struct {
                 for (buf[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 return .{ .add_many = .{ .idx = idx, .vals = buf[0..len] } };
             },
-            .add_range_closed => {
+            inline .add_range_closed, .contains_range => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
                 const val1 = smith.valueRangeLessThan(u32, start, start + len) orelse return null;
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2) orelse return null;
-                return .{ .add_range_closed = .{ .idx = idx, .val = .{ val1, val2 } } };
+                return @unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = .{ val1, val2 } });
             },
             .remove => .{ .remove = .{
                 .idx = idx,
@@ -420,7 +421,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(@intCast(o.vals.len));
             for (o.vals) |v| try writer.writeInt(u32, v, .little);
         },
-        .add_range_closed => |o| {
+        .add_range_closed, .contains_range => |o| {
             const len = o.val[1] - o.val[0];
             try writer.writeInt(u32, o.val[0], .little);
             try writer.writeInt(u32, len - 1, .little);
@@ -506,6 +507,7 @@ fn perform_op(
         .maximum,
         .contains,
         .contains_many,
+        .contains_range,
         .rank,
         .select,
         => {},
@@ -871,7 +873,22 @@ fn perform_op(
                 );
             }
         },
+        .contains_range => |o| if (is_cr) {
+            try std.testing.expectEqual(
+                c.roaring_bitmap_contains_range(oracles[o.idx], o.val[0], o.val[1]),
+                rs[o.idx].contains_range(o.val[0], o.val[1]),
+            );
+        } else {
+            var val = o.val[0];
+            while (val < o.val[1]) : (val += 1) {
+                try std.testing.expectEqual(
+                    oracles[o.idx].contains(val),
+                    rs[o.idx].contains(val),
+                );
+            }
+        },
     }
+
     for (0..NUM_BITMAPS) |i| {
         const oc = if (is_cr)
             c.roaring_bitmap_get_cardinality(oracles[i])

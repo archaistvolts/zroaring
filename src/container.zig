@@ -675,12 +675,12 @@ pub const Container = packed struct(u64) {
         if (bitset_container_get(words.ptr, x)) {
             // credit: aqrit
             var sum: i32 = 0;
-            var i: i32 = 0;
+            var i: u32 = 0;
             const end = x / 64;
             while (i < end) : (i += 1) {
-                sum += @popCount(words[@intCast(i)]);
+                sum += @popCount(words[i]);
             }
-            const lastword = words[@intCast(i)];
+            const lastword = words[i];
             const lastpos = @as(u64, 1) << @truncate(x % 64);
             const mask = lastpos + lastpos - 1; // smear right
             sum += @popCount(lastword & mask);
@@ -4913,6 +4913,100 @@ pub const Container = packed struct(u64) {
             try c1.shared_container_extract_copy(allocator, x1)
         else
             c1;
+    }
+
+    /// Check whether a range of bits from position `pos_start' (included) to
+    /// `pos_end' (excluded) is present in the bitset container.
+    fn bitset_container_get_range(c: Container, pos_start: u32, pos_end: u32, r: Bitmap) bool {
+        const start = pos_start >> 6;
+        const end = pos_end >> 6;
+
+        const first = ~((@as(u64, 1) << @truncate(pos_start)) - 1);
+        const last = (@as(u64, 1) << @truncate(pos_end)) - 1;
+
+        const words = c.blocks_as(.bitset, r);
+        if (start == end)
+            return (words[end] & first & last == first & last);
+        if (words[start] & first != first)
+            return false;
+
+        if (end < C.BITSET_CONTAINER_SIZE_IN_WORDS and
+            words[end] & last != last)
+            return false;
+
+        var i = start + 1;
+        while (i < C.BITSET_CONTAINER_SIZE_IN_WORDS and i < end) : (i += 1) {
+            if (words[i] != ~@as(u64, 0))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// Check whether a range of values from [range_start, range_end) is present.
+    fn array_container_contains_range(c: Container, range_start: u32, range_end: u32, r: Bitmap) bool {
+        const range_count = range_end - range_start;
+        const rs_included: u16 = @truncate(range_start);
+        const re_included: u16 = @truncate(range_end - 1);
+        if (range_count == 0) // Empty range is always included
+            return true;
+        if (range_count > c.cardinality)
+            return false;
+
+        const array = c.blocks_as(.array, r)[0..c.cardinality];
+        const start = misc.binarySearch(array, rs_included);
+        const startu: u32 = @bitCast(start);
+        // If this sorted array contains all items in the range:
+        // * the start item must be found
+        // * the last item in range range_count must exist, and be the expected end value
+        return start >= 0 and
+            c.cardinality >= startu + range_count and
+            array[startu + range_count - 1] == re_included;
+    }
+
+    /// Check whether all positions in a range of positions from
+    /// [pos_start, pos_end) is present in `run`.
+    fn run_container_contains_range(run: Container, pos_start: u32, pos_end: u32, r: Bitmap) bool {
+        const runs = run.blocks_as(.run, r)[0..run.cardinality];
+        var count: u32 = 0;
+        var index = misc.interleavedBinarySearch(runs, @truncate(pos_start));
+        if (index < 0) {
+            index = -index - 2;
+            if (index == -1 or
+                pos_start - runs[@intCast(index)].value > runs[@intCast(index)].length)
+            {
+                return false;
+            }
+        }
+        var i: u32 = @bitCast(index);
+        while (i < run.cardinality) : (i += 1) {
+            const stop = runs[i].value + runs[i].length;
+            if (runs[i].value >= pos_end)
+                break;
+            if (stop >= pos_end) {
+                const diff = pos_end - runs[i].value;
+                count += diff * @intFromBool(diff > 0);
+                break;
+            }
+            const diff = stop - pos_start;
+            const min = diff * @intFromBool(diff > 0);
+            count += if (min < runs[i].length)
+                min
+            else
+                runs[i].length;
+        }
+
+        return count >= (pos_end - pos_start - 1);
+    }
+
+    /// Check whether the range of values from [range_start, range_end) is present in the container.
+    pub fn contains_range(c: Container, range_start: u32, range_end: u32, r: Bitmap) bool {
+        return switch (c.typecode) {
+            .bitset => c.bitset_container_get_range(range_start, range_end, r),
+            .array => c.array_container_contains_range(range_start, range_end, r),
+            .run => c.run_container_contains_range(range_start, range_end, r),
+            .shared => unreachable,
+        };
     }
 };
 

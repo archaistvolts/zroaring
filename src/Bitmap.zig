@@ -2121,6 +2121,53 @@ pub fn or_many(allocator: Allocator, xs: []Bitmap) !Bitmap {
     return answer;
 }
 
+/// Check whether a range of values from [range_start, range_end) is present
+pub fn contains_range_closed(r: Bitmap, range_start: u32, range_end: u32) bool {
+    if (range_start > range_end)
+        return true;
+    // empty range are always contained!
+    if (range_end == range_start)
+        return r.contains(range_start);
+
+    const hb_rs: u16 = @truncate(range_start >> 16);
+    const hb_re: u16 = @truncate(range_end >> 16);
+    const span: u32 = hb_re - hb_rs;
+    const hlc_sz = r.array.ptr(.len).*;
+    if (hlc_sz < span + 1)
+        return false;
+
+    const is = r.get_key_index(hb_rs);
+    const ie = r.get_key_index(hb_re);
+    if (ie < 0 or is < 0 or (ie - is) != span or ie >= hlc_sz)
+        return false;
+
+    const lb_rs = range_start & 0xFFFF;
+    const lb_re = (range_end & 0xFFFF) + 1;
+    const cs = r.array.ptr(.containers);
+    const isu: u32 = @bitCast(is);
+    const ieu: u32 = @bitCast(ie);
+    if (hb_rs == hb_re)
+        return cs[isu].contains_range(lb_rs, lb_re, r);
+    if (!cs[isu].contains_range(lb_rs, 1 << 16, r))
+        return false;
+    if (!cs[ieu].contains_range(0, lb_re, r))
+        return false;
+
+    for (isu + 1..ieu) |i| {
+        if (!cs[i].is_full(r))
+            return false;
+    }
+    return true;
+}
+
+/// Check whether a range of values from range_start (included) to
+/// range_end (excluded) is present
+pub fn contains_range(r: Bitmap, range_start: u64, range_end: u64) bool {
+    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1)
+        return true;
+    return r.contains_range_closed(@intCast(range_start), @intCast(range_end - 1));
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata

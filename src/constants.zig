@@ -11,7 +11,7 @@ pub const MAX_RUN_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Rle16));
 
 /// Length in bytes of a Block. Same as `@sizeOf(root.Block)`.
 /// 32 with avx2.
-pub const BLOCK_SIZE = std.simd.suggestVectorLength(u8).?;
+pub const BLOCK_SIZE = std.simd.suggestVectorLength(u8) orelse @sizeOf(usize);
 pub const BLOCK_ALIGN = @alignOf(root.Block);
 pub const BLOCK_ALIGNMENT: std.mem.Alignment = .fromByteUnits(BLOCK_ALIGN);
 /// 256 with avx2.
