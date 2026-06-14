@@ -567,12 +567,12 @@ fn perform_op(
             );
         },
         .intersect, .merge, .xor, .andnot, .lazy_or => |o| {
-            var res = try switch (op) {
-                .intersect => Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
-                .merge => Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
-                .xor => Bitmap.xor(&rs[o.src1], allocator, &rs[o.src2]),
-                .andnot => Bitmap.andnot(&rs[o.src1], allocator, &rs[o.src2]),
-                .lazy_or => Bitmap.lazy_or(
+            var res = switch (op) {
+                .intersect => try Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
+                .merge => try Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
+                .xor => try Bitmap.xor(&rs[o.src1], allocator, &rs[o.src2]),
+                .andnot => try Bitmap.andnot(&rs[o.src1], allocator, &rs[o.src2]),
+                .lazy_or => try Bitmap.lazy_or(
                     &rs[o.src1],
                     allocator,
                     &rs[o.src2],
@@ -661,11 +661,11 @@ fn perform_op(
                 else => unreachable,
             }
 
+            if (op == .lazy_or)
+                try res.repair_after_lazy(allocator);
+
             rs[o.idx].deinit(allocator);
             rs[o.idx] = res;
-
-            if (op == .lazy_or)
-                try rs[o.idx].repair_after_lazy(allocator);
         },
         .or_inplace => |o| {
             try rs[o.idx].or_inplace(allocator, &rs[o.src1]);

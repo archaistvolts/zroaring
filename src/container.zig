@@ -4,9 +4,9 @@
 pub const Container = packed struct(u64) {
     /// cached container cardinality or nruns. u30 (or u29 when -Dcpu=baseline)
     cardinality: Cardinality,
-    /// an offset into Bitmap blocks.  [0, C.MAX_BLOCKS).
+    /// an offset into Bitmap blocks. u24 (or u25 when -Dcpu=baseline). [0, C.MAX_BLOCKS).
     blockoffset: BlockOffset,
-    /// number of blocks in the array, bitset or run container minus one. [0, C.BITSET_BLOCKS)
+    /// number of blocks in the array, bitset or run container minus one.  u8.  [0, C.BITSET_BLOCKS).
     /// 0..255 => 1..256
     nblocks_minus1: BlockIndex,
     typecode: root.Typecode,
@@ -60,6 +60,9 @@ pub const Container = packed struct(u64) {
         comptime typecode: root.Typecode,
         r: Bitmap,
     ) @FieldType(Element, @tagName(typecode)) {
+        // FIXME: check for stack pointers or when c isn't parented in r
+        // if ((builtin.is_test or builtin.mode == .Debug))
+        //     assert(c.nblocks() + c.blockoffset <= r.array.ptr(.blockslen).*);
         return @ptrCast(c.get_blocks(r));
     }
 
@@ -3417,8 +3420,8 @@ pub const Container = packed struct(u64) {
             // avoid using stack pointer: temporarily insert temp into dstr containers
             const tmpcid = dstr.array.ptr(.len).*;
             try dstr.insert_new_key_value_at(allocator, undefined, temp, tmpcid);
-            defer dstr.remove_at_index(tmpcid);
             try array_array_container_xor(&dstr.array.ptr(.containers)[tmpcid], allocator, dstr, src1, x1, dst, dstr);
+            dstr.remove_at_index(tmpcid);
         } else { // guess that it will end up as a bitset
             const result = try bitset_container_from_run(src2, allocator, x2, dstr);
             try bitset_array_container_ixor(&result, allocator, dstr, src1, x1, dst, dstr);

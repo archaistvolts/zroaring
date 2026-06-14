@@ -1431,8 +1431,8 @@ pub fn remove_at_index(r: Bitmap, i: u32) void {
     const ctrs = r.array.ptr(.containers);
     const keys = r.array.ptr(.keys);
     ctrs[i].deinit_blocks(r);
-    @memmove(ctrs[i..], ctrs[i + 1 ..][0 .. len - i]);
-    @memmove(keys[i..], keys[i + 1 ..][0 .. len - i]);
+    @memmove(ctrs[i..], ctrs[i + 1 ..][0 .. len - i - 1]);
+    @memmove(keys[i..], keys[i + 1 ..][0 .. len - i - 1]);
     r.array.ptr(.len).* -= 1;
 }
 
