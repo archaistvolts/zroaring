@@ -95,6 +95,8 @@ fn validateRoundTrip(
     try testing.expectEqual(crlen, zr.portable_serialize(&zr_w, &runflags));
     try testing.expectEqualSlices(u8, cr_serbuf[0..crlen], zr_serbuf[0..crlen]);
     try testing.expect(zr2.equals(zr));
+
+    try validateMisc(allocator, zr, cr);
 }
 
 /// Validate using addRange instead of individual adds.
@@ -153,6 +155,8 @@ fn validateRangeRoundTrip(
     var zr2 = try Bitmap.portable_deserialize_file_reader(allocator, &crfr);
     defer zr2.deinit(allocator);
     try testing.expect(zr.equals(zr2));
+
+    try validateMisc(allocator, zr, cr);
 }
 
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
@@ -179,10 +183,26 @@ fn validateFrozenContains(allocator: mem.Allocator, name: @EnumLiteral(), values
 
     try testing.expectEqualSlices(u8, cr_frozen_buf, zr_frozen_buf);
 
+    // TODO
     // var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
     // defer zr_frozen.deinit(allocator);
     // for (values) |v| try testing.expect(zr_frozen.contains(v));
     // try testing.expect(zr.equals(zr_frozen));
+}
+
+fn validateMisc(allocator: mem.Allocator, zr: Bitmap, cr: [*c]c.roaring_bitmap_t) !void {
+    // to_uint32_array
+    const len = zr.get_cardinality();
+    const crbuf = try allocator.alloc(u32, len);
+    defer allocator.free(crbuf);
+    c.roaring_bitmap_to_uint32_array(cr, crbuf.ptr);
+
+    const zrbuf = try allocator.alloc(u32, len);
+    defer allocator.free(zrbuf);
+    zr.to_uint32_array(zrbuf);
+
+    try testing.expectEqualSlices(u32, crbuf, zrbuf);
+    // end to_uint32_array
 }
 
 const testio = testing.io;

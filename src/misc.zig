@@ -757,6 +757,99 @@ pub fn bitset_clear_list(
     return card_out;
 }
 
+pub fn bitset_extract_setbits(
+    words: [*]align(C.BLOCK_ALIGN) const u64,
+    length: u32,
+    out: []u32,
+    base: u32,
+) usize {
+    var outpos: u32 = 0;
+    var basemut = base;
+    for (words[0..length]) |w0| {
+        var w = w0;
+        while (w != 0) {
+            const r = @ctz(w); // on x64, should compile to TZCNT
+            out[outpos] = r + basemut;
+            outpos += 1;
+            w &= (w - 1);
+        }
+        basemut += 64;
+    }
+    return outpos;
+}
+
+const length_table: [256]u8 = tbl: {
+    var tbl: [256]u8 = undefined;
+    for (&tbl, 0..) |*e, b| e.* = @popCount(b);
+    break :tbl tbl;
+};
+
+const vec_decode_table: [256]root.Block32 = tbl: {
+    @setEvalBranchQuota(5000);
+    var tbl: [256]root.Block32 = undefined;
+    for (&tbl, 0..) |*e, b| {
+        var v: root.Block32 = @splat(0);
+        var lane: u8 = 0;
+        for (0..8) |bit| {
+            if (b >> bit & 1 != 0) {
+                v[lane] = bit + 1; // 1-based
+                lane += 1;
+            }
+        }
+        e.* = v;
+    }
+    break :tbl tbl;
+};
+
+pub fn bitset_extract_setbits_avx2(
+    words: [*]align(C.BLOCK_ALIGN) const u64,
+    wordslen: u32,
+    out: [*]u32,
+    outlen: u32,
+    base: u32,
+) usize {
+    var outcur = out;
+    var base_vec: root.Block32 = @splat(base -% 1);
+    const inc_vec: root.Block32 = @splat(64);
+    const add8_vec: root.Block32 = @splat(8);
+    const safe_out = @intFromPtr(outcur + outlen);
+    var i: u32 = 0;
+    while (i < wordslen and @intFromPtr(outcur + 64) <= safe_out) : (i += 1) {
+        var w = words[i];
+        if (w == 0) {
+            base_vec +%= inc_vec;
+            continue;
+        }
+        for (0..4) |_| {
+            const bytea: u8 = @truncate(w);
+            const byteb: u8 = @truncate(w >> 8);
+            w >>= 16;
+
+            const veca = base_vec +% vec_decode_table[bytea];
+            base_vec +%= add8_vec;
+            const vecb = base_vec +% vec_decode_table[byteb];
+            base_vec +%= add8_vec;
+
+            outcur[0..8].* = veca;
+            outcur += length_table[bytea];
+            outcur[0..8].* = vecb;
+            outcur += length_table[byteb];
+        }
+    }
+
+    var base_scalar = base + i * 64;
+    while (i < wordslen and @intFromPtr(outcur) < safe_out) : (i += 1) {
+        var w = words[i];
+        while (w != 0 and @intFromPtr(outcur) < safe_out) {
+            outcur[0] = @ctz(w) + base_scalar;
+            outcur += 1;
+            w &= (w - 1);
+        }
+        base_scalar += 64;
+    }
+    return @intCast(outcur - out);
+}
+
 pub const pshufb =
     if (C.HAS_AVX2 and @import("builtin").zig_backend == .stage2_llvm)
         struct {

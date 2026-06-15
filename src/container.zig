@@ -5455,6 +5455,116 @@ pub const Container = packed struct(u64) {
             else => unreachable,
         }
     }
+
+    fn array_container_to_uint32_array_vector16(
+        out: []u32,
+        array: []align(C.BLOCK_ALIGN) const u16,
+        base: u32,
+    ) u32 {
+        var i: u32 = 0;
+        var outpos = out.ptr;
+        const cardinality = array.len;
+        const u16x8 = @Vector(C.BLOCK_LEN32, u16); // half block width
+        while (i + C.BLOCK_LEN32 <= cardinality) : (i += C.BLOCK_LEN32) {
+            const input: u16x8 = (array.ptr + i)[0..C.BLOCK_LEN32].*;
+            const output = input + @as(root.Block32, @splat(base));
+            outpos[0..C.BLOCK_LEN32].* = output;
+            outpos += C.BLOCK_LEN32;
+        }
+        while (i < cardinality) : (i += 1) {
+            outpos[0] = base + array[i]; // should be compiled as a MOV on x64
+            outpos += 1;
+        }
+
+        return @intCast(outpos - out.ptr);
+    }
+
+    fn bitset_container_to_uint32_array(
+        words: [*]align(C.BLOCK_ALIGN) const u64,
+        cardinality: u32,
+        out: []u32,
+        base: u32,
+    ) u32 {
+        if (C.IS_X64) {
+            // TODO AVX512, bitset_extract_setbits_avx512
+            if (C.HAS_AVX2 and cardinality >= 8192) // heuristic
+                return @intCast(misc.bitset_extract_setbits_avx2(
+                    words,
+                    C.BITSET_CONTAINER_SIZE_IN_WORDS,
+                    out.ptr,
+                    cardinality,
+                    base,
+                ));
+        }
+        return @intCast(misc.bitset_extract_setbits(
+            words,
+            C.BITSET_CONTAINER_SIZE_IN_WORDS,
+            out,
+            base,
+        ));
+    }
+
+    fn array_container_to_uint32_array(
+        array: []align(C.BLOCK_ALIGN) const u16,
+        out: []u32,
+        base: u32,
+    ) u32 {
+        if (C.IS_X64) {
+            // TODO AVX512, avx512_array_container_to_uint32_array
+            if (C.HAS_AVX2)
+                return array_container_to_uint32_array_vector16(out, array, base);
+        }
+        for (out[0..array.len], array) |*o, a| {
+            o.* = base + a; // should be compiled as a MOV on x64
+        }
+        return @intCast(array.len);
+    }
+
+    fn run_container_to_uint32_array(
+        runs: []align(C.BLOCK_ALIGN) const Rle16,
+        out: []u32,
+        base: u32,
+    ) u32 {
+        var outpos = out;
+        for (runs) |run| {
+            const run_start = base + run.value;
+            const le = run.length;
+            var j: u32 = 0;
+            while (j <= le) : (j += 1) {
+                const val = run_start + j;
+                outpos[0] = val;
+                outpos = outpos[1..];
+            }
+        }
+        return @intCast(outpos.ptr - out.ptr);
+    }
+
+    /// Convert a container to an array of values, requires a "base" (most
+    /// significant values).
+    ///
+    /// Returns number of ints added.
+    pub fn to_uint32_array(c: Container, output: []u32, base: u32, r: Bitmap) u32 {
+        // TODO // c = container_unwrap_shared(c);
+        return switch (c.typecode) {
+            .bitset => bitset_container_to_uint32_array(
+                c.blocks_as(.bitset, r).ptr,
+                c.cardinality,
+                output,
+                base,
+            ),
+            .array => array_container_to_uint32_array(
+                c.blocks_as(.array, r)[0..c.cardinality],
+                output,
+                base,
+            ),
+            .run => run_container_to_uint32_array(
+                c.blocks_as(.run, r)[0..c.cardinality],
+                output,
+                base,
+            ),
+            else => unreachable,
+        };
+    }
 };
 
 /// For bitset and array containers this is the index of the bit / entry.

@@ -1170,6 +1170,7 @@ fn perform_op(
                 .xor_cardinality,
                 .andnot_cardinality,
                 .jaccard_index,
+                .range_cardinality,
                 => {},
             }
         }

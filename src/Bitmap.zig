@@ -2248,6 +2248,22 @@ pub fn range_cardinality_closed(r: Bitmap, range_start: u32, range_end: u32) u64
     return card;
 }
 
+/// Convert the bitmap to a sorted array, output in `ans`.
+///
+/// Caller is responsible to ensure that there is enough memory allocated, e.g.
+///
+///     `ans = allocator.alloc(r.get_cardinality());`
+pub fn to_uint32_array(r: Bitmap, ans: []u32) void {
+    var anscur = ans;
+    const len = r.array.ptr(.len).*;
+    const cs = r.array.ptr(.containers);
+    const keys = r.array.ptr(.keys);
+    for (cs[0..len], keys[0..len]) |c, key| {
+        const num_added = c.to_uint32_array(anscur, @as(u32, key) << 16, r);
+        anscur = anscur[num_added..];
+    }
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata
