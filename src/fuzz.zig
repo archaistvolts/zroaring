@@ -109,6 +109,7 @@ pub const FuzzOp = union(enum) {
     xor_cardinality: BinOp2,
     andnot_cardinality: BinOp2,
     jaccard_index: BinOp2,
+    range_cardinality: Vals2,
 
     // idx with 1 u32 param
     const Val = struct { idx: u8, val: u32 };
@@ -162,7 +163,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 break :fuzz_op .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
             },
-            inline .add_range_closed, .contains_range => |t| {
+            inline .add_range_closed, .contains_range, .range_cardinality => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
                 const val1 = smith.valueRangeLessThan(u32, start, start + len);
@@ -291,7 +292,7 @@ const AflSmith = struct {
                 for (buf[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 return .{ .add_many = .{ .idx = idx, .vals = buf[0..len] } };
             },
-            inline .add_range_closed, .contains_range => |t| {
+            inline .add_range_closed, .contains_range, .range_cardinality => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
                 const val1 = smith.valueRangeLessThan(u32, start, start + len) orelse return null;
@@ -449,7 +450,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(@intCast(o.vals.len));
             for (o.vals) |v| try writer.writeInt(u32, v, .little);
         },
-        .add_range_closed, .contains_range => |o| {
+        .add_range_closed, .contains_range, .range_cardinality => |o| {
             const len = o.vals[1] - o.vals[0];
             try writer.writeInt(u32, o.vals[0], .little);
             try writer.writeInt(u32, len - 1, .little);
@@ -525,11 +526,6 @@ fn perform_op(
         .clear,
         .run_optimize,
         .shrink_to_fit,
-        .and_cardinality,
-        .or_cardinality,
-        .xor_cardinality,
-        .andnot_cardinality,
-        .jaccard_index,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
         => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .vals = .{{ {}, {} }} }} }},\n", .{ x.idx, x.vals[0], x.vals[1] }),
@@ -548,6 +544,12 @@ fn perform_op(
         .contains_range,
         .rank,
         .select,
+        .and_cardinality,
+        .or_cardinality,
+        .xor_cardinality,
+        .andnot_cardinality,
+        .jaccard_index,
+        .range_cardinality,
         => {},
     }
     switch (op) {
@@ -1036,13 +1038,39 @@ fn perform_op(
                 rs[o.idx].contains_range(o.vals[0], o.vals[1]),
             );
         } else {
-            var val = o.vals[0];
-            while (val < o.vals[1]) : (val += 1) {
+            try std.testing.expectEqual(
+                oracles[o.idx].contains(o.vals[0]),
+                rs[o.idx].contains(o.vals[0]),
+            );
+            if (o.vals[1] != 0) {
+                const end = o.vals[1] - 1;
                 try std.testing.expectEqual(
-                    oracles[o.idx].contains(val),
-                    rs[o.idx].contains(val),
+                    oracles[o.idx].contains(end),
+                    rs[o.idx].contains(end),
+                );
+                const mid = (end - o.vals[0]) / 2;
+                try std.testing.expectEqual(
+                    oracles[o.idx].contains(mid),
+                    rs[o.idx].contains(mid),
                 );
             }
+        },
+        .range_cardinality => |o| if (is_cr) {
+            try std.testing.expectEqual(
+                c.roaring_bitmap_range_cardinality(oracles[o.idx], o.vals[0], o.vals[1]),
+                rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
+            );
+        } else {
+            var startidx: u32 = 0;
+            const keys = oracles[o.idx].keys();
+            oracles[o.idx].sortUnstable(HashMapOracleSortCtx{ .keys = keys });
+            while (startidx < keys.len and keys[startidx] < o.vals[0]) : (startidx += 1) {}
+            var endidx = startidx;
+            while (endidx < keys.len and keys[endidx] < o.vals[1]) : (endidx += 1) {}
+            try std.testing.expectEqual(
+                endidx - startidx,
+                rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
+            );
         },
     }
 

@@ -23,7 +23,6 @@ pub const Container = packed struct(u64) {
         run: []align(C.BLOCK_ALIGN) root.Rle16,
     };
 
-    /// TODO reclaim in shrink_to_fit()
     pub fn deinit(c: *Container, r: Bitmap) void {
         if (c.* == uninit) return;
         r.remove_at_index(@intCast(c - r.array.ptr(.containers)));

@@ -1761,4 +1761,9 @@
         .{ .or_cardinality = .{ .idx = 6, .src1 = 0 } },
     },
     // end and/or/xor/andnot_cardinality and jaccard_index
+
+    .{ // range_cardinality
+        .{ .add_many = .{ .idx = 0, .vals = .{65138684} } },
+        .{ .range_cardinality = .{ .idx = 0, .vals = .{ 66637941, 67309026 } } },
+    },
 }

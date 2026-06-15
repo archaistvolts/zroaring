@@ -746,7 +746,9 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     return true;
 }
 
-/// Get the index corresponding to a 16-bit key
+/// Renamed from `ra_get_index`.
+///
+/// Get the index corresponding to a 16-bit key.
 pub fn get_key_index(r: Bitmap, key: u16) i32 {
     const keys = r.slice(.keys, .len);
     if (keys.len == 0 or keys[keys.len - 1] == key)
@@ -2191,6 +2193,60 @@ pub fn xor_cardinality(x1: Bitmap, x2: Bitmap) u64 {
 }
 
 pub const iterator = Iterator.init;
+
+pub fn range_cardinality(r: Bitmap, range_start: u64, range_end: u64) u64 {
+    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1) {
+        return 0;
+    }
+    return range_cardinality_closed(r, @truncate(range_start), @truncate(range_end - 1));
+}
+
+pub fn range_cardinality_closed(r: Bitmap, range_start: u32, range_end: u32) u64 {
+    const ra = r.array;
+
+    if (range_start > range_end)
+        return 0;
+
+    // now we have: 0 <= range_start <= range_end <= UINT32_MAX
+    const minhb: u16 = @truncate(range_start >> 16);
+    const maxhb: u16 = @truncate(range_end >> 16);
+
+    var card: u64 = 0;
+    const containers = ra.ptr(.containers);
+
+    const i = r.get_key_index(minhb);
+    var iu: u32 = @bitCast(i);
+    if (i >= 0) {
+        if (minhb == maxhb) {
+            card += containers[iu].rank(@truncate(range_end), r);
+        } else {
+            card += containers[iu].get_cardinality(r);
+        }
+        const range_start_lo: u16 = @truncate(range_start);
+        if (range_start_lo != 0) {
+            card -= containers[iu].rank(range_start_lo - 1, r);
+        }
+        iu += 1;
+    } else {
+        iu = @bitCast(-i - 1);
+    }
+
+    const len = ra.ptr(.len).*;
+    const keys = ra.ptr(.keys);
+    while (iu < len) : (iu += 1) {
+        const key = keys[iu];
+        if (key < maxhb) {
+            card += containers[iu].get_cardinality(r);
+        } else if (key == maxhb) {
+            card += containers[iu].rank(@truncate(range_end), r);
+            break;
+        } else {
+            break;
+        }
+    }
+
+    return card;
+}
 
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).

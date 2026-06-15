@@ -11,7 +11,6 @@ pub fn build(b: *std.Build) !void {
     const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
 
     // TODO // const translate_c = b.addTranslateC(.{ .root_source_file = b.path("c/roaring.h"), .target = target, .optimize = optimize });
-    // https://codeberg.org/ziglang/translate-c/issues/330
     const zrmod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -80,7 +79,8 @@ pub fn build(b: *std.Build) !void {
                 },
             }),
         });
-        // afl_obj.root_module.linkLibrary(libcroaring);
+        // TODO // afl_obj.root_module.linkLibrary(libcroaring);
+        // https://github.com/kristoff-it/zig-afl-kit/issues/14
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
