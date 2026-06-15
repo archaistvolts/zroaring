@@ -4,7 +4,7 @@ const afl = @import("afl_kit");
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output. default false.") orelse false);
-    options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "show fuzzer output with crash reproductions. default false.") orelse false);
+    options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "print fuzzer FuzzOps which may be added to src/fuzz-crash-corpus.zon to reproduce crashes. default false.") orelse false);
     options.addOption(bool, "run_slow_tests", b.option(bool, "run-slow-tests", "perform long running tests such as checkAllocationFailures(). default false.") orelse false);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});

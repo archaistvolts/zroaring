@@ -41,7 +41,8 @@ try std.testing.expect(!zr.contains(2));
 ```console
 $ zig build test -Doptimize=ReleaseSafe --fuzz --webui=[::1]:40313 -j1 -Dfuzzprint
 ```
-`-Dfuzzprint` prints reproductions which can be copied to [src/fuzz.zig](src/fuzz-crash-corpus.zig), test "crash reproductions".
+
+`-Dfuzzprint` prints zon reproductions which can be copied to [src/fuzz-crash-corpus.zon](src/fuzz-crash-corpus.zon).
 #### With nix-shell and AFL++:
 
 ```console
@@ -58,8 +59,10 @@ $ zig build && zig-out/bin/afl-main afl/output/default/crashes.2026-06-12-18\:09
 
 # CRoaring API coverage
 ```console
-# 6/13/2026
-$ zig build run -- api-coverage
+$ date +%F; zig build run -- api-coverage
+```
+```console
+2026-06-14
 
 parsed command:
   api-coverage --filter API-COVERAGE-FILTER-NONE
@@ -67,14 +70,14 @@ parsed command:
 symbols coverage:
   prefix              : found / total / %   :
 ---------------------------------------------
-  roaring_bitmap_     : 46    / 93    / 49.5%
+  roaring_bitmap_     : 53    / 93    / 57.0%
   ra_                 : 14    / 40    / 35.0%
-  container_          : 32    / 64    / 50.0%
-  run_container_      : 31    / 60    / 51.7%
-  bitset_container_   : 28    / 66    / 42.4%
-  array_container_    : 28    / 58    / 48.3%
+  container_          : 37    / 64    / 57.8%
+  run_container_      : 32    / 60    / 53.3%
+  bitset_container_   : 29    / 66    / 43.9%
+  array_container_    : 29    / 58    / 50.0%
 ---------------------------------------------
-  total               : 179   / 381   / 47.0%
+  total               : 194   / 381   / 50.9%
 ---------------------------------------------
   filtered            : 0     / 0     / -nan%
 ```
@@ -94,7 +97,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [x] Transition to a more from-scratch approach.  But try to follow the CRoaring API.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
-* [x] allocation failures test with crash reproductions.
+* [x] allocation failures test with crash corpus.
 * [x] container: match croaring binop param ordering: src1, src2, dst
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded

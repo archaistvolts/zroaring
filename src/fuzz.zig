@@ -1189,25 +1189,24 @@ fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
 
-test "crash reproductions" {
+test "crash corpus" {
     for (crash_corpus) |ops| {
         try cr_perform_ops(testgpa, ops);
     }
 }
 
-test "crash0" {
-    // if (true) return error.SkipZigTest;
-    const corpustmp: []const []const FuzzOp = @import("fuzz-crash-corpus-tmp.zon");
-    for (corpustmp) |ops| {
-        try cr_perform_ops(testgpa, ops);
-    }
-}
-
-test "allocation failures from crash reproductions" {
+test "allocation failures with crash corpus" {
     if (!@import("build-options").run_slow_tests) return error.SkipZigTest;
     for (crash_corpus) |ops| {
         try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
     }
+}
+
+test "crash0" {
+    // const corpustmp: []const []const FuzzOp = @import("fuzz-crash-corpus-tmp.zon");
+    // for (corpustmp) |ops| {
+    //     try cr_perform_ops(testgpa, ops);
+    // }
 }
 
 const std = @import("std");
