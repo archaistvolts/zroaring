@@ -435,17 +435,221 @@ pub fn intersect_uint16_cardinality(
     }
 }
 
-/// From Schlegel et al., Fast Sorted-Set Intersection using SIMD Instructions
-/// Optimized by D. Lemire on May 3rd 2013
+fn gen_shuffle_mask16_entry(comptime mask: u8) [16]u8 {
+    @setEvalBranchQuota(5000);
+    var result: [16]u8 = undefined;
+    var j: usize = 0;
+    inline for (0..8) |k| {
+        if (mask & (@as(u8, 1) << @intCast(k)) != 0) {
+            result[j] = @intCast(k * 2);
+            result[j + 1] = @intCast(k * 2 + 1);
+            j += 2;
+        }
+    }
+    while (j < 16) : (j += 1) result[j] = 0xFF;
+    return result;
+}
+
+/// pshufb control table: for each 8-bit match mask, a 16-byte shuffle pattern
+/// that shuffles the matching u16 values to the front.
+const shuffle_mask16: [256][16]u8 = blk: {
+    var table: [256][16]u8 = undefined;
+    for (&table, 0..) |*entry, i| entry.* = gen_shuffle_mask16_entry(@intCast(i));
+    break :blk table;
+};
+
+const u16x8 = @Vector(8, u16);
+const u16x8_len = @typeInfo(u16x8).vector.len;
+
 pub fn intersect_vector16(
     A: []align(C.BLOCK_ALIGN) const u16,
     B: []align(C.BLOCK_ALIGN) const u16,
-    c: []align(C.BLOCK_ALIGN) const u16,
+    out: []align(C.BLOCK_ALIGN) u16,
 ) u32 {
-    _ = A;
-    _ = B;
-    _ = c;
-    unreachable;
+    var count: u32 = 0;
+    var ia: u32 = 0;
+    var ib: u32 = 0;
+
+    const enda = (A.len / u16x8_len) * u16x8_len;
+    const endb = (B.len / u16x8_len) * u16x8_len;
+    while (ia < enda and ib < endb) {
+        const va: u16x8 = A[ia .. ia + u16x8_len][0..u16x8_len].*;
+        const vb: u16x8 = B[ib .. ib + u16x8_len][0..u16x8_len].*;
+
+        // imitate _mm_cmpestrm / _SIDD_CMP_EQUAL_ANY
+        // broadcast each element of vb and check if it matches anything in va
+        var matches: @Vector(u16x8_len, bool) = @splat(false);
+        inline for (0..u16x8_len) |i| {
+            // Broadcast the i-th element of vb to all 8 slots
+            const b_elem: u16x8 = @splat(vb[i]);
+            matches = matches | (va == b_elem);
+        }
+
+        const match_mask: u8 = @bitCast(matches);
+        if (match_mask != 0) {
+            // use match_mask to load precomputed shuffle mask
+            const p: @Vector(8, u16) = @bitCast(pshufbhalf(
+                @as(BlockHalf, @bitCast(va)),
+                shuffle_mask16[match_mask],
+            ));
+
+            // Store the packed matches into C.
+            //
+            // TODO use an unaligned scalar store here to avoid out-of-bounds if
+            // out isn't padded, but we follow CRoaring.
+            inline for (0..u16x8_len) |idx| {
+                if (idx < @popCount(match_mask))
+                    out[count + idx] = p[idx];
+            }
+            count += @popCount(match_mask);
+        }
+
+        const amax = A[ia + u16x8_len - 1];
+        const bmax = B[ib + u16x8_len - 1];
+        if (amax <= bmax) ia += u16x8_len;
+        if (bmax <= amax) ib += u16x8_len;
+    }
+
+    // scalar tail intersection
+    while (ia < A.len and ib < B.len) {
+        const a = A[ia];
+        const b = B[ib];
+        if (a < b) {
+            ia += 1;
+        } else if (b < a) {
+            ib += 1;
+        } else {
+            out[count] = a;
+            count += 1;
+            ia += 1;
+            ib += 1;
+        }
+    }
+    return count;
+}
+
+/// intersect a and b, writing the result inplace to A.
+/// returns length of the intersected array.
+pub fn intersect_vector16_inplace(A: []u16, B: []const u16) u32 {
+    var count: u32 = 0;
+    var ia: u32 = 0;
+    var ib: u32 = 0;
+    const enda = (A.len / u16x8_len) * u16x8_len;
+    const endb = (B.len / u16x8_len) * u16x8_len;
+
+    // tmp buffer to avoid trampling A. capacity is 16 because an 8 element
+    // store at an offset requires up to 16 slots to avoid OOB.
+    var tmp: [16]u16 = undefined;
+    var tmpcount: u8 = 0;
+    while (ia < enda and ib < endb) {
+        const va: @Vector(u16x8_len, u16) = A[ia..][0..u16x8_len].*;
+        const vb: @Vector(u16x8_len, u16) = B[ib..][0..u16x8_len].*;
+
+        // imitate _mm_cmpestrm equal any
+        var match_mask: @Vector(u16x8_len, bool) = @splat(false);
+        inline for (0..u16x8_len) |i| {
+            const b_elem: @Vector(u16x8_len, u16) = @splat(vb[i]);
+            match_mask = match_mask | (va == b_elem);
+        }
+
+        const r: u8 = @bitCast(match_mask);
+        if (r != 0) { // pack matches to tmp
+            // shuffle matching elements to front
+            const p: [8]u16 = @bitCast(pshufbhalf(
+                @as(BlockHalf, @bitCast(va)),
+                @as(BlockHalf, shuffle_mask16[r]),
+            ));
+            // unconditionally copy 8 elements. because tmpcount will never
+            // exceed 8 before a flush, tmpcount + 8 <= 16, keeping within tmp
+            // buffer.
+            @memcpy(tmp[tmpcount..].ptr, p[0..u16x8_len]);
+            tmpcount += @popCount(r);
+        }
+
+        const amax = A[ia + u16x8_len - 1];
+        const bmax = B[ib + u16x8_len - 1];
+        // advance pointers, flush tmp to a
+        if (amax <= bmax) {
+            if (tmpcount > 0) {
+                @memcpy(A[count..].ptr, tmp[0..tmpcount]);
+                count += tmpcount;
+                tmpcount = 0;
+            }
+            ia += u16x8_len;
+        }
+
+        if (bmax <= amax)
+            ib += u16x8_len;
+    }
+
+    // flush remaining items in tmp
+    if (tmpcount > 0) {
+        @memcpy(A[count..].ptr, tmp[0..tmpcount]);
+        count += tmpcount;
+
+        // Lemire's optimization:
+        // If A didn't advance, tmpcount contains the matches for the current va.
+        // Because the sets are uniquely sorted, we can safely jump past these already-matched
+        // elements in the scalar tail to prevent double-counting them.
+        ia += tmpcount;
+    }
+
+    // scalar intersect tail
+    while (ia < A.len and ib < B.len) {
+        const a = A[ia];
+        const b = B[ib];
+        if (a < b) {
+            ia += 1;
+        } else if (b < a) {
+            ib += 1;
+        } else {
+            A[count] = a;
+            count += 1;
+            ia += 1;
+            ib += 1;
+        }
+    }
+    return count;
+}
+
+pub fn intersect_vector16_cardinality(
+    A: []align(C.BLOCK_ALIGN) const u16,
+    B: []align(C.BLOCK_ALIGN) const u16,
+) u32 {
+    var count: u32 = 0;
+    var ia: u32 = 0;
+    var ib: u32 = 0;
+    const enda = (A.len / u16x8_len) * u16x8_len;
+    const endb = (B.len / u16x8_len) * u16x8_len;
+
+    while (ia < enda and ib < endb) {
+        const va: u16x8 = A[ia..][0..u16x8_len].*;
+        const vb: u16x8 = B[ib..][0..u16x8_len].*;
+
+        var matches: @Vector(8, bool) = @splat(false);
+        inline for (0..8) |i| {
+            matches = matches | (va == @as(u16x8, @splat(vb[i])));
+        }
+        count += @popCount(@as(u8, @bitCast(matches)));
+
+        const amax = A[ia + 7];
+        const bmax = B[ib + 7];
+        if (amax <= bmax) ia += 8;
+        if (bmax <= amax) ib += 8;
+    }
+
+    while (ia < A.len and ib < B.len) {
+        if (A[ia] < B[ib]) {
+            ia += 1;
+        } else if (B[ib] < A[ia]) {
+            ib += 1;
+        } else {
+            count += 1;
+            ia += 1;
+            ib += 1;
+        }
+    }
+    return count;
 }
 
 pub fn union_vector16(
@@ -874,9 +1078,21 @@ pub const pshufb =
     else
         unreachable; // TODO non-llvm, non-avx2
 
-inline fn pshufb_avx2(a: Block, b: Block) Block {
+const BlockHalf = @Vector(C.BLOCK_SIZE / 2, u8);
+pub const pshufbhalf =
+    if (C.HAS_AVX2 and @import("builtin").zig_backend == .stage2_llvm)
+        struct {
+            extern fn @"llvm.x86.ssse3.pshuf.b.128"(a: BlockHalf, b: BlockHalf) BlockHalf;
+            const pshufbhalf = @"llvm.x86.ssse3.pshuf.b.128";
+        }.pshufbhalf
+    else if (C.HAS_AVX2)
+        pshufb_avx2
+    else
+        unreachable; // TODO non-llvm, non-avx2
+
+inline fn pshufb_avx2(a: anytype, b: anytype) @TypeOf(a) {
     return asm ("vpshufb %[mask], %[src], %[ret]"
-        : [ret] "=x" (-> Block),
+        : [ret] "=x" (-> @TypeOf(a)),
         : [src] "x" (a),
           [mask] "x" (b),
     );

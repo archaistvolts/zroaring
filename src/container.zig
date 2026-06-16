@@ -1740,18 +1740,18 @@ pub const Container = packed struct(u64) {
                 dst.blocks_as(.array, dstr.*),
             ));
         } else {
-            if (C.HAS_AVX2) {
-                // TODO // dst.cardinality = @intCast(misc.intersect_vector16(
-                //     ac1.blocks_as(.array, x1.*)[0..card1],
-                //     ac2.blocks_as(.array, x2.*)[0..card2],
-                //     dst.blocks_as(.array, dstr.*),
-                // ));
-            }
-            dst.cardinality = @intCast(misc.intersect_uint16(
-                ac1.blocks_as(.array, x1.*)[0..card1],
-                ac2.blocks_as(.array, x2.*)[0..card2],
-                dst.blocks_as(.array, dstr.*),
-            ));
+            dst.cardinality = @intCast(if (C.HAS_AVX2)
+                misc.intersect_vector16(
+                    ac1.blocks_as(.array, x1.*)[0..card1],
+                    ac2.blocks_as(.array, x2.*)[0..card2],
+                    dst.blocks_as(.array, dstr.*),
+                )
+            else
+                misc.intersect_uint16(
+                    ac1.blocks_as(.array, x1.*)[0..card1],
+                    ac2.blocks_as(.array, x2.*)[0..card2],
+                    dst.blocks_as(.array, dstr.*),
+                ));
         }
 
         if (dst.cardinality == 0)
@@ -5048,11 +5048,8 @@ pub const Container = packed struct(u64) {
             misc.intersect_skewed_uint16_cardinality(c1array, c2array)
         else if (card_2 * threshold < card_1)
             misc.intersect_skewed_uint16_cardinality(c2array, c1array)
-        else if (C.IS_X64)
-            // TODO // if (C.HAS_AVX2)
-            //     misc.intersect_vector16_cardinality(c1array, c2array)
-            // else
-            misc.intersect_uint16_cardinality(c1array, c2array)
+        else if (C.IS_X64 and C.HAS_AVX2)
+            misc.intersect_vector16_cardinality(c1array, c2array)
         else
             misc.intersect_uint16_cardinality(c1array, c2array));
     }
@@ -5601,28 +5598,29 @@ pub const Container = packed struct(u64) {
         const card2 = c2.cardinality;
         const threshold = 64; // subject to tuning
 
-        if (card1 * threshold < card2) {
-            c1.cardinality = @intCast(misc.intersect_skewed_uint16(
+        c1.cardinality = @intCast(if (card1 * threshold < card2)
+            misc.intersect_skewed_uint16(
+                c1.blocks_as(.array, x1.*)[0..card1],
+                c2.blocks_as(.array, x2.*)[0..card2],
+                c1.blocks_as(.array, x1.*),
+            )
+        else if (card2 * threshold < card1)
+            misc.intersect_skewed_uint16(
+                c2.blocks_as(.array, x2.*)[0..card2],
+                c1.blocks_as(.array, x1.*)[0..card1],
+                c1.blocks_as(.array, x1.*),
+            )
+        else if (C.HAS_AVX2)
+            misc.intersect_vector16_inplace(
+                c1.blocks_as(.array, x1.*)[0..card1],
+                c2.blocks_as(.array, x2.*)[0..card2],
+            )
+        else
+            misc.intersect_uint16(
                 c1.blocks_as(.array, x1.*)[0..card1],
                 c2.blocks_as(.array, x2.*)[0..card2],
                 c1.blocks_as(.array, x1.*),
             ));
-        } else if (card2 * threshold < card1) {
-            c1.cardinality = @intCast(misc.intersect_skewed_uint16(
-                c2.blocks_as(.array, x2.*)[0..card2],
-                c1.blocks_as(.array, x1.*)[0..card1],
-                c1.blocks_as(.array, x1.*),
-            ));
-        } else {
-            if (C.HAS_AVX2) {
-                // TODO intersect_vector16_inplace when HAS_AVX2
-            }
-            c1.cardinality = @intCast(misc.intersect_uint16(
-                c1.blocks_as(.array, x1.*)[0..card1],
-                c2.blocks_as(.array, x2.*)[0..card2],
-                c1.blocks_as(.array, x1.*),
-            ));
-        }
     }
 
     pub fn iand(
