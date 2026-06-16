@@ -2264,6 +2264,67 @@ pub fn to_uint32_array(r: Bitmap, ans: []u32) void {
     }
 }
 
+/// Inplace version of `roaring_bitmap_and()`, modifies r1
+/// r1 == r2 is allowed.
+///
+/// Performance hint: if you are computing the intersection between several
+/// bitmaps, two-by-two, it is best to start with the smallest bitmap.
+/// Computes the intersection between two bitmaps and modifies x1 in place.
+/// You may also rely on and_inplace to avoid creating many temporary bitmaps.
+// there should be some SIMD optimizations possible here
+pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
+    if (r1 == r2 or r1.is_empty()) return;
+    const length1 = r1.array.ptr(.len).*;
+    const length2 = r2.array.ptr(.len).*;
+    trace(@src(), "x1={f}", .{r1.fmtLong()});
+    trace(@src(), "x2={f}", .{r2.fmtLong()});
+    defer r1.assert_valid();
+
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    var intersection_size: u32 = 0;
+
+    while (pos1 < length1 and pos2 < length2) {
+        const key1 = r1.array.ptr(.keys)[pos1];
+        const key2 = r2.array.ptr(.keys)[pos2];
+
+        if (key1 == key2) {
+            const c1 = &r1.array.ptr(.containers)[pos1];
+            const c2 = &r2.array.ptr(.containers)[pos2];
+            const oldc = c1.*;
+            const c = if (c1.typecode == .shared)
+                try Container.intersect(c1, allocator, r1, c2, r2, r1)
+            else
+                try Container.iand(c1, allocator, r1, c2, r2);
+
+            if (c.blockoffset != oldc.blockoffset)
+                oldc.deinit_blocks(r1.*);
+
+            if (c.nonzero_cardinality(r1.*)) {
+                r1.array.ptr(.containers)[intersection_size] = c;
+                r1.array.ptr(.keys)[intersection_size] = key1;
+                intersection_size += 1;
+            } else if (c != Container.uninit) {
+                c.deinit_blocks(r1.*);
+            }
+            pos1 += 1;
+            pos2 += 1;
+        } else if (key1 < key2) {
+            r1.array.ptr(.containers)[pos1].deinit_blocks(r1.*);
+            pos1 += 1;
+        } else {
+            pos2 += 1;
+        }
+    }
+
+    while (pos1 < length1) {
+        r1.array.ptr(.containers)[pos1].deinit_blocks(r1.*);
+        pos1 += 1;
+    }
+
+    r1.array.ptr(.len).* = intersection_size;
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata

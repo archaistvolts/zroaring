@@ -435,6 +435,19 @@ pub fn intersect_uint16_cardinality(
     }
 }
 
+/// From Schlegel et al., Fast Sorted-Set Intersection using SIMD Instructions
+/// Optimized by D. Lemire on May 3rd 2013
+pub fn intersect_vector16(
+    A: []align(C.BLOCK_ALIGN) const u16,
+    B: []align(C.BLOCK_ALIGN) const u16,
+    c: []align(C.BLOCK_ALIGN) const u16,
+) u32 {
+    _ = A;
+    _ = B;
+    _ = c;
+    unreachable;
+}
+
 pub fn union_vector16(
     set1: []const u16,
     set2: []const u16,

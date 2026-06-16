@@ -87,6 +87,7 @@ pub const FuzzOp = union(enum) {
     andnot: BinOp,
     lazy_or: BinOp,
     or_inplace: BinOp2,
+    and_inplace: BinOp2,
     is_subset: BinOp,
     or_many: ManyOp,
     clear: u8,
@@ -191,6 +192,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }),
             inline .or_inplace,
+            .and_inplace,
             .and_cardinality,
             .or_cardinality,
             .xor_cardinality,
@@ -316,6 +318,7 @@ const AflSmith = struct {
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             }),
             inline .or_inplace,
+            .and_inplace,
             .and_cardinality,
             .or_cardinality,
             .xor_cardinality,
@@ -469,6 +472,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .lazy_or,
         => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .or_inplace,
+        .and_inplace,
         .and_cardinality,
         .or_cardinality,
         .xor_cardinality,
@@ -522,6 +526,7 @@ fn perform_op(
         .andnot,
         .lazy_or,
         .or_inplace,
+        .and_inplace,
         .is_subset,
         .clear,
         .run_optimize,
@@ -720,6 +725,22 @@ fn perform_op(
                 );
                 for (oracles[o.src1].keys()) |key|
                     oracles[o.idx].putAssumeCapacity(key, {});
+            }
+        },
+        .and_inplace => |o| {
+            try rs[o.idx].and_inplace(allocator, &rs[o.src1]);
+            if (is_cr) {
+                c.roaring_bitmap_and_inplace(oracles[o.idx], oracles[o.src1]);
+            } else {
+                var i = oracles[o.idx].count();
+                const keys = oracles[o.idx].keys();
+                while (i != 0) {
+                    i -= 1;
+                    const key = keys[i];
+                    if (!oracles[o.src1].contains(key)) {
+                        _ = oracles[o.idx].swapRemove(key);
+                    }
+                }
             }
         },
         .and_cardinality => |o| {
@@ -1114,6 +1135,7 @@ fn perform_op(
                 .andnot,
                 .lazy_or,
                 .or_inplace,
+                .and_inplace,
                 .is_subset,
                 .clear,
                 .run_optimize,
