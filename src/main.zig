@@ -6,9 +6,10 @@ const Command = union(enum) {
     const Tag = meta.Tag(Command);
 
     pub fn format(c: Command, w: *std.Io.Writer) !void {
+        try w.writeAll(@tagName(c));
         switch (c) {
             .@"api-coverage" => |x| {
-                try w.print("api-coverage --filter {s}", .{x.@"--filter"});
+                try w.print(" --filter {s}", .{x.@"--filter"});
             },
         }
     }
@@ -22,9 +23,15 @@ fn bail(comptime fmt: []const u8, args: anytype) noreturn {
         std.debug.print("{s}: {{\n", .{n});
 
         const F = @FieldType(Command, n);
-        inline for (comptime meta.fieldNames(F)) |cn| {
-            if (i != 0) std.debug.print(", ", .{});
-            std.debug.print("  {s}: {s}\n", .{ cn, @typeName(@FieldType(F, cn)) });
+        switch (@typeInfo(F)) {
+            .@"struct" => {
+                inline for (comptime meta.fieldNames(F)) |cn| {
+                    if (i != 0) std.debug.print(", ", .{});
+                    std.debug.print("  {s}: {s}\n", .{ cn, @typeName(@FieldType(F, cn)) });
+                }
+            },
+            .void => {},
+            else => @panic("TODO: " ++ @typeName(F)),
         }
         std.debug.print("}}\n", .{});
     }
@@ -37,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const arg1 = args.next() orelse bail("Missing command argument.\n", .{});
     var command = if (meta.stringToEnum(Command.Tag, arg1)) |x| switch (x) {
-        inline else => @unionInit(Command, @tagName(x), .{}),
+        inline else => |t| @unionInit(Command, @tagName(t), .{}),
     } else {
         bail("Unexpected command argument '{s}'\n", .{arg1});
     };
@@ -47,20 +54,24 @@ pub fn main(init: std.process.Init) !void {
         switch (command) {
             inline else => |_, tag| {
                 const Cf = @FieldType(Command, @tagName(tag));
-                if (meta.stringToEnum(meta.FieldEnum(Cf), arg)) |cmdfield| {
-                    switch (cmdfield) {
-                        inline else => |cmdfieldtag| {
-                            const T = @FieldType(Cf, @tagName(cmdfieldtag));
-                            switch (T) {
-                                []const u8 => @field(
-                                    @field(command, @tagName(tag)),
-                                    @tagName(cmdfieldtag),
-                                ) = args.next() orelse
-                                    bail("Missing command argument: '{s}: {s}'\n", .{ @tagName(cmdfieldtag), @typeName(T) }),
-                                else => @panic("TODO: " ++ @typeName(T)),
-                            }
-                        },
-                    }
+                switch (@typeInfo(Cf)) {
+                    .@"struct" => if (meta.stringToEnum(meta.FieldEnum(Cf), arg)) |cmdfield| {
+                        switch (cmdfield) {
+                            inline else => |cmdfieldtag| {
+                                const T = @FieldType(Cf, @tagName(cmdfieldtag));
+                                switch (T) {
+                                    []const u8 => @field(
+                                        @field(command, @tagName(tag)),
+                                        @tagName(cmdfieldtag),
+                                    ) = args.next() orelse
+                                        bail("Missing command argument: '{s}: {s}'\n", .{ @tagName(cmdfieldtag), @typeName(T) }),
+                                    else => @panic("TODO: " ++ @typeName(T)),
+                                }
+                            },
+                        }
+                    },
+                    .void => {},
+                    else => @panic("TODO: " ++ @typeName(Cf)),
                 }
             },
         }
@@ -95,9 +106,7 @@ pub fn main(init: std.process.Init) !void {
                 syms_stats_by_prefix[i][1] += 1; // total
 
                 for (bitmap_syms.keys()) |bsym| {
-                    if (!gop.found_existing and
-                        (mem.eql(u8, cr_sym, bsym) or mem.eql(u8, cr_sym_suffix, bsym)))
-                    {
+                    if (mem.eql(u8, cr_sym, bsym) or mem.eql(u8, cr_sym_suffix, bsym)) {
                         gop.value_ptr.* = .{ bsym, "Bitmap" };
                         gop.found_existing = true;
                         syms_stats_by_prefix[i][0] += 1; // found
@@ -105,9 +114,7 @@ pub fn main(init: std.process.Init) !void {
                 }
 
                 for (ctr_syms.keys()) |ctrsym| {
-                    if (!gop.found_existing and
-                        (mem.eql(u8, cr_sym, ctrsym) or mem.eql(u8, cr_sym_suffix, ctrsym)))
-                    {
+                    if (mem.eql(u8, cr_sym, ctrsym) or mem.eql(u8, cr_sym_suffix, ctrsym)) {
                         gop.value_ptr.* = .{ ctrsym, "Container" };
                         syms_stats_by_prefix[i][0] += 1; // found
                     }
@@ -171,6 +178,7 @@ const crprefixes = [_][]const u8{
     "run_container_",
     "bitset_container_",
     "array_container_",
+    "iter",
 };
 
 /// map of found names to prefix len after which match is found
