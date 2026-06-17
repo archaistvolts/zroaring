@@ -2319,7 +2319,7 @@ pub const Container = packed struct(u64) {
         dst.cardinality = @intCast(misc.fast_union_uint16(
             x1.array.ptr(.containers)[c1id].blocks_as(.array, x1.*)[0..card1],
             x2.array.ptr(.containers)[c2id].blocks_as(.array, x2.*)[0..card2],
-            dst.blocks_as(.array, dstr.*),
+            dst.blocks_as(.array, dstr.*).ptr,
         ));
     }
 
@@ -2898,7 +2898,7 @@ pub const Container = packed struct(u64) {
                 src1.cardinality = @intCast(misc.union_uint16(
                     src1array[src2.cardinality..][0..src1.cardinality],
                     src2array,
-                    src1array,
+                    src1array.ptr,
                 ));
                 return;
             }
@@ -4722,7 +4722,7 @@ pub const Container = packed struct(u64) {
                 src1.cardinality = @intCast(misc.fast_union_uint16(
                     arr1[src2.cardinality..][0..src1.cardinality],
                     arr2,
-                    arr1[0..src1.cardinality],
+                    arr1[0..src1.cardinality].ptr,
                 ));
                 return;
             }
