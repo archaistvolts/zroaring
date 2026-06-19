@@ -2310,7 +2310,7 @@ pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
             pos1 += 1;
             pos2 += 1;
         } else if (key1 < key2) {
-            r1.array.ptr(.containers)[pos1].deinit_blocks(r1.*);
+            r1.array.ptr(.containers)[pos1] = .uninit;
             pos1 += 1;
         } else {
             pos2 += 1;
@@ -2318,7 +2318,7 @@ pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
     }
 
     while (pos1 < length1) {
-        r1.array.ptr(.containers)[pos1].deinit_blocks(r1.*);
+        r1.array.ptr(.containers)[pos1] = .uninit;
         pos1 += 1;
     }
 
