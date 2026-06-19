@@ -1200,6 +1200,52 @@ pub fn bitset_extract_setbits_avx2(
     return @intCast(outcur - out);
 }
 
+pub inline fn memequals(
+    s1: [*]align(C.BLOCK_ALIGN) const u8,
+    s2: [*]align(C.BLOCK_ALIGN) const u8,
+    n: usize,
+) bool {
+    var ptr1 = s1;
+    var ptr2 = s2;
+    const end1 = @intFromPtr(ptr1 + n);
+    const size8 = @sizeOf(u64);
+    const sizeb = C.BLOCK_SIZE;
+    const end8 = @intFromPtr(ptr1 + n / size8 * size8);
+    const end32 = @intFromPtr(ptr1 + n / sizeb * sizeb);
+
+    while (@intFromPtr(ptr1) < end32) {
+        const r1: Block = ptr1[0..C.BLOCK_SIZE].*;
+        const r2: Block = ptr2[0..C.BLOCK_SIZE].*;
+        const mask: root.BlockMask = @bitCast(r1 == r2);
+        if (mask != std.math.maxInt(root.BlockMask))
+            return false;
+        ptr1 += sizeb;
+        ptr2 += sizeb;
+    }
+
+    var ptr18: [*]align(@alignOf(u64)) const u8 = ptr1;
+    var ptr28: [*]align(@alignOf(u64)) const u8 = ptr2;
+    while (@intFromPtr(ptr18) < end8) {
+        const v1: u64 = @bitCast(ptr18[0..size8].*);
+        const v2: u64 = @bitCast(ptr28[0..size8].*);
+        if (v1 != v2)
+            return false;
+        ptr18 += size8;
+        ptr28 += size8;
+    }
+
+    var ptr11: [*]const u8 = ptr18;
+    var ptr21: [*]const u8 = ptr28;
+    while (@intFromPtr(ptr11) < end1) {
+        if (ptr11[0] != ptr21[0])
+            return false;
+        ptr11 += 1;
+        ptr21 += 1;
+    }
+
+    return true;
+}
+
 pub const pshufb =
     if (C.HAS_AVX2 and @import("builtin").zig_backend == .stage2_llvm)
         struct {
@@ -1268,9 +1314,9 @@ test numGroupsOfSize {
     try testing.expectEqual(2, numGroupsOfSize(16, 8));
 }
 
-/// an int with t1 in lo, t2 in hi bits
-pub fn pair(t1: root.Typecode, t2: root.Typecode) u4 {
-    return @as(u4, @intFromEnum(t1)) << 2 | @intFromEnum(t2);
+/// a u8 with t1 in hi nibble, t2 in lo nibble
+pub fn pair(t1: root.Typecode, t2: root.Typecode) u8 {
+    return @as(u8, @intFromEnum(t1)) << 4 | @intFromEnum(t2);
 }
 
 /// an int with t1 in lo, t2 in hi bits

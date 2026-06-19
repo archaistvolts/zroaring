@@ -723,24 +723,28 @@ pub fn contains(r: Bitmap, val: u32) bool {
 
 /// true if the two bitmaps contain the same elements.
 pub fn equals(r1: Bitmap, r2: Bitmap) bool {
-    // trace(@src(), "r1.header={}", .{r1.header});
-    if (r1.is_empty()) return r2.is_empty();
     const h1 = r1.array;
     const h2 = r2.array;
-    if (h1.ptr(.len).* != h2.ptr(.len).*)
+    if (h1 == empty.array)
+        return h2 == empty.array;
+    if (h1 == h2)
+        return true;
+    const len = h1.ptr(.len).*;
+    if (len != h2.ptr(.len).*)
         return false;
 
-    for (r1.slice(.keys, .len), r2.slice(.keys, .len)) |k1, k2| {
-        if (k1 != k2) return false;
-    }
+    if (!misc.memequals(
+        @ptrCast(h1.ptr(.keys)),
+        @ptrCast(h2.ptr(.keys)),
+        len * @sizeOf(u16),
+    ))
+        return false;
 
-    for (
-        r1.slice(.containers, .len),
-        r2.slice(.containers, .len),
-    ) |c1, c2| {
-        // trace(@src(), "c1={}", .{c1});
-        // trace(@src(), "c2={}", .{c2});
-        if (!c1.equals(c2, r1, r2)) return false;
+    for (h1.ptr(.containers)[0..len], h2.ptr(.containers)) |*c1, *c2| {
+        assert(c1 != c2);
+
+        if (!c1.equals(r1, c2, r2))
+            return false;
     }
 
     return true;
@@ -1060,7 +1064,8 @@ pub fn internal_validate_container(r: Bitmap, c: Container, reason: *?[]const u8
 }
 
 pub fn assert_valid(r: Bitmap) void {
-    if (!(@import("builtin").is_test or @import("builtin").mode == .Debug)) return;
+    if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+        return;
     var reason: ?[]const u8 = null;
     if (!r.internal_validate(&reason)) {
         trace(@src(), "{s}", .{reason.?});
@@ -1115,8 +1120,9 @@ pub fn realloc_array(
         return;
     }
 
+    const bytes = r.array.asBytes()[0..size];
     errdefer {
-        allocator.free(r.array.asBytes()[0..size]);
+        allocator.free(bytes);
         r.array = empty.array;
     }
     // TODO faster to realloc and move fields. when new size is larger?
@@ -1124,7 +1130,7 @@ pub fn realloc_array(
     r.copy_to(newarray);
     assert(r.array.ptr(.len).* == newarray.ptr(.len).*);
     assert(r.array.ptr(.blockslen).* == newarray.ptr(.blockslen).*);
-    allocator.free(r.array.asBytes()[0..size]);
+    allocator.free(bytes);
     r.array = newarray;
 }
 

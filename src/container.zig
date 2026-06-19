@@ -495,29 +495,135 @@ pub const Container = packed struct(u64) {
     }
     pub const size_in_bytes = serialized_size_in_bytes;
 
-    pub fn equals(c1: Container, c2: Container, r1: Bitmap, r2: Bitmap) bool {
-        if (c1 == c2) return true;
-        const card1 = c1.cardinality;
-        if (c1.typecode != c2.typecode or card1 != c2.cardinality)
+    inline fn _avx2_bitset_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        for (c1.get_blocks(x1), c2.get_blocks(x2)) |b1, b2| {
+            const mask: root.BlockMask = @bitCast(b1 == b2);
+            if (mask != std.math.maxInt(root.BlockMask))
+                return false;
+        }
+        return true;
+    }
+
+    fn bitset_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        if (c1.cardinality != C.BITSET_UNKNOWN_CARDINALITY and
+            c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
+        {
+            if (c1.cardinality != c2.cardinality) return false;
+            if (c1.cardinality == C.MAX_KEY_CARDINALITY) return true;
+        }
+        // TODO if(C.HAS_AVX512) ...
+        return if (C.HAS_AVX2)
+            _avx2_bitset_container_equals(c1, x1, c2, x2)
+        else
+            misc.memequals(
+                @ptrCast(c1.get_blocks(x1)),
+                @ptrCast(c2.get_blocks(x2)),
+                C.BITSET_CONTAINER_SIZE_IN_WORDS * @sizeOf(u64),
+            );
+    }
+
+    fn run_container_equals_bitset(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        const run_card = run_container_cardinality(c1, c1.blocks_as(.run, x1).ptr);
+        const bitset_card = if (c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
+            c2.cardinality
+        else
+            bitset_container_compute_cardinality(c2.blocks_as(.bitset, x2).ptr);
+        if (bitset_card != run_card)
             return false;
 
-        return switch (c1.typecode) {
-            .array => mem.eql(
-                u16,
-                c1.blocks_as(.array, r1)[0..card1],
-                c2.blocks_as(.array, r2)[0..card1],
-            ),
-            .run => mem.eql(
-                u32,
-                @ptrCast(c1.blocks_as(.run, r1)[0..card1]),
-                @ptrCast(c2.blocks_as(.run, r2)[0..card1]),
-            ),
-            .bitset => mem.eql(
-                u64,
-                c1.blocks_as(.bitset, r1),
-                c2.blocks_as(.bitset, r2),
-            ),
-            .shared => unreachable,
+        const runs = c1.blocks_as(.run, x1)[0..c1.cardinality];
+        for (runs) |run| {
+            const begin: u32 = run.value;
+            if (run.length != 0) {
+                const end = begin + run.length + 1;
+                if (!c2.bitset_container_get_range(begin, end, x2))
+                    return false;
+            } else {
+                if (!c2.bitset_container_contains(@truncate(begin), x2))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    fn array_container_equals_bitset(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        if (c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY and
+            c2.cardinality != c1.cardinality)
+            return false;
+
+        const array = c1.blocks_as(.array, x1)[0..c1.cardinality];
+        const words = c2.blocks_as(.bitset, x2);
+        var pos: u32 = 0;
+        for (words, 0..) |word, i| {
+            var w = word;
+            while (w != 0) {
+                const t = w & -%w;
+                const r: u16 = @intCast(i * 64 + @ctz(w));
+                if (pos >= c1.cardinality) return false;
+                if (array[pos] != r) return false;
+                pos += 1;
+                w ^= t;
+            }
+        }
+        return pos == c1.cardinality;
+    }
+
+    fn run_container_equals_array(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        const runs = c1.blocks_as(.run, x1);
+        if (run_container_cardinality(c1, runs.ptr) != c2.cardinality)
+            return false;
+        const array = c2.blocks_as(.array, x2)[0..c2.cardinality];
+        var pos: u32 = 0;
+        for (runs[0..c1.cardinality]) |run| {
+            const run_start: u32 = run.value;
+            const le = run.length;
+            if (array[pos] != run_start) return false;
+            if (array[pos + le] != run_start + le) return false;
+            pos += le + 1;
+        }
+        return true;
+    }
+
+    inline fn array_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        if (c1.cardinality != c2.cardinality)
+            return false;
+        return misc.memequals(
+            @ptrCast(c1.get_blocks(x1).ptr),
+            @ptrCast(c2.get_blocks(x2).ptr),
+            c1.cardinality * @sizeOf(u16),
+        );
+    }
+
+    inline fn run_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+        if (c1.cardinality != c2.cardinality)
+            return false;
+        return misc.memequals(
+            @ptrCast(c1.get_blocks(x1).ptr),
+            @ptrCast(c2.get_blocks(x2).ptr),
+            c1.cardinality * @sizeOf(Rle16),
+        );
+    }
+
+    pub inline fn equals(
+        c1p: *const Container,
+        x1: Bitmap,
+        c2p: *const Container,
+        x2: Bitmap,
+    ) bool {
+        assert(c1p != c2p);
+        const c1 = c1p.*;
+        const c2 = c2p.*;
+        return c1 == c2 or switch (misc.pair(c1.typecode, c2.typecode)) { // zig fmt: off
+misc.pair(.bitset, .bitset) =>      bitset_container_equals(c1, x1, c2, x2),
+misc.pair(.array, .array) =>         array_container_equals(c1, x1, c2, x2),
+misc.pair(.run, .run) =>               run_container_equals(c1, x1, c2, x2),
+misc.pair(.bitset, .run) =>     run_container_equals_bitset(c2, x2, c1, x1),
+misc.pair(.run, .bitset) =>     run_container_equals_bitset(c1, x1, c2, x2),
+misc.pair(.bitset, .array) => array_container_equals_bitset(c2, x2, c1, x1),
+misc.pair(.array, .bitset) => array_container_equals_bitset(c1, x1, c2, x2),
+misc.pair(.array, .run) =>       run_container_equals_array(c2, x2, c1, x1),
+misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // zig fmt: on
+            else => unreachable,
         };
     }
 

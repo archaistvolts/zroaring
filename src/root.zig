@@ -12,6 +12,7 @@ pub const Bitset = [1024]Word;
 pub const Block = @Vector(constants.BLOCK_SIZE, u8);
 pub const Block32 = @Vector(constants.BLOCK_LEN32, u32);
 pub const Block64 = @Vector(constants.BLOCK_LEN64, u64);
+pub const BlockMask = @Int(.unsigned, constants.BLOCK_SIZE);
 pub const constants = @import("constants.zig");
 pub const container = @import("container.zig");
 pub const Container = container.Container;
