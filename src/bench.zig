@@ -1,0 +1,475 @@
+fn zr_benchmark_op(
+    op: fuzz.Op,
+    rs: *[NUM_BITMAPS]Bitmap,
+    allocator: std.mem.Allocator,
+    ser_buf: []align(@alignOf(u64)) u8,
+) !void {
+    switch (op) {
+        inline .add => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, o.val),
+        inline .contains => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], o.val)),
+        .remove => |o| _ = try rs[o.idx].remove_checked(allocator, o.val),
+        .add_many => |o| _ = try rs[o.idx].add_many(allocator, o.vals),
+        .add_range_closed => |o| try rs[o.idx].add_range_closed(allocator, o.vals[0], o.vals[1]),
+        inline .@"and",
+        .@"or",
+        .xor,
+        .andnot,
+        => |o, t| {
+            const res = try @field(Bitmap, @tagName(t))(&rs[o.src1], allocator, &rs[o.src2]);
+            rs[o.idx].deinit(allocator);
+            rs[o.idx] = res;
+        },
+        inline .lazy_or => |o, t| {
+            var res = try @field(Bitmap, @tagName(t))(
+                &rs[o.src1],
+                allocator,
+                &rs[o.src2],
+                root.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
+            );
+            try res.repair_after_lazy(allocator);
+            rs[o.idx].deinit(allocator);
+            rs[o.idx] = res;
+        },
+        inline .is_subset,
+        .and_cardinality,
+        .or_cardinality,
+        .xor_cardinality,
+        .andnot_cardinality,
+        .jaccard_index,
+        .equals,
+        => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], rs[o.src1])),
+        inline .or_inplace,
+        .and_inplace,
+        => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, &rs[o.src1]),
+        inline .or_many => |o, t| {
+            if (o.idxs.len == 0) return; // nothing to do
+
+            var rsbuf: [NUM_BITMAPS + 1]Bitmap = undefined;
+            for (o.idxs) |*idx| {
+                rsbuf[idx - o.idxs.ptr] = rs[idx.*];
+            }
+
+            const result = try @field(Bitmap, @tagName(t))(allocator, rsbuf[0..o.idxs.len]);
+            rs[o.idxs[0]].deinit(allocator);
+            rs[o.idxs[0]] = result;
+        },
+        inline .rank,
+        .select,
+        => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], o.val)),
+        inline .clear,
+        => |o, t| _ = @field(Bitmap, @tagName(t))(&rs[o], allocator),
+        inline .run_optimize,
+        .shrink_to_fit,
+        => |o, t| _ = try @field(Bitmap, @tagName(t))(&rs[o], allocator),
+        inline .maximum,
+        .minimum,
+        => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o])),
+        .frozen_serialize => |o, t| if (false) { // TODO reenable
+            _ = try @field(Bitmap, @tagName(t))(rs[o], ser_buf);
+        },
+        .portable_serialize => |o| {
+            var w = Io.Writer.fixed(ser_buf);
+            var runflags: root.RunFlags = undefined;
+            _ = try rs[o].portable_serialize(&w, &runflags);
+        },
+        inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
+            @field(Bitmap, @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
+        ),
+        // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
+    }
+}
+
+fn cr_benchmark_op(
+    op: fuzz.Op,
+    rs: *[NUM_BITMAPS][*c]c.roaring_bitmap_t,
+    ser_buf: []align(2) u8,
+) !void {
+    switch (op) {
+        inline .add,
+        .contains,
+        => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], o.val)),
+        .remove => |o| std.mem.doNotOptimizeAway(c.roaring_bitmap_remove_checked(rs[o.idx], o.val)),
+        .equals => |o| std.mem.doNotOptimizeAway(c.roaring_bitmap_equals(rs[o.idx], rs[o.src1])),
+        .add_many => |o| c.roaring_bitmap_add_many(rs[o.idx], o.vals.len, o.vals.ptr),
+        .add_range_closed => |o| c.roaring_bitmap_add_range_closed(rs[o.idx], o.vals[0], o.vals[1]),
+        .@"and",
+        => |o| {
+            const res = c.roaring_bitmap_and(rs[o.src1], rs[o.src2]);
+            c.roaring_bitmap_free(rs[o.idx]);
+            rs[o.idx] = res;
+        },
+        .@"or",
+        => |o| {
+            const res = c.roaring_bitmap_or(rs[o.src1], rs[o.src2]);
+            c.roaring_bitmap_free(rs[o.idx]);
+            rs[o.idx] = res;
+        },
+        inline .xor,
+        .andnot,
+        => |o, t| {
+            const res = @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.src1], rs[o.src2]);
+            c.roaring_bitmap_free(rs[o.idx]);
+            rs[o.idx] = res;
+        },
+        inline .lazy_or => |o, t| {
+            const res = @field(c, "roaring_bitmap_" ++ @tagName(t))(
+                rs[o.src1],
+                rs[o.src2],
+                root.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
+            );
+            c.roaring_bitmap_repair_after_lazy(res);
+            c.roaring_bitmap_free(rs[o.idx]);
+            rs[o.idx] = res;
+        },
+        inline .is_subset,
+        .and_cardinality,
+        .or_cardinality,
+        .xor_cardinality,
+        .andnot_cardinality,
+        .jaccard_index,
+        => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], rs[o.src1])),
+        inline .or_inplace,
+        .and_inplace,
+        => |o, t| @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], rs[o.src1]),
+        inline .or_many => |o, t| {
+            if (o.idxs.len == 0) return; // nothing to do
+
+            var rsbuf: [NUM_BITMAPS + 1][*c]c.roaring_bitmap_t = undefined;
+            for (o.idxs) |*idx| {
+                rsbuf[idx - o.idxs.ptr] = rs[idx.*];
+            }
+
+            const result = @field(c, "roaring_bitmap_" ++ @tagName(t))(o.idxs.len, @ptrCast(&rsbuf));
+            c.roaring_bitmap_free(rs[o.idxs[0]]);
+            rs[o.idxs[0]] = result;
+        },
+        .rank => |o| std.mem.doNotOptimizeAway(c.roaring_bitmap_rank(rs[o.idx], o.val)),
+        .select => |o| {
+            var ele: u32 = undefined;
+            std.mem.doNotOptimizeAway(c.roaring_bitmap_select(rs[o.idx], o.val, &ele));
+        },
+        inline .clear => |o, t| @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o]),
+        inline .run_optimize,
+        .shrink_to_fit,
+        => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o])),
+        .frozen_serialize => |o, t| if (false) { // TODO fix, reenable
+            // panic: null pointer passed as argument 2, which is declared to never be null
+            // src/c/roaring.c:17593:5: 0x13dc48f in roaring_bitmap_frozen_serialize
+            //     memcpy(key_zone, ra->keys, ra->size * sizeof(uint16_t));
+            if (rs[o]) |r|
+                @field(c, "roaring_bitmap_" ++ @tagName(t))(r, ser_buf.ptr);
+        },
+        .portable_serialize => |o| std.mem.doNotOptimizeAway(
+            c.roaring_bitmap_portable_serialize(rs[o], ser_buf.ptr),
+        ),
+        inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
+            @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
+        ),
+        inline .minimum, .maximum => |o, t| std.mem.doNotOptimizeAway(
+            @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o]),
+        ),
+        // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
+    }
+}
+
+fn runBenchmarkGeneric(
+    io: Io,
+    rs: anytype,
+    allocator: std.mem.Allocator,
+    ser_buf: []align(@alignOf(u64)) u8,
+    op_stats: *OpStats,
+    ops_len: *usize,
+    total_dur: *i96,
+    extra_ops: []const fuzz.Op,
+    random: std.Random,
+) !void {
+    const is_cr = @TypeOf(rs) == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
+
+    const totalts = Io.Timestamp.now(io, .real);
+    for (crash_corpus) |ops| {
+        for (ops) |op| {
+            const ts = Io.Timestamp.now(io, .real);
+            if (is_cr)
+                try cr_benchmark_op(op, rs, ser_buf)
+            else
+                try zr_benchmark_op(op, rs, allocator, ser_buf);
+            op_stats.getPtr(op)[1] += ts.untilNow(io, .real).toNanoseconds();
+            op_stats.getPtr(op)[0] += 1;
+        }
+        ops_len.* += ops.len;
+    }
+    var cur = extra_ops.ptr;
+    const end = extra_ops.ptr + extra_ops.len;
+    while (@intFromPtr(cur) < @intFromPtr(end)) {
+        const group_count = @min(
+            end - cur,
+            random.intRangeLessThan(u16, 5, 20),
+        );
+        for (cur[0..group_count]) |op| {
+            const ts = Io.Timestamp.now(io, .real);
+            if (is_cr)
+                try cr_benchmark_op(op, rs, ser_buf)
+            else
+                try zr_benchmark_op(op, rs, allocator, ser_buf);
+            const elapsed_ns = ts.untilNow(io, .real).toNanoseconds();
+            op_stats.getPtr(op)[0] += 1;
+            op_stats.getPtr(op)[1] += elapsed_ns;
+        }
+        cur += group_count;
+        ops_len.* += group_count;
+    }
+    total_dur.* += totalts.untilNow(io, .real).nanoseconds;
+}
+
+/// count and time for each op
+const OpStats = std.EnumArray(fuzz.Op.Tag, struct { usize, i96 });
+
+const sep = "-" ** 75 ++ "\n";
+const fast = "⚡";
+const ok = "👍🏻";
+const slow = "🥔";
+
+fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(Arg)) !void {
+    var zrs: [NUM_BITMAPS]Bitmap = @splat(.empty);
+    defer for (&zrs) |*x| x.deinit(allocator);
+    var crs: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;
+    for (&crs) |*o| o.* = c.roaring_bitmap_create().?;
+    defer for (crs) |x| c.roaring_bitmap_free(x);
+    var ser_buf: [1024 * 1024]u8 align(@alignOf(u64)) = undefined;
+
+    // generate a list of extra ops which are missing from fuzz-crash-corpus.zon
+    var prng = std.Random.DefaultPrng.init(0);
+    const random = prng.random();
+    const extra_ops = try allocator.alloc(fuzz.Op, random.intRangeLessThan(u32, 250, 1000));
+    defer allocator.free(extra_ops);
+    for (extra_ops) |*op| {
+        switch (random.int(u8) % 4) {
+            0 => op.* = .{ .minimum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
+            1 => op.* = .{ .maximum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
+            2 => op.* = .{ .contains = .{
+                .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+                .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL),
+            } },
+            3 => {
+                const start = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL);
+                const len = random.intRangeLessThan(u32, 1, fuzz.MAX_RANGE_LEN);
+                const val1 = random.intRangeLessThan(u32, start, start + len);
+                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
+                op.* = .{ .contains_range = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } };
+            },
+            else => unreachable,
+        }
+    }
+
+    // run, collect results
+    var cr_ops_len: usize = 0;
+    var cr_op_stats = OpStats.initFill(.{ 0, 0 });
+    var cr_total_dur: i96 = 0;
+    var zr_ops_len: usize = 0;
+    var zr_op_stats = OpStats.initFill(.{ 0, 0 });
+    var zr_total_dur: i96 = 0;
+    for (0..5) |_| {
+        try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_dur, extra_ops, random);
+        try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_dur, extra_ops, random);
+    }
+
+    const write_csv_row = parsed_args.contains(.write_csv_row);
+    // debug.print and write csv file when write_csv_row
+    const csvf = if (write_csv_row)
+        try Io.Dir.cwd().createFile(io, "testdata/bench-data.csv", .{ .truncate = false })
+    else
+        undefined;
+    var buf: [256]u8 = undefined;
+    var csvfw = csvf.writer(io, &buf);
+    const fw = &csvfw.interface;
+    if (write_csv_row) {
+        const stat = try csvf.stat(io);
+        try csvfw.seekTo(stat.size);
+        if (stat.size == 0) { // write header if empty file
+            try fw.writeAll("timestamp,commit,cr_ops,cr_ns,zr_ops,zr_ns,ratio,");
+            for (std.meta.tags(fuzz.Op.Tag), 0..) |op, i| {
+                if (i != 0) try fw.writeAll(",");
+                try fw.print("{t}_ratio", .{op});
+            }
+        }
+        const ts = unixTimestampToUTC(Io.Timestamp.now(io, .real).toMilliseconds());
+        // write timestamp
+        try fw.print(
+            "\n{}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3},",
+            .{ ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second, ts.millisecond },
+        );
+        // write commit
+        const res = try std.process.run(allocator, io, .{ .argv = &.{ "git", "rev-parse", "--short", "HEAD" } });
+        defer allocator.free(res.stdout);
+        try fw.writeAll(std.mem.trim(u8, res.stdout, "\n"));
+        try fw.writeByte(',');
+    }
+
+    var cr_fmt_buf: [16]u8 = undefined;
+    var zr_fmt_buf: [16]u8 = undefined;
+    const cr_ops_per_sec: usize = @intFromFloat(@as(f64, @floatFromInt(cr_ops_len)) /
+        (@as(f64, @floatFromInt(cr_total_dur)) / 1_000_000_000.0));
+    const zr_ops_per_sec: usize = @intFromFloat(@as(f64, @floatFromInt(zr_ops_len)) /
+        (@as(f64, @floatFromInt(zr_total_dur)) / 1_000_000_000.0));
+    const zr_cr_ratio =
+        @as(f64, @floatFromInt(zr_ops_per_sec)) /
+        @as(f64, @floatFromInt(cr_ops_per_sec));
+    const cr_dur_fmt = try std.fmt.bufPrint(&cr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = cr_total_dur }});
+    const zr_dur_fmt = try std.fmt.bufPrint(&zr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = zr_total_dur }});
+    std.debug.print(sep ++
+        \\overall:
+        \\
+    ++ sep ++
+        \\CRoaring: {} ops {s: <10} {B:.2} ops/sec
+        \\ZRoaring: {} ops {s: <10} {B:.2} ops/sec
+        \\
+        \\                            ratio -- {d:.2}% {s}
+        \\
+        \\
+    , .{
+        cr_ops_len,
+        cr_dur_fmt,
+        cr_ops_per_sec,
+        zr_ops_len,
+        zr_dur_fmt,
+        zr_ops_per_sec,
+        zr_cr_ratio,
+        if (zr_cr_ratio > 1.05) fast else if (zr_cr_ratio < 0.95) slow else ok,
+    });
+
+    if (write_csv_row)
+        try fw.print("{},{},{},{},{d:.2},", .{ // cr_ops,cr_ns,zr_ops,zr_ns,ratio,
+            cr_ops_len,
+            Io.Duration.fromNanoseconds(cr_total_dur).toMicroseconds(),
+            zr_ops_len,
+            Io.Duration.fromNanoseconds(zr_total_dur).toMicroseconds(),
+            zr_cr_ratio,
+        });
+
+    std.debug.print(sep ++ "individual ops: speed=ops/sec\n" ++ sep, .{});
+    std.debug.print("op                 cr speed zr speed ratio\n" ++ sep, .{});
+    for (std.meta.tags(fuzz.Op.Tag), 0..) |op, i| {
+        const cr_ops_per_sec_op: usize = @intFromFloat(@as(f64, @floatFromInt(cr_op_stats.get(op).@"0")) /
+            (@as(f64, @floatFromInt(cr_op_stats.get(op).@"1")) / 1_000_000_000.0));
+        const zr_ops_per_sec_op: usize = @intFromFloat(@as(f64, @floatFromInt(zr_op_stats.get(op).@"0")) /
+            (@as(f64, @floatFromInt(zr_op_stats.get(op).@"1")) / 1_000_000_000.0));
+        const zr_cr_ratio_op =
+            @as(f64, @floatFromInt(zr_ops_per_sec_op)) /
+            @as(f64, @floatFromInt(cr_ops_per_sec_op));
+        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {d:.2}% {s}\n", .{
+            op,
+            cr_ops_per_sec_op,
+            zr_ops_per_sec_op,
+            zr_cr_ratio_op,
+            if (zr_cr_ratio_op > 1.05) fast else if (zr_cr_ratio_op < 0.95) slow else ok,
+        });
+        if (write_csv_row) {
+            if (i != 0) try fw.writeByte(',');
+            try fw.print("{d:.3}", .{zr_cr_ratio_op});
+        }
+    }
+
+    if (write_csv_row) try fw.flush();
+}
+
+const DateTime = struct {
+    year: u32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    millisecond: u16,
+};
+
+fn isLeapYear(year: u32) bool {
+    return (@rem(year, 4) == 0 and @rem(year, 100) != 0) or (@rem(year, 400) == 0);
+}
+
+fn daysInMonth(month: u8, year: u32) u8 {
+    return switch (month) {
+        1 => 31,
+        2 => if (isLeapYear(year)) 29 else 28,
+        3 => 31,
+        4 => 30,
+        5 => 31,
+        6 => 30,
+        7 => 31,
+        8 => 31,
+        9 => 30,
+        10 => 31,
+        11 => 30,
+        12 => 31,
+        else => unreachable,
+    };
+}
+
+fn unixTimestampToUTC(timestamp: i64) DateTime {
+    const MILLIS_PER_SEC = 1000;
+    const SECS_PER_MIN = 60;
+    const SECS_PER_HOUR = SECS_PER_MIN * 60;
+    const SECS_PER_DAY = SECS_PER_HOUR * 24;
+
+    const millisecond: u16 = @intCast(@rem(timestamp, MILLIS_PER_SEC));
+    const seconds = @divTrunc(timestamp, MILLIS_PER_SEC);
+
+    // Compute the time of day.
+    const hour: u8 = @intCast(@divTrunc(@rem(seconds, SECS_PER_DAY), SECS_PER_HOUR));
+    const minute: u8 = @intCast(@divTrunc(@rem(seconds, SECS_PER_HOUR), SECS_PER_MIN));
+    const second: u8 = @intCast(@rem(seconds, SECS_PER_MIN));
+
+    // Compute the date.
+    var days = @divTrunc(seconds, SECS_PER_DAY);
+    var year: u32 = 1970;
+
+    while (true) {
+        const days_in_year: u16 = if (isLeapYear(year)) 366 else 365;
+        if (days >= days_in_year) {
+            days -= days_in_year;
+            year += 1;
+        } else break;
+    }
+
+    var month: u8 = 1;
+    while (true) {
+        const day_of_month = daysInMonth(month, year);
+        if (days >= day_of_month) {
+            days -= day_of_month;
+            month += 1;
+        } else break;
+    }
+
+    const day: u8 = @intCast(days + 1);
+
+    return DateTime{
+        .year = year,
+        .month = month,
+        .day = day,
+        .hour = hour,
+        .minute = minute,
+        .second = second,
+        .millisecond = millisecond,
+    };
+}
+
+const Arg = enum { write_csv_row };
+pub fn main(init: std.process.Init) !void {
+    var args = try init.minimal.args.iterateAllocator(init.arena.allocator());
+    _ = args.next();
+    var parsed_args: std.EnumSet(Arg) = .initEmpty();
+    while (args.next()) |arg| {
+        parsed_args.insert(std.meta.stringToEnum(Arg, arg) orelse
+            return error.Arg);
+    }
+
+    try runBenchmark(init.gpa, init.io, parsed_args);
+}
+
+const std = @import("std");
+const Io = std.Io;
+const fuzz = @import("fuzz.zig");
+const crash_corpus: []const []const fuzz.Op = @import("fuzz-crash-corpus.zon");
+const NUM_BITMAPS = fuzz.NUM_BITMAPS;
+const root = @import("root.zig");
+const Bitmap = root.Bitmap;
+const c = root.c.root;

@@ -50,7 +50,7 @@ $ nix-shell
 $ ./scripts/afl-fuzz.sh
 ```
 
-AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead `CRoaring` as an oracle due to some fuzzer build issues.
+AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead of `CRoaring` as an oracle due to some fuzzer build issues.
 
 #### Reproducing with an AFL crash/hang file
 ```console
@@ -89,7 +89,6 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 
 # Ideas / TODOs - contributions welcome
 * [x] in memory layout - a single allocation, resizable struct to model state - serialization friendly, single write, single read.
-* [x] Transition to a more from-scratch approach.  But try to follow the CRoaring API.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
 * [x] allocation failures test with crash corpus.
@@ -99,17 +98,17 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [ ] Support more set sizes than just u32. with generics - Bitmap(T)?
 * [ ] build commands `$ zig build [api-coverage | correctness | bench]`
   * [x] api-coverage:    show % of c api covered
+  * [x] bench:           show timings of bench with c
+    * [x] keep track of benchmarks over time - testdata/bench-data.csv
   * [ ] api-correctness: show % correct fuzzing with c api oracle
   * [ ] api-endian:      check for and document endian sensitive methods by comparing big endian serialized bytes to little endian bytes with help from qemu.
-  * [ ] bench:           show timings of bench with c
-    * [ ] keep track of benchmarks over time
 * [ ] documentation needs a lot of work
 * [ ] audit endian sensitive methods.  aim for endian awareness throughout.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex
-* [ ] strategy for reclaiming blocks to reduce memory usage.  depending on users calling shrink_to_fit() isn't viable.
+* [ ] strategy for reclaiming blocks to reduce memory usage.  depending on users calling shrink_to_fit() doesn't seem viable.
 * [ ] AFL fuzzer
-  * [ ] try again to use croaring, address build issues, remove HashMapOracle
   * [ ] slow fuzzing - check for HashMapOracle leaks
+  * [ ] try again to use croaring, address build issues, remove HashMapOracle
 * [ ] CI: windows failure: use translate-c to replace pre-translated src/c/roaring.zig
 
 # References

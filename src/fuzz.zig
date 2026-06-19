@@ -33,19 +33,20 @@ fn loadCorpus(io: Io, dirpath: []const u8) ![]const []const u8 {
         ret.appendAssumeCapacity(contents)
     else |_| {}
 
-    var dir = try Io.Dir.cwd().openDir(io, dirpath, .{ .iterate = true });
-    defer dir.close(io);
-    var iter = dir.iterate();
-    while (try iter.next(io)) |e| {
-        if (e.kind != .file) continue;
-        var buf: [256]u8 = undefined;
-        var fbs = Io.Writer.fixed(&buf);
-        try fbs.print("{s}/{s}", .{ dirpath, e.name });
+    if (Io.Dir.cwd().openDir(io, dirpath, .{ .iterate = true })) |dir| {
+        defer dir.close(io);
+        var iter = dir.iterate();
+        while (try iter.next(io)) |e| {
+            if (e.kind != .file) continue;
+            var buf: [256]u8 = undefined;
+            var fbs = Io.Writer.fixed(&buf);
+            try fbs.print("{s}/{s}", .{ dirpath, e.name });
 
-        if (loadPath(io, fbs.buffered())) |contents| // skip if missing
-            try ret.append(testgpa, contents)
-        else |_| {}
-    }
+            if (loadPath(io, fbs.buffered())) |contents| // skip if missing
+                try ret.append(testgpa, contents)
+            else |_| {}
+        }
+    } else |_| {}
 
     return ret.toOwnedSlice(testgpa);
 }
@@ -64,7 +65,7 @@ test "croaring oracle crash - current" {
 test "croaring oracle crashes" {
     const io = testing.io;
     const path = "testdata/crashfiles";
-    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var iter = dir.iterate();
     while (try iter.next(io)) |e| {
@@ -76,50 +77,58 @@ test "croaring oracle crashes" {
     }
 }
 
-pub const FuzzOp = union(enum) {
-    add: Val,
-    add_many: Vals,
-    add_range_closed: Vals2,
-    remove: Remove,
-    intersect: BinOp,
-    merge: BinOp,
-    xor: BinOp,
-    andnot: BinOp,
-    lazy_or: BinOp,
-    or_inplace: BinOp2,
-    and_inplace: BinOp2,
-    is_subset: BinOp,
-    or_many: ManyOp,
-    clear: u8,
+/// all ops have a bitmap idx.  Rest have additional params
+pub const Op = union(enum) {
+    clear: u8, // bitmap idx only
     run_optimize: u8,
     shrink_to_fit: u8,
     portable_serialize: u8,
     frozen_serialize: u8,
-    equals: u8,
     minimum: u8,
     maximum: u8,
+
+    add: Val, // bitmap idx and value
     rank: Val,
     select: Val,
-    // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
-    // get_index, // TODO
     contains: Val,
+
+    add_many: Vals,
+
+    add_range_closed: Vals2, // bitmap idx and 2 values
     contains_range: Vals2,
-    contains_many: Vals,
+    range_cardinality: Vals2,
+
+    remove: Remove, // bitmap idx, value and chance to pick existing
+
+    @"and": BinOp, // three bitmap idx
+    @"or": BinOp,
+    xor: BinOp,
+    andnot: BinOp,
+    lazy_or: BinOp,
+    or_inplace: BinOp2, // two bitmap idx
+    and_inplace: BinOp2,
+    is_subset: BinOp2,
+    equals: BinOp2,
     and_cardinality: BinOp2,
     or_cardinality: BinOp2,
     xor_cardinality: BinOp2,
     andnot_cardinality: BinOp2,
     jaccard_index: BinOp2,
-    range_cardinality: Vals2,
 
-    // idx with 1 u32 param
+    or_many: ManyOp, // many bitmap idx
+
+    // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
+    // get_index, // TODO
+
+    // bitmap idx with 1 u32 param
     const Val = struct { idx: u8, val: u32 };
     const Vals2 = struct { idx: u8, vals: [2]u32 };
     const Vals = struct { idx: u8, vals: []const u32 };
+    /// remove val from bitmap idx with chance to choose existing
     const Remove = struct {
         idx: u8,
         val: u32,
-        /// random int.  when < 25 choose an existing value.  otherwise random value.
+        /// random int.  when < 25 choose an existing value.  otherwise a random value.
         pick_existing: u8,
     };
     /// example: idx = src1 & src2.
@@ -132,15 +141,14 @@ pub const FuzzOp = union(enum) {
     /// in place: idx = idx & src1
     const BinOp2 = struct { idx: u8, src1: u8 };
     const ManyOp = struct { idxs: []const u8 };
-
-    pub const Tag = std.meta.Tag(FuzzOp);
+    pub const Tag = std.meta.Tag(Op);
 };
 
-const crash_corpus: []const []const FuzzOp = @import("fuzz-crash-corpus.zon");
+const crash_corpus: []const []const Op = @import("fuzz-crash-corpus.zon");
 
-const MAX_VAL = 100_000_000;
-const MAX_RANGE_LEN = 500_000;
-const NUM_BITMAPS = 8;
+pub const MAX_VAL = 100_000_000;
+pub const MAX_RANGE_LEN = 500_000;
+pub const NUM_BITMAPS = 8;
 
 fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     var rs: [NUM_BITMAPS]Bitmap = @splat(.empty);
@@ -151,9 +159,9 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
 
     fuzzprint("\n\n// begin croaringOracle\n", .{});
     while (!smith.eos()) {
-        const tag = smith.value(FuzzOp.Tag);
+        const tag = smith.value(Op.Tag);
         const idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS);
-        const fuzz_op: FuzzOp = fuzz_op: switch (tag) {
+        const fuzz_op: Op = fuzz_op: switch (tag) {
             .add => {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 break :fuzz_op .{ .add = .{ .idx = idx, .val = val } };
@@ -170,7 +178,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 const val1 = smith.valueRangeLessThan(u32, start, start + len);
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
                 break :fuzz_op @unionInit(
-                    FuzzOp,
+                    Op,
                     @tagName(t),
                     .{ .idx = idx, .vals = .{ val1, val2 } },
                 );
@@ -180,25 +188,26 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             } },
-            inline .intersect,
-            .merge,
+            inline .@"and",
+            .@"or",
             .xor,
             .andnot,
-            .is_subset,
             .lazy_or,
-            => |t| break :fuzz_op @unionInit(FuzzOp, @tagName(t), .{
+            => |t| break :fuzz_op @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }),
             inline .or_inplace,
+            .is_subset,
             .and_inplace,
             .and_cardinality,
             .or_cardinality,
             .xor_cardinality,
             .andnot_cardinality,
             .jaccard_index,
-            => |t| break :fuzz_op @unionInit(FuzzOp, @tagName(t), .{
+            .equals,
+            => |t| break :fuzz_op @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }),
@@ -206,29 +215,22 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 var idxs: [NUM_BITMAPS + 1]u8 = undefined;
                 const len = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS + 1);
                 for (idxs[0..len]) |*x| x.* = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS);
-                break :fuzz_op @unionInit(FuzzOp, @tagName(t), .{ .idxs = idxs[0..len] });
+                break :fuzz_op @unionInit(Op, @tagName(t), .{ .idxs = idxs[0..len] });
             },
             inline .clear,
             .run_optimize,
             .shrink_to_fit,
             .portable_serialize,
             .frozen_serialize,
-            .equals,
             .minimum,
             .maximum,
-            => |t| break :fuzz_op @unionInit(FuzzOp, @tagName(t), idx),
+            => |t| break :fuzz_op @unionInit(Op, @tagName(t), idx),
             inline .rank,
             .select,
             .contains,
             => |t| {
                 const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                break :fuzz_op @unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = val });
-            },
-            .contains_many => {
-                var vals: [8]u32 = undefined;
-                const len = smith.valueRangeLessThan(u8, 1, vals.len);
-                for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                break :fuzz_op .{ .contains_many = .{ .idx = idx, .vals = vals[0..len] } };
+                break :fuzz_op @unionInit(Op, @tagName(t), .{ .idx = idx, .val = val });
             },
         };
         try perform_op(fuzz_op, &oracles, &rs, allocator);
@@ -283,9 +285,9 @@ const AflSmith = struct {
     }
 
     /// returns or null on eof
-    pub fn nextOp(smith: *AflSmith, buf: []u32) ?FuzzOp {
+    pub fn nextOp(smith: *AflSmith, buf: []u32) ?Op {
         const byte = smith.bytes.takeByte() catch return null;
-        const tag: FuzzOp.Tag = @enumFromInt(byte % @typeInfo(FuzzOp).@"union".fields.len);
+        const tag: Op.Tag = @enumFromInt(byte % @typeInfo(Op).@"union".fields.len);
         const idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null;
         return switch (tag) {
             .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
@@ -299,36 +301,37 @@ const AflSmith = struct {
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
                 const val1 = smith.valueRangeLessThan(u32, start, start + len) orelse return null;
                 const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2) orelse return null;
-                return @unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .vals = .{ val1, val2 } });
+                return @unionInit(Op, @tagName(t), .{ .idx = idx, .vals = .{ val1, val2 } });
             },
             .remove => .{ .remove = .{
                 .idx = idx,
                 .pick_existing = smith.value(u8) orelse return null,
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null,
             } },
-            inline .intersect,
-            .merge,
+            inline .@"and",
+            .@"or",
             .xor,
             .andnot,
-            .is_subset,
             .lazy_or,
-            => |t| @unionInit(FuzzOp, @tagName(t), .{
+            => |t| @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             }),
             inline .or_inplace,
+            .is_subset,
             .and_inplace,
             .and_cardinality,
             .or_cardinality,
             .xor_cardinality,
             .andnot_cardinality,
             .jaccard_index,
-            => |t| @unionInit(FuzzOp, @tagName(t), .{
+            .equals,
+            => |t| @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null,
             }),
-            inline .or_many => |t| @unionInit(FuzzOp, @tagName(t), .{
+            inline .or_many => |t| @unionInit(Op, @tagName(t), .{
                 .idxs = smith.slice(
                     smith.valueRangeLessThan(u8, 0, NUM_BITMAPS + 1) orelse return null,
                     0,
@@ -340,19 +343,13 @@ const AflSmith = struct {
             .shrink_to_fit,
             .portable_serialize,
             .frozen_serialize,
-            .equals,
             .minimum,
             .maximum,
-            => |t| @unionInit(FuzzOp, @tagName(t), idx),
+            => |t| @unionInit(Op, @tagName(t), idx),
             inline .rank,
             .select,
             .contains,
-            => |t| @unionInit(FuzzOp, @tagName(t), .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null }),
-            .contains_many => {
-                const len = smith.valueRangeLessThan(u8, 0, @intCast(buf.len + 1)) orelse return null;
-                for (buf[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
-                return .{ .contains_many = .{ .idx = idx, .vals = buf[0..len] } };
-            },
+            => |t| @unionInit(Op, @tagName(t), .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null }),
         };
     }
 };
@@ -424,7 +421,7 @@ test "AFL fuzz crashes" {
 
 pub const AflCtx = struct { io: Io, dir: Io.Dir, file_index: *usize };
 
-pub fn writeOpFile(ctx: AflCtx, ops: []const FuzzOp) !void {
+pub fn writeOpFile(ctx: AflCtx, ops: []const Op) !void {
     const dir = ctx.dir;
     const io = ctx.io;
     var filename_buf: [32]u8 = undefined;
@@ -441,7 +438,7 @@ pub fn writeOpFile(ctx: AflCtx, ops: []const FuzzOp) !void {
     try fw.flush();
 }
 
-pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
+pub fn writeOp(op: Op, writer: *Io.Writer) !void {
     try writer.writeByte(@intFromEnum(op));
     switch (op) {
         inline else => |x| try writer.writeByte(if (@TypeOf(x) == u8) x else x.idx),
@@ -464,14 +461,14 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
             try writer.writeByte(o.pick_existing);
             try writer.writeInt(u32, o.val, .little);
         },
-        .intersect,
-        .merge,
+        .@"and",
+        .@"or",
         .xor,
         .andnot,
-        .is_subset,
         .lazy_or,
         => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
         .or_inplace,
+        .is_subset,
         .and_inplace,
         .and_cardinality,
         .or_cardinality,
@@ -488,10 +485,6 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
         .rank,
         .select,
         => |o| try writer.writeInt(u32, o.val, .little),
-        .contains_many => |o| {
-            try writer.writeByte(@intCast(o.vals.len));
-            for (o.vals) |v| try writer.writeInt(u32, v, .little);
-        },
         .clear,
         .run_optimize,
         .shrink_to_fit,
@@ -508,7 +501,7 @@ pub fn writeOp(op: FuzzOp, writer: *Io.Writer) !void {
 
 /// oracles: either `*[NUM_BITMAPS][*c]c.roaring_bitmap_t` or `*[NUM_BITMAPS]*HashMapOracle`.
 fn perform_op(
-    op: FuzzOp,
+    op: Op,
     oracles: anytype,
     rs: *[NUM_BITMAPS]Bitmap,
     allocator: mem.Allocator,
@@ -520,8 +513,8 @@ fn perform_op(
     switch (op) {
         .add, // only print ops which may modify
         .remove,
-        .intersect,
-        .merge,
+        .@"and",
+        .@"or",
         .xor,
         .andnot,
         .lazy_or,
@@ -545,7 +538,6 @@ fn perform_op(
         .minimum,
         .maximum,
         .contains,
-        .contains_many,
         .contains_range,
         .rank,
         .select,
@@ -613,10 +605,10 @@ fn perform_op(
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
-        .intersect, .merge, .xor, .andnot, .lazy_or => |o| {
+        .@"and", .@"or", .xor, .andnot, .lazy_or => |o| {
             var res = switch (op) {
-                .intersect => try Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
-                .merge => try Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
+                .@"and" => try Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
+                .@"or" => try Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
                 .xor => try Bitmap.xor(&rs[o.src1], allocator, &rs[o.src2]),
                 .andnot => try Bitmap.andnot(&rs[o.src1], allocator, &rs[o.src2]),
                 .lazy_or => try Bitmap.lazy_or(
@@ -631,8 +623,8 @@ fn perform_op(
 
             if (is_cr) {
                 const cr_res = switch (op) {
-                    .intersect => c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]),
-                    .merge => c.roaring_bitmap_or(oracles[o.src1], oracles[o.src2]),
+                    .@"and" => c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]),
+                    .@"or" => c.roaring_bitmap_or(oracles[o.src1], oracles[o.src2]),
                     .xor => c.roaring_bitmap_xor(oracles[o.src1], oracles[o.src2]),
                     .andnot => c.roaring_bitmap_andnot(oracles[o.src1], oracles[o.src2]),
                     .lazy_or => c.roaring_bitmap_lazy_or(
@@ -647,7 +639,7 @@ fn perform_op(
                 oracles[o.idx] = cr_res;
                 if (op == .lazy_or) c.roaring_bitmap_repair_after_lazy(oracles[o.idx]);
             } else switch (op) {
-                .intersect => {
+                .@"and" => {
                     var ret = HashMapOracle.empty;
                     try ret.ensureTotalCapacity(allocator, @min(
                         oracles[o.src1].count(),
@@ -661,7 +653,7 @@ fn perform_op(
                     oracles[o.idx].deinit(allocator);
                     oracles[o.idx] = ret;
                 },
-                .merge, .lazy_or => {
+                .@"or", .lazy_or => {
                     var ret = HashMapOracle.empty;
                     try ret.ensureTotalCapacity(
                         allocator,
@@ -896,17 +888,17 @@ fn perform_op(
         .is_subset => |o| {
             try std.testing.expectEqual(
                 if (is_cr)
-                    c.roaring_bitmap_is_subset(oracles[o.src1], oracles[o.src2])
+                    c.roaring_bitmap_is_subset(oracles[o.idx], oracles[o.src1])
                 else blk: {
-                    const s1 = oracles[o.src1];
-                    const s2 = oracles[o.src2];
+                    const s1 = oracles[o.idx];
+                    const s2 = oracles[o.src1];
                     if (s1.count() > s2.count()) break :blk false;
                     for (s1.keys()) |key| {
                         if (!s2.contains(key)) break :blk false;
                     }
                     break :blk true;
                 },
-                rs[o.src1].is_subset(rs[o.src2]),
+                rs[o.idx].is_subset(rs[o.src1]),
             );
         },
         .clear => |idx| {
@@ -964,7 +956,10 @@ fn perform_op(
                 // try testing.expectEqualSlices(u8, buf, buf2);
             }
         },
-        .equals => |idx| try testing.expect(rs[idx].equals(rs[idx])),
+        .equals => |o| {
+            try testing.expect(rs[o.idx].equals(rs[o.idx]));
+            try testing.expect(rs[o.src1].equals(rs[o.src1]));
+        },
         .minimum => |idx| {
             try std.testing.expectEqual(
                 if (is_cr)
@@ -1042,17 +1037,6 @@ fn perform_op(
                 rs[o.idx].contains(o.val),
             );
         },
-        .contains_many => |o| {
-            for (o.vals) |val| {
-                try std.testing.expectEqual(
-                    if (is_cr)
-                        c.roaring_bitmap_contains(oracles[o.idx], val)
-                    else
-                        oracles[o.idx].contains(val),
-                    rs[o.idx].contains(val),
-                );
-            }
-        },
         .contains_range => |o| if (is_cr) {
             try std.testing.expectEqual(
                 c.roaring_bitmap_contains_range(oracles[o.idx], o.vals[0], o.vals[1]),
@@ -1129,8 +1113,8 @@ fn perform_op(
                 .add_many,
                 .add_range_closed,
                 .remove,
-                .intersect,
-                .merge,
+                .@"and",
+                .@"or",
                 .xor,
                 .andnot,
                 .lazy_or,
@@ -1186,7 +1170,6 @@ fn perform_op(
                 .select,
                 .contains,
                 .contains_range,
-                .contains_many,
                 .and_cardinality,
                 .or_cardinality,
                 .xor_cardinality,
@@ -1222,7 +1205,7 @@ fn roaring_bitmap_printf_describe(r: [*c]c.roaring_bitmap_t, printf: anytype) vo
     printf("}}", .{});
 }
 
-fn cr_perform_ops(allocator: mem.Allocator, ops: []const FuzzOp) !void {
+fn cr_perform_ops(allocator: mem.Allocator, ops: []const Op) !void {
     var zrs: [NUM_BITMAPS]Bitmap = @splat(.empty);
     defer for (&zrs) |*x| x.deinit(allocator);
     var crs: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;

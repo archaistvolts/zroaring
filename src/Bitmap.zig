@@ -1421,18 +1421,12 @@ pub fn recoverRoomAtIndex(r: Bitmap, run: *Container, index: u16) void {
 }
 
 fn clear_containers(r: Bitmap) void {
-    for (r.array.ptr(.containers)) |*c| {
+    for (r.slice(.containers, .len)) |*c| {
         c.deinit(r);
     }
 }
 
-pub fn clear(r: *Bitmap, allocator: Allocator) void {
-    if (r.is_empty()) return;
-    r.clear_containers();
-    r.array.ptr(.len).* = 0;
-    r.array.ptr(.blockslen).* = 0;
-    r.shrink_to_fit(allocator);
-}
+pub const clear = deinit;
 
 pub fn clear_retaining_capacity(r: *Bitmap) void {
     if (r.is_empty()) return;

@@ -141,4 +141,22 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(afl_main);
     b.step("afl-main", "fuzz a single afl/output file")
         .dependOn(&b.addRunArtifact(afl_main).step);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                .{ .name = "build-options", .module = options.createModule() },
+            },
+        }),
+    });
+    bench_exe.root_module.linkLibrary(libcroaring);
+    const bench_run = b.addRunArtifact(bench_exe);
+    if (b.args) |args| bench_run.addArgs(args);
+    b.step("bench", "Run the zroaring benchmark").dependOn(&bench_run.step);
+    b.installArtifact(bench_exe);
 }

@@ -177,7 +177,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: @EnumLiteral(), values
     defer zr.deinit(allocator);
     _ = try zr.add_many(allocator, values);
     if (run_optimize) _ = try zr.run_optimize(allocator);
-    const zr_frozen_buf = try allocator.alignedAlloc(u8, .@"32", zr.frozen_size_in_bytes());
+    const zr_frozen_buf = try allocator.alloc(u8, zr.frozen_size_in_bytes());
     defer allocator.free(zr_frozen_buf);
     try zr.frozen_serialize(zr_frozen_buf);
 
