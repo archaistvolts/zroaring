@@ -65,11 +65,15 @@ fn zero_init(m: *Model) void {
 }
 
 /// Allocates room for container_count containers and blocks, with minimum of 16.
-pub fn create_with_capacity(allocator: Allocator, container_count: u32) !Bitmap {
+pub fn create_with_capacity(
+    allocator: Allocator,
+    container_count: u32,
+    blockscapacity: ?u32,
+) !Bitmap {
     const capacity = @max(16, container_count);
     const m = try Model.create(allocator, .{
         .capacity = capacity,
-        .blockscapacity = capacity,
+        .blockscapacity = blockscapacity orelse capacity,
     });
     zero_init(m);
     return .{ .array = m };
@@ -295,7 +299,7 @@ pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
 
     if (r.is_empty()) {
         @branchHint(.unlikely);
-        r.* = try create_with_capacity(allocator, 1);
+        r.* = try create_with_capacity(allocator, 1, null);
     }
 
     const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
@@ -643,7 +647,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: Allocator, min: u32, max: u32) !v
     if (min > max) return;
     if (r.is_empty()) {
         @branchHint(.unlikely);
-        r.* = try create_with_capacity(allocator, 0);
+        r.* = try create_with_capacity(allocator, 0, null);
     }
 
     trace(@src(), "[{},{})#{}", .{ min, max, max - min });
@@ -1533,6 +1537,60 @@ pub fn is_strict_subset(r1: Bitmap, r2: Bitmap) bool {
     return r2.get_cardinality() > r1.get_cardinality() and r1.is_subset(r2);
 }
 
+fn count_blocks(x1: Bitmap, x2: Bitmap, op: Container.ReduceOp) u24 {
+    const length1 = x1.array.ptr(.len).*;
+    const length2 = x2.array.ptr(.len).*;
+    var total: u24 = 0;
+    var pos1: u32 = 0;
+    var pos2: u32 = 0;
+    const keys1 = x1.array.ptr(.keys)[0..length1];
+    const keys2 = x2.array.ptr(.keys)[0..length2];
+    const ctrs1 = x1.array.ptr(.containers)[0..length1];
+    const ctrs2 = x2.array.ptr(.containers)[0..length2];
+    while (pos1 < length1 and pos2 < length2) {
+        const key1 = keys1[pos1];
+        const key2 = keys2[pos2];
+        if (key1 == key2) {
+            const c1 = ctrs1[pos1];
+            const c2 = ctrs2[pos2];
+            total += @min(C.BITSET_BLOCKS, switch (op) {
+                .Or, .Xor => c1.nblocks() + c2.nblocks(),
+                .And, .AndNot => @max(c1.nblocks(), c2.nblocks()),
+            });
+            pos1 += 1;
+            pos2 += 1;
+        } else if (key1 < key2) {
+            total += switch (op) {
+                .Or, .Xor, .AndNot => ctrs1[pos1].nblocks(),
+                .And => 0,
+            };
+            pos1 += 1;
+        } else {
+            total += switch (op) {
+                .Or, .Xor => ctrs2[pos2].nblocks(),
+                .And, .AndNot => 0,
+            };
+            pos2 += 1;
+        }
+    }
+    while (pos1 < length1) {
+        total += switch (op) {
+            .Or, .Xor, .AndNot => ctrs1[pos1].nblocks(),
+            .And => 0,
+        };
+        pos1 += 1;
+    }
+    while (pos2 < length2) {
+        total += switch (op) {
+            .Or, .Xor => ctrs2[pos2].nblocks(),
+            .And, .AndNot => 0,
+        };
+        pos2 += 1;
+    }
+    assert(total < C.MAX_BLOCKS);
+    return @intCast(total);
+}
+
 pub const @"and" = intersect;
 
 /// Computes the intersection between two bitmaps and returns new bitmap. The
@@ -1545,7 +1603,7 @@ pub const @"and" = intersect;
 pub fn intersect(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
-    var answer = try create_with_capacity(allocator, @max(length1, length2));
+    var answer = try create_with_capacity(allocator, @max(length1, length2), null);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
     trace(@src(), "x1={f}", .{x1.fmtLong()});
@@ -1620,7 +1678,11 @@ pub fn merge(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap
     if (length1 == 0) return try x2.copy(allocator);
     if (length2 == 0) return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1 + length2);
+    var answer = try create_with_capacity(
+        allocator,
+        length1 + length2,
+        count_blocks(x1.*, x2.*, .Or),
+    );
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
 
@@ -1729,7 +1791,7 @@ pub fn xor(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     if (length1 == 0) return try x2.copy(allocator);
     if (length2 == 0) return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1 + length2);
+    var answer = try create_with_capacity(allocator, length1 + length2, null);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
 
@@ -1778,13 +1840,13 @@ pub fn andnot(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitma
     const length1 = x1.array.ptr(.len).*;
     const length2 = x2.array.ptr(.len).*;
     if (length1 == 0) {
-        var result = try create_with_capacity(allocator, 0);
+        var result = try create_with_capacity(allocator, 0, null);
         result.set_copy_on_write(x1.is_cow() or x2.is_cow());
         return result;
     }
     if (length2 == 0) return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1);
+    var answer = try create_with_capacity(allocator, length1, null);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
 
@@ -1910,7 +1972,7 @@ pub fn lazy_or(
     if (0 == length2)
         return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1 + length2);
+    var answer = try create_with_capacity(allocator, length1 + length2, null);
     defer trace(@src(), "answer={f}", .{answer.fmtLong()});
     defer x1.assert_valid();
     defer answer.assert_valid();

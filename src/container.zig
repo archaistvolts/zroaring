@@ -1428,7 +1428,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         return @reduce(.Add, total);
     }
 
-    const ReduceOp = enum { And, Or, Xor, AndNot };
+    pub const ReduceOp = enum { And, Or, Xor, AndNot };
     fn op_methods(comptime op: ReduceOp) type {
         return struct {
             fn bitset_container_op(
