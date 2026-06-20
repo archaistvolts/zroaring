@@ -1436,8 +1436,6 @@ fn clear_containers(r: Bitmap) void {
     }
 }
 
-pub const clear = deinit;
-
 pub fn clear_retaining_capacity(r: *Bitmap) void {
     if (r.is_empty()) return;
     @memset(r.array.slice(.containers), undefined);
@@ -1791,7 +1789,11 @@ pub fn xor(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
     if (length1 == 0) return try x2.copy(allocator);
     if (length2 == 0) return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1 + length2, null);
+    var answer = try create_with_capacity(
+        allocator,
+        length1 + length2,
+        count_blocks(x1.*, x2.*, .Xor),
+    );
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
 
@@ -1846,6 +1848,7 @@ pub fn andnot(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitma
     }
     if (length2 == 0) return try x1.copy(allocator);
 
+    // skip count_blocks which doesn't seem to help benchmark
     var answer = try create_with_capacity(allocator, length1, null);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
     defer answer.assert_valid();
@@ -1972,7 +1975,11 @@ pub fn lazy_or(
     if (0 == length2)
         return try x1.copy(allocator);
 
-    var answer = try create_with_capacity(allocator, length1 + length2, null);
+    var answer = try create_with_capacity(
+        allocator,
+        length1 + length2,
+        count_blocks(x1.*, x2.*, .Or),
+    );
     defer trace(@src(), "answer={f}", .{answer.fmtLong()});
     defer x1.assert_valid();
     defer answer.assert_valid();

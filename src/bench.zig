@@ -56,8 +56,8 @@ fn zr_benchmark_op(
         inline .rank,
         .select,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], o.val)),
-        inline .clear,
-        => |o, t| _ = @field(Bitmap, @tagName(t))(&rs[o], allocator),
+        .clear,
+        => |o| rs[o].clear_retaining_capacity(),
         inline .run_optimize,
         .shrink_to_fit,
         => |o, t| _ = try @field(Bitmap, @tagName(t))(&rs[o], allocator),
@@ -323,7 +323,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         \\CRoaring: {} ops {s: <10} {B:.2} ops/sec
         \\ZRoaring: {} ops {s: <10} {B:.2} ops/sec
         \\
-        \\                            ratio -- {d:.2}% {s}
+        \\                            ratio -- {d:.2} {s}
         \\
         \\
     , .{
@@ -356,7 +356,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         const zr_cr_ratio_op =
             @as(f64, @floatFromInt(zr_ops_per_sec_op)) /
             @as(f64, @floatFromInt(cr_ops_per_sec_op));
-        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {d:.2}% {s}\n", .{
+        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {d:.2} {s}\n", .{
             op,
             cr_ops_per_sec_op,
             zr_ops_per_sec_op,
