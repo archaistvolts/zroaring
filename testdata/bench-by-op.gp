@@ -3,7 +3,7 @@
 script_dir = (ARG0 eq "") ? "" : ARG0[1:strlen(ARG0)-strlen(system("basename ".ARG0))]
 set loadpath script_dir
 load "bench-config.gp"
-set title "ratio by op - (zroaring ops/sec / croaring ops/sec)"
+set title "ratio by op - zroaring ops/sec over croaring ops/sec"
 
 set origin 0.0, 0.15
 set size 1.0, 0.85

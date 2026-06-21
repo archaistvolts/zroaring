@@ -11,7 +11,7 @@ With zig version 0.16.0
 
 ### fetch package
 ```console
-$ zig fetch --save git+https://codeberg.org/archaistvolts/zroaring
+zig fetch --save git+https://codeberg.org/archaistvolts/zroaring
 ```
 ```zig
 // build.zig
@@ -35,31 +35,35 @@ try std.testing.expect(!zr.contains(2));
 ```
 
 # Test
-`$ zig build test`
+```console
+zig build test
+```
 ### Fuzz
 #### With the build system:
+Fuzz, verifying each `fuzz.Op` result against CRoaring.
 ```console
-$ zig build test -Doptimize=ReleaseSafe --fuzz --webui=[::1]:40313 -j1 -Dfuzzprint
+zig build test -Doptimize=ReleaseSafe --fuzz --webui=[::1]:40313 -j1 -Dfuzzprint
 ```
 
 `-Dfuzzprint` prints zon reproductions which can be copied to [src/fuzz-crash-corpus.zon](src/fuzz-crash-corpus.zon).
+
 #### With nix-shell and AFL++:
 
 ```console
-$ nix-shell
-$ ./scripts/afl-fuzz.sh
+nix-shell
+./scripts/afl-fuzz.sh
 ```
-
-AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead of `CRoaring` as an oracle due to some fuzzer build issues.
+> [!NOTE]
+> AFL fuzzing is a work in progress.  It uses `std.ArrayHashMap` instead of `CRoaring` as an oracle due to some `-Dfuzz-exe` build issues.
 
 #### Reproducing with an AFL crash/hang file
 ```console
-$ zig build && zig-out/bin/afl-main afl/output/default/crashes...
+zig build && zig-out/bin/afl-main afl/output/default/crashes...
 ```
 
 # CRoaring API coverage
 ```console
-$ date +%F; zig build run -- api-coverage
+date +%F; zig build run -- api-coverage
 ```
 ```console
 2026-06-16
@@ -83,6 +87,21 @@ symbols coverage:
 ```
 
 Add `--filter`, a substring to search, if you want to see individual method coverage.
+
+# Bench
+Benchmark data is stored in `testdata/bench-data.csv`.
+
+#### Run benchmark
+```console
+zig build bench -Doptimize=ReleaseFast # -- write_csv_row
+```
+`write_csv_row` appends a row to `testdata/bench-data.csv`.
+
+#### Plot benchmarks
+```console
+gnuplot testdata/bench-by-op.gp -p
+gnuplot testdata/bench-total.gp -p
+```
 
 # Contributing
 Human contributions are very welcome.  Please open a pull request or issue on codeberg if you run into a TODO, FIXME or any problems while using this project.  There is a lot of work yet to be done here.
