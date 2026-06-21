@@ -56,8 +56,7 @@ fn zr_benchmark_op(
         inline .rank,
         .select,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], o.val)),
-        .clear,
-        => |o| rs[o].clear_retaining_capacity(),
+        .clear => |o| rs[o].clear_retaining_capacity(),
         inline .run_optimize,
         .shrink_to_fit,
         => |o, t| _ = try @field(Bitmap, @tagName(t))(&rs[o], allocator),
@@ -179,7 +178,7 @@ fn runBenchmarkGeneric(
     ser_buf: []align(@alignOf(u64)) u8,
     op_stats: *OpStats,
     ops_len: *usize,
-    total_dur: *i96,
+    total_ns: *i96,
     extra_ops: []const fuzz.Op,
     random: std.Random,
 ) !void {
@@ -193,7 +192,7 @@ fn runBenchmarkGeneric(
                 try cr_benchmark_op(op, rs, ser_buf)
             else
                 try zr_benchmark_op(op, rs, allocator, ser_buf);
-            op_stats.getPtr(op)[1] += ts.untilNow(io, .real).toNanoseconds();
+            op_stats.getPtr(op)[1].nanoseconds += ts.untilNow(io, .real).toNanoseconds();
             op_stats.getPtr(op)[0] += 1;
         }
         ops_len.* += ops.len;
@@ -213,21 +212,22 @@ fn runBenchmarkGeneric(
                 try zr_benchmark_op(op, rs, allocator, ser_buf);
             const elapsed_ns = ts.untilNow(io, .real).toNanoseconds();
             op_stats.getPtr(op)[0] += 1;
-            op_stats.getPtr(op)[1] += elapsed_ns;
+            op_stats.getPtr(op)[1].nanoseconds += elapsed_ns;
         }
         cur += group_count;
         ops_len.* += group_count;
     }
-    total_dur.* += totalts.untilNow(io, .real).nanoseconds;
+    total_ns.* += totalts.untilNow(io, .real).nanoseconds;
 }
 
 /// count and time for each op
-const OpStats = std.EnumArray(fuzz.Op.Tag, struct { usize, i96 });
+const OpStats = std.EnumArray(fuzz.Op.Tag, struct { u64, Io.Duration });
 
-const sep = "-" ** 75 ++ "\n";
+const sep = "-" ** 50 ++ "\n";
 const fast = "⚡";
 const ok = "👍🏻";
 const slow = "🥔";
+const poop = "💩";
 
 fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(Arg)) !void {
     var zrs: [NUM_BITMAPS]Bitmap = @splat(.empty);
@@ -263,14 +263,14 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
 
     // run, collect results
     var cr_ops_len: usize = 0;
-    var cr_op_stats = OpStats.initFill(.{ 0, 0 });
-    var cr_total_dur: i96 = 0;
+    var cr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
+    var cr_total_ns: i96 = 0;
     var zr_ops_len: usize = 0;
-    var zr_op_stats = OpStats.initFill(.{ 0, 0 });
-    var zr_total_dur: i96 = 0;
+    var zr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
+    var zr_total_ns: i96 = 0;
     for (0..5) |_| {
-        try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_dur, extra_ops, random);
-        try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_dur, extra_ops, random);
+        try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+        try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
     }
 
     const write_csv_row = parsed_args.contains(.write_csv_row);
@@ -307,15 +307,12 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
 
     var cr_fmt_buf: [16]u8 = undefined;
     var zr_fmt_buf: [16]u8 = undefined;
-    const cr_ops_per_sec: usize = @intFromFloat(@as(f64, @floatFromInt(cr_ops_len)) /
-        (@as(f64, @floatFromInt(cr_total_dur)) / 1_000_000_000.0));
-    const zr_ops_per_sec: usize = @intFromFloat(@as(f64, @floatFromInt(zr_ops_len)) /
-        (@as(f64, @floatFromInt(zr_total_dur)) / 1_000_000_000.0));
+    const cr_speed: usize = cr_ops_len * std.time.ns_per_s / @as(u64, @intCast(cr_total_ns));
+    const zr_speed: usize = zr_ops_len * std.time.ns_per_s / @as(u64, @intCast(zr_total_ns));
     const zr_cr_ratio =
-        @as(f64, @floatFromInt(zr_ops_per_sec)) /
-        @as(f64, @floatFromInt(cr_ops_per_sec));
-    const cr_dur_fmt = try std.fmt.bufPrint(&cr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = cr_total_dur }});
-    const zr_dur_fmt = try std.fmt.bufPrint(&zr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = zr_total_dur }});
+        @as(f32, @floatFromInt((zr_speed * 100_000) / cr_speed)) / 100_000;
+    const cr_dur_fmt = try std.fmt.bufPrint(&cr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = cr_total_ns }});
+    const zr_dur_fmt = try std.fmt.bufPrint(&zr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = zr_total_ns }});
     std.debug.print(sep ++
         \\overall:
         \\
@@ -323,45 +320,59 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         \\CRoaring: {} ops {s: <10} {B:.2} ops/sec
         \\ZRoaring: {} ops {s: <10} {B:.2} ops/sec
         \\
-        \\                            ratio -- {d:.2} {s}
+        \\                                  ratio -- {d:.2} {s}
         \\
         \\
     , .{
         cr_ops_len,
         cr_dur_fmt,
-        cr_ops_per_sec,
+        cr_speed,
         zr_ops_len,
         zr_dur_fmt,
-        zr_ops_per_sec,
+        zr_speed,
         zr_cr_ratio,
-        if (zr_cr_ratio > 1.05) fast else if (zr_cr_ratio < 0.95) slow else ok,
+        if (zr_cr_ratio > 1.07)
+            fast
+        else if (zr_cr_ratio > 0.93)
+            ok
+        else if (zr_cr_ratio > 0.75)
+            slow
+        else
+            poop,
     });
 
     if (write_csv_row)
         try fw.print("{},{},{},{},{d:.2},", .{ // cr_ops,cr_ns,zr_ops,zr_ns,ratio,
             cr_ops_len,
-            Io.Duration.fromNanoseconds(cr_total_dur).toMicroseconds(),
+            Io.Duration.fromNanoseconds(cr_total_ns).toMicroseconds(),
             zr_ops_len,
-            Io.Duration.fromNanoseconds(zr_total_dur).toMicroseconds(),
+            Io.Duration.fromNanoseconds(zr_total_ns).toMicroseconds(),
             zr_cr_ratio,
         });
 
     std.debug.print(sep ++ "individual ops: speed=ops/sec\n" ++ sep, .{});
-    std.debug.print("op                 cr speed zr speed ratio\n" ++ sep, .{});
+    std.debug.print("op                 cr speed zr speed #    ratio\n" ++ sep, .{});
     for (std.meta.tags(fuzz.Op.Tag), 0..) |op, i| {
-        const cr_ops_per_sec_op: usize = @intFromFloat(@as(f64, @floatFromInt(cr_op_stats.get(op).@"0")) /
-            (@as(f64, @floatFromInt(cr_op_stats.get(op).@"1")) / 1_000_000_000.0));
-        const zr_ops_per_sec_op: usize = @intFromFloat(@as(f64, @floatFromInt(zr_op_stats.get(op).@"0")) /
-            (@as(f64, @floatFromInt(zr_op_stats.get(op).@"1")) / 1_000_000_000.0));
+        const cr_speed_op: u64 = cr_op_stats.get(op).@"0" * std.time.ns_per_s /
+            @as(usize, @intCast(cr_op_stats.get(op).@"1".toNanoseconds()));
+        const zr_speed_op: u64 = zr_op_stats.get(op).@"0" * std.time.ns_per_s /
+            @as(usize, @intCast(zr_op_stats.get(op).@"1".toNanoseconds()));
         const zr_cr_ratio_op =
-            @as(f64, @floatFromInt(zr_ops_per_sec_op)) /
-            @as(f64, @floatFromInt(cr_ops_per_sec_op));
-        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {d:.2} {s}\n", .{
+            @as(f32, @floatFromInt((zr_speed_op * 100_000) / cr_speed_op)) / 100_000;
+        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {: <4} {d: <5.2} {s}\n", .{
             op,
-            cr_ops_per_sec_op,
-            zr_ops_per_sec_op,
+            cr_speed_op,
+            zr_speed_op,
+            (cr_op_stats.get(op).@"0" + zr_op_stats.get(op).@"0") / 2,
             zr_cr_ratio_op,
-            if (zr_cr_ratio_op > 1.05) fast else if (zr_cr_ratio_op < 0.95) slow else ok,
+            if (zr_cr_ratio_op > 1.07)
+                fast
+            else if (zr_cr_ratio_op > 0.93)
+                ok
+            else if (zr_cr_ratio_op > 0.75)
+                slow
+            else
+                poop,
         });
         if (write_csv_row) {
             if (i != 0) try fw.writeByte(',');
