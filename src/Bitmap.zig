@@ -933,11 +933,12 @@ pub fn run_optimize(r: *Bitmap, allocator: Allocator) !bool {
     trace(@src(), "{f}", .{r.fmtLong()});
     defer r.assert_valid();
     var answer = false;
+
     for (0..r.array.ptr(.len).*) |i| {
         // TODO // r.unshare_container_at_index(i); // TODO: this introduces extra cloning!
-        const c1 = try Container.convert_run_optimize(@intCast(i), allocator, r);
+        const c1 = try r.array.ptr(.containers)[i].convert_run_optimize(allocator, r);
         if (c1.typecode == .run) answer = true;
-        r.slice(.containers, .len)[i] = c1;
+        r.array.ptr(.containers)[i] = c1;
     }
     return answer;
 }
@@ -1095,9 +1096,10 @@ pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
 }
 
 /// ensure new capacity and blockscapacity.  deinit if new capacity is 0.
-/// new capacity or blockscapacity must be greater than existing.
+/// shrink if new capacity or blockscapacity less than existing.
 ///
-/// modifies `Array` capacity and blockscapacity.
+/// modifies `Array` capacity and blockscapacity and copies entire Array and containers
+/// new allocation.
 pub fn realloc_array(
     r: *Bitmap,
     allocator: Allocator,
@@ -1108,13 +1110,10 @@ pub fn realloc_array(
         r.deinit(allocator);
         return;
     }
-    const capacity = r.array.ptr(.capacity).*;
-    const blockscapacity = r.array.ptr(.blockscapacity).*;
-    assert(new_capacity > capacity or new_blockscapacity > blockscapacity);
 
     const newlens: Model.Lengths = .{
-        .capacity = @max(capacity, new_capacity),
-        .blockscapacity = @max(blockscapacity, new_blockscapacity),
+        .capacity = new_capacity,
+        .blockscapacity = new_blockscapacity,
     };
     const lens = r.array.calcLens();
     const size = Model.calcSize(lens);
@@ -1129,11 +1128,11 @@ pub fn realloc_array(
         allocator.free(bytes);
         r.array = empty.array;
     }
-    // TODO faster to realloc and move fields. when new size is larger?
     const newarray = try Model.create(allocator, newlens);
     r.copy_to(newarray);
-    assert(r.array.ptr(.len).* == newarray.ptr(.len).*);
-    assert(r.array.ptr(.blockslen).* == newarray.ptr(.blockslen).*);
+    assert(newarray.ptr(.capacity).* == new_capacity);
+    assert(newarray.ptr(.blockscapacity).* == new_blockscapacity);
+
     allocator.free(bytes);
     r.array = newarray;
 }
@@ -1369,29 +1368,29 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: Allocator) !usize {
     const len = r.array.ptr(.len).*;
     // possibly shrink containers before calculating new blockslen
     var containersavings: usize = 0;
+    var newblockslen: u32 = 0;
     for (0..len) |i| {
         const c = &r.array.ptr(.containers)[i];
         assert(c.* != Container.uninit);
         containersavings += try c.shrink_to_fit(r.*);
+        newblockslen += c.nblocks();
     }
 
-    var blockslen: u32 = 0;
-    for (r.slice(.containers, .len)) |c| blockslen += c.nblocks();
-
-    if (containersavings == 0 and capacity == len and blockscapacity == blockslen)
+    if (containersavings == 0 and capacity == len and blockscapacity == newblockslen)
         return 0; // no shrinking possible
 
-    const newlens = Model.Lengths{ .capacity = len, .blockscapacity = blockslen };
+    const newlens = Model.Lengths{ .capacity = len, .blockscapacity = newblockslen };
     const newsize = Model.calcSize(newlens);
     const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, newsize);
-    // copy non-array fields
-    const keysoffset = r.array.offsetOf(.keys);
-    @memcpy(buf[0..keysoffset], r.array.asBytes()[0..keysoffset]);
+    // copy leading, non-array fields
+    const field_names = comptime std.meta.fieldNames(Array);
+    const non_array_offs = @offsetOf(Array, field_names[field_names.len - 3]);
+    @memcpy(buf[0..non_array_offs], r.array.asBytes()[0..non_array_offs]);
     const newarray: *Model = @ptrCast(buf);
     newarray.ptr(.capacity).* = len;
-    newarray.ptr(.blockscapacity).* = blockslen;
+    newarray.ptr(.blockscapacity).* = newblockslen;
     newarray.ptr(.len).* = len;
-    newarray.ptr(.blockslen).* = blockslen;
+    newarray.ptr(.blockslen).* = newblockslen;
     // copy keys and containers
     newarray.copyField(r.array, .keys);
     newarray.copyField(r.array, .containers);
@@ -2153,7 +2152,6 @@ pub fn lazy_or_inplace(
 /// Compute the union of 'number' bitmaps.
 pub fn or_many(allocator: Allocator, xs: []Bitmap) !Bitmap {
     const number = xs.len;
-    trace(@src(), "number={}", .{number});
     if (number == 0)
         return empty;
     if (number == 1)
