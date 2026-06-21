@@ -29,6 +29,9 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn deinit_blocks(c: Container, r: Bitmap) void {
+        const blockslen = r.array.ptr(.blockslen);
+        if (c.blockoffset + c.nblocks() == blockslen.*)
+            blockslen.* -= c.nblocks();
         @memset(c.get_blocks(r), @splat(0xFF));
     }
 
@@ -36,7 +39,7 @@ pub const Container = packed struct(u64) {
         return mem.bytesAsSlice(T, mem.sliceAsBytes(blocks[c.blockoffset..][0..c.nblocks()]));
     }
 
-    pub fn nblocks(c: Container) u16 {
+    pub inline fn nblocks(c: Container) u16 {
         return @as(u16, c.nblocks_minus1) + 1;
     }
 
@@ -53,7 +56,7 @@ pub const Container = packed struct(u64) {
     }
 
     /// return container blocks as aligned slice of u16 when typecode == .array etc.
-    /// ignores container.cardinality.
+    /// slices by capacity.
     pub fn blocks_as(
         c: Container,
         comptime typecode: root.Typecode,
@@ -1205,15 +1208,18 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         return nr_runs;
     }
 
+    /// convert containers to and from runcontainers, as is most space efficient.
     /// once converted, the original container is disposed here.
     ///
     // TODO: split into run- array- and bitset- subfunctions for sanity;
     // a few function calls won't really matter.
-    pub fn convert_run_optimize(cid: u32, allocator: Allocator, r: *Bitmap) !Container {
-        const c = r.array.ptr(.containers)[cid];
+    pub fn convert_run_optimize(c: *const Container, allocator: Allocator, r: *Bitmap) !Container {
+        const containers = r.array.ptr(.containers);
+        const cid = c - containers;
+        const oldc = c.*;
         if (c.typecode == .run) {
             const newc = try c.convert_run_to_efficient_container(allocator, r);
-            if (newc != c) r.array.ptr(.containers)[cid].deinit_blocks(r.*);
+            if (newc != oldc) r.array.ptr(.containers)[cid].deinit_blocks(r.*);
             return newc;
         } else if (c.typecode == .array) {
             // it might need to be converted to a run container.
@@ -1226,10 +1232,10 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 .blockoffset = @intCast(r.array.ptr(.blockslen).*),
             };
             const size_as_run_container = run_container_serialized_size_in_bytes(nruns);
-            const size_as_array_container = c.serialized_size_in_bytes();
+            const size_as_array_container = c.cardinality * @sizeOf(u16);
             trace(@src(), "array. arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
             if (size_as_array_container <= size_as_run_container) {
-                return c;
+                return oldc;
             }
             // convert array to run container
             try r.ensure_unused_capacity(allocator, 0, nrunblocks);
@@ -1254,15 +1260,15 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             assert(run_start >= 0);
             // now prev is the last seen value
             rc.add_run(@intCast(run_start), @intCast(prev), r.*);
-            ac.deinit_blocks(r.*);
             r.array.ptr(.blockslen).* += nrunblocks;
+            ac.deinit_blocks(r.*);
             return rc;
         } else if (c.typecode == .bitset) { // run conversions on bitset
             // does bitset need conversion to run?
             const nruns = bitset_container_number_of_runs(c.blocks_as(.bitset, r.*).ptr);
             const size_as_run_container = run_container_serialized_size_in_bytes(nruns);
             if (size_as_run_container >= @sizeOf(root.Bitset)) // no conversion needed.
-                return c;
+                return oldc;
 
             // bitset to runcontainer (ported from Java RunContainer(BitmapContainer bc, int nbrRuns))
             assert(nruns > 0); // no empty bitmaps
@@ -2963,7 +2969,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         // temporarily insert result into containers for convert_run_optimize
         try x1.insert_new_key_value_at(allocator, undefined, result, tmpcid);
         defer x1.array.ptr(.len).* -= 1;
-        return try convert_run_optimize(tmpcid, allocator, x1);
+        return try x1.array.ptr(.containers)[tmpcid].convert_run_optimize(allocator, x1);
     }
 
     fn array_array_container_inplace_union(
