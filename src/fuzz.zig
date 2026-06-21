@@ -1237,7 +1237,7 @@ test "allocation failures with crash corpus" {
 }
 
 test "crash0" {
-    // const corpustmp: []const []const FuzzOp = @import("fuzz-crash-corpus-tmp.zon");
+    // const corpustmp: []const []const Op = @import("fuzz-crash-corpus-tmp.zon");
     // for (corpustmp) |ops| {
     //     try cr_perform_ops(testgpa, ops);
     // }

@@ -3,35 +3,29 @@
         .{ .add_many = .{ .idx = 0, .vals = .{ 98128, 17714 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 100 } } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 28939 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 58, 109 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 15, 158 } } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 6, 140 } } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 13 } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 37022 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 169 } } },
         .{ .add = .{ .idx = 0, .val = 56276 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 79, 196 } } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 51, 194 } } },
         .{ .add = .{ .idx = 0, .val = 10 } },
     },
-
     .{
         .{ .add_many = .{ .idx = 0, .vals = .{ 46535, 45534 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 11, 181 } } },
     },
-
     .{
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 166, 192 } } },
@@ -50,12 +44,10 @@
         .{ .add = .{ .idx = 0, .val = 194 } },
         .{ .add = .{ .idx = 0, .val = 28 } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 39, 139 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 12690, 12753 } } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 62568 } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 62568 } },
@@ -78,7 +70,6 @@
         .{ .add = .{ .idx = 0, .val = 194 } },
         .{ .add = .{ .idx = 0, .val = 28 } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 50119 } },
         .{ .add = .{ .idx = 0, .val = 62568 } },
@@ -90,7 +81,6 @@
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 62568 } },
         .{ .add = .{ .idx = 0, .val = 49721 } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 49191 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 66, 136 } } },
@@ -102,7 +92,6 @@
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 92533 } },
         .{ .add = .{ .idx = 0, .val = 512 } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 6764, 6894 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 13773, 13854 } } },
@@ -120,7 +109,6 @@
         .{ .add_many = .{ .idx = 0, .vals = .{ 90915, 43523, 677, 1795, 91917, 77704, 2156, 2123, 17697, 26518, 87440, 95293, 39797, 76339, 60102, 70347, 58901, 22858, 73958, 22727, 46971, 1949 } } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 53393, 21069, 57726, 19617, 78427, 65705, 2198, 7957, 66342, 85444, 95090, 52246, 30486 } } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 6111, 6209 } } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 25060, 63400, 74045, 98806, 36081 } } },
@@ -141,21 +129,18 @@
         .{ .add_many = .{ .idx = 0, .vals = .{ 27047, 95148, 96415, 27461 } } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 16912, 74410, 93120, 59285 } } },
     },
-
     .{
         .{ .add = .{ .idx = 0, .val = 26360 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 7557, 7640 } } },
         .{ .run_optimize = 0 },
         .{ .add_many = .{ .idx = 0, .vals = .{ 66305, 6151, 80245, 13872, 7641, 7641 } } },
     },
-
     .{ // run optimize run to array
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 13042, 13044 } } },
         .{ .add = .{ .idx = 0, .val = 62034 } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 56204, 13694, 95054, 72879 } } },
         .{ .run_optimize = 0 },
     },
-
     .{ // run_container_add_range_nruns stale ptr
         .{ .add = .{ .idx = 0, .val = 86940 } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 78327, 33246, 28925, 27574, 3773, 75436, 90838 } } },
@@ -167,7 +152,6 @@
         .{ .add_many = .{ .idx = 0, .vals = .{ 9606, 35473, 53110, 96833, 56206, 19615, 89556 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 6425, 6597 } } },
     },
-
     .{ // break run in two when blockslen==blockscapacity
         .{ .add_many = .{ .idx = 0, .vals = .{ 71302, 41283, 5184, 53083 } } },
         .{ .run_optimize = 0 },
@@ -179,7 +163,6 @@
         .{ .run_optimize = 0 },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 1680 } },
     },
-
     .{ // convert_run_to_efficient_container integer overflow
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 8404, 8449 } } },
@@ -200,7 +183,6 @@
         .{ .add_many = .{ .idx = 0, .vals = .{ 4825, 65535 } } },
         .{ .run_optimize = 0 },
     },
-
     .{ // add_range_closed blockoffset counting bug
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 269193, 269194 } } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 573007, 65042, 934201, 955639, 952480, 934201 } } },
@@ -212,26 +194,21 @@
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 524057, 524674 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 700979, 701862 } } },
     },
-
     .{ // add_container_blocks overflow, uninit container bug
         .{ .add = .{ .idx = 0, .val = 602334 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 589467, 589986 } } },
     },
-
     .{ // create_range: array unimplemented
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 654535, 655360 } } },
     },
-
     .{ // create range: overflow
         .{ .add = .{ .idx = 0, .val = 74473 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 262143, 262845 } } },
     },
-
     .{ // container_add_range bitset
         .{ .add = .{ .idx = 0, .val = 21571 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 230, 5661 } } },
     },
-
     .{ // container_add_range bitset
         .{ .add_many = .{ .idx = 0, .vals = .{ 129631, 93925 } } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
@@ -240,14 +217,12 @@
         .{ .shrink_to_fit = 0 },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 102782, 107350 } } },
     },
-
     .{ // convert_run_optimize, bitset, update blockslen
         .{ .add = .{ .idx = 0, .val = 21571 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 230, 5482 } } },
         .{ .run_optimize = 0 },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 355102, 356802 } } },
     },
-
     .{ // array_container_grow: use calc_capacity()
         .{ .add_many = .{ .idx = 0, .vals = .{ 129631, 93925 } } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
@@ -256,7 +231,6 @@
         .{ .shrink_to_fit = 0 },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 102782, 103370 } } },
     },
-
     .{ // bitset_lenrange_cardinality: popcount not ctz
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 269193, 269194 } } },
         .{ .clear = 0 },
@@ -278,19 +252,16 @@
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 997826, 997827 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 102455, 103396 } } },
     },
-
     .{ // bitset_lenrange_cardinality: u64 to avoid overflow
         .{ .add = .{ .idx = 0, .val = 75944 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 86940, 94246 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 87951, 94779 } } },
     },
-
     .{ // bitset_set_lenrange: use wrapping math to avoid overflow
         .{ .add = .{ .idx = 0, .val = 29614 } },
         .{ .add = .{ .idx = 0, .val = 65536 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 63252, 71190 } } },
     },
-
     .{ // bitset_lenrange_cardinality: use wrapping math to avoid overflow
         .{ .add = .{ .idx = 0, .val = 232231 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 11141, 11245 } } },
@@ -298,7 +269,6 @@
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 223401, 231936 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 192113, 199991 } } },
     },
-
     .{ // remove_at_index @memmove length bug
         .{ .add = .{ .idx = 0, .val = 956902 } },
         .{ .shrink_to_fit = 0 },
@@ -311,7 +281,6 @@
         .{ .add = .{ .idx = 0, .val = 533060 } },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 164928 } },
     },
-
     .{ // Container.remove: skip assert_valid
         .{ .clear = 0 },
         .{ .add_many = .{ .idx = 0, .vals = .{ 188901, 624734, 783759 } } },
@@ -322,12 +291,10 @@
         .{ .shrink_to_fit = 0 },
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 133236 } },
     },
-
     .{
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 720895, 723787 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 654236, 733271 } } },
     },
-
     .{ // convert_run_optimize: blockslen double increment
         .{ .add_many = .{ .idx = 0, .vals = .{ 624980, 288844, 195140, 851109, 442054, 90431 } } },
         .{ .run_optimize = 0 },
@@ -350,7 +317,6 @@
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 259797, 285999 } } },
         .{ .run_optimize = 0 },
     },
-
     .{ // bitset_container_clone crash
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 365, 423 } } },
@@ -369,7 +335,6 @@
         .{ .add = .{ .idx = 0, .val = 0 } },
         .{ .@"and" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // run_bitset_container_intersection handle uninit
         .{ .remove = .{ .idx = 0, .pick_existing = 1, .val = 87070 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 166, 192 } } },
@@ -384,7 +349,6 @@
         .{ .add = .{ .idx = 0, .val = 0 } },
         .{ .@"and" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // bitset_extract_intersection_setbits_uint16 overflow
         .{ .add_many = .{ .idx = 1, .vals = .{ 35376531, 23019426, 96611749, 99425048, 22409478, 9441758 } } },
         .{ .clear = 0 },
@@ -393,7 +357,6 @@
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 9317044, 9446418 } } },
         .{ .@"and" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // run_bitset_container_intersection handle empty intersection
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 9471775, 9561093 } } },
         .{ .clear = 0 },
@@ -502,13 +465,11 @@
         .{ .@"and" = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 9085, 293552 } } },
     },
-
     .{ // simple union
         .{ .add_many = .{ .idx = 1, .vals = .{ 83277985, 22079185, 12386, 59147363, 1409811, 46078391 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 59136871, 59264939 } } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
     },
-
     .{ // run_container_union overflow
         .{ .add_many = .{ .idx = 1, .vals = .{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -549,7 +510,6 @@
         .{ .@"and" = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
     },
-
     .{ // run/bitset merge?
         .{ .add_many = .{ .idx = 1, .vals = .{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -577,7 +537,6 @@
         .{ .@"and" = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // array/bitset merge?
         .{ .add_many = .{ .idx = 1, .vals = .{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -603,7 +562,6 @@
         .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 12805158 } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // run/bitset merge: run_container_create_given_capacity overflow nblocks_minus1
         .{ .add_many = .{ .idx = 1, .vals = .{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -618,7 +576,6 @@
         .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // bitset/run merge
         .{ .add_many = .{ .idx = 1, .vals = .{ 88817287, 96632793, 94121332 } } },
         .{ .clear = 0 },
@@ -633,26 +590,22 @@
         .{ .remove = .{ .idx = 0, .pick_existing = 140, .val = 52112985 } },
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // bitset_container_create missing clear
         .{ .add = .{ .idx = 1, .val = 30060 } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 8356, 11049 } } },
         .{ .shrink_to_fit = 1 },
         .{ .@"or" = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     },
-
     .{ // unclassified
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 6, 140 } } },
         .{ .remove = .{ .idx = 1, .pick_existing = 75, .val = 63225675 } },
         .{ .@"or" = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // run_container_xor overflow
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 7168203, 7188028 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 7085752, 7177876 } } },
         .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // bitset_bitset_container_xor overflow
         .{ .add_many = .{ .idx = 1, .vals = .{ 71718449, 58120711, 93799294, 82023683 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 81247268, 81516798 } } },
@@ -687,7 +640,6 @@
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18529397, 18801035 } } },
         .{ .xor = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
     },
-
     .{ // array_array_container_xor: wrong source bitmap
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 58120711, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18529397, 18747336 } } },
@@ -703,7 +655,6 @@
         .{ .@"or" = .{ .idx = 0, .src1 = 0, .src2 = 1 } },
         .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // ?
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18589719, 18745974 } } },
@@ -713,7 +664,6 @@
         .{ .remove = .{ .idx = 1, .pick_existing = 236, .val = 95125108 } },
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // bitset_array_container_ixor segfault
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18589719, 18760729 } } },
@@ -729,7 +679,6 @@
         .{ .@"or" = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // run_bitset_container_xor oob
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18589719, 18807558 } } },
@@ -745,7 +694,6 @@
         .{ .@"or" = .{ .idx = 1, .src1 = 1, .src2 = 1 } },
         .{ .xor = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     },
-
     .{ // run_bitset_container_andnot overflow
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785, 37353389, 99430495, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18589719, 18788865 } } },
@@ -766,7 +714,6 @@
         .{ .shrink_to_fit = 1 },
         .{ .andnot = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // bitset_array_container_iandnot -> bitset_clear_list math bug
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785, 37353389, 18755785, 79900792, 18871839 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18589719, 18788865 } } },
@@ -787,7 +734,6 @@
         .{ .shrink_to_fit = 1 },
         .{ .andnot = .{ .idx = 0, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // bitset_run_container_andnot overflow
         .{ .add_many = .{ .idx = 1, .vals = .{ 7614144, 14790787, 18755785, 37353389, 99430495, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18494244, 18788865 } } },
@@ -808,7 +754,6 @@
         .{ .@"and" = .{ .idx = 0, .src1 = 0, .src2 = 0 } },
         .{ .andnot = .{ .idx = 1, .src1 = 0, .src2 = 1 } },
     },
-
     .{ //
         .{ .add = .{ .idx = 1, .val = 78087016 } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 7169557, 7169717 } } },
@@ -818,7 +763,6 @@
         .{ .portable_serialize = 1 },
         .{ .andnot = .{ .idx = 1, .src1 = 1, .src2 = 0 } },
     },
-
     .{ // differing container types at after and/or/xor/andnot
         .{ .add_many = .{ .idx = 1, .vals = .{ 37943695, 57909767, 18755785, 18871839, 75740164, 49114976, 58120711 } } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 18539809, 18746375 } } },
@@ -859,20 +803,17 @@
         .{ .portable_serialize = 1 },
         .{ .frozen_serialize = 0 },
     },
-
     .{ // bitset_container_rank: overflow
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 7093678, 7143424 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 42284429, 42682699 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 7202188, 7267639 } } },
         .{ .rank = .{ .idx = 0, .val = 7183487 } },
     },
-
     .{ // is_subset correctness
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 488, 540 } } },
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 547, 33516 } } },
         .{ .is_subset = .{ .idx = 1, .src1 = 0 } },
     },
-
     .{ // or_inplace correctness
         .{ .add_many = .{ .idx = 1, .vals = .{ 7182793, 23187854, 24741459, 89758140, 39202897 } } },
         .{ .add_many = .{ .idx = 0, .vals = .{ 7182793, 54568437, 74860418, 89758140, 32761868, 57326811 } } },
