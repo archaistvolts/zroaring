@@ -3245,13 +3245,13 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             @intCast(misc.xor_vector16(
                 src1.blocks_as(.array, x1.*)[0..card1],
                 src2.blocks_as(.array, x2.*)[0..card2],
-                dst.blocks_as(.array, dstr.*),
+                dst.blocks_as(.array, dstr.*).ptr,
             ))
         else
             @intCast(misc.xor_uint16(
                 src1.blocks_as(.array, x1.*)[0..card1],
                 src2.blocks_as(.array, x2.*)[0..card2],
-                dst.blocks_as(.array, dstr.*),
+                dst.blocks_as(.array, dstr.*).ptr,
             ));
     }
 

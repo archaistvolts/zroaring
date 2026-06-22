@@ -570,11 +570,9 @@ pub fn intersect_vector16_inplace(A: []u16, B: []const u16) u32 {
         const bmax = B[ib + u16x8_len - 1];
         // advance pointers, flush tmp to a
         if (amax <= bmax) {
-            if (tmpcount > 0) {
-                @memcpy(A[count..].ptr, tmp[0..tmpcount]);
-                count += tmpcount;
-                tmpcount = 0;
-            }
+            @memcpy(A[count..].ptr, tmp[0..tmpcount]);
+            count += tmpcount;
+            tmpcount = 0;
             ia += u16x8_len;
         }
 
@@ -583,16 +581,15 @@ pub fn intersect_vector16_inplace(A: []u16, B: []const u16) u32 {
     }
 
     // flush remaining items in tmp
-    if (tmpcount > 0) {
-        @memcpy(A[count..].ptr, tmp[0..tmpcount]);
-        count += tmpcount;
 
-        // Lemire's optimization:
-        // If A didn't advance, tmpcount contains the matches for the current va.
-        // Because the sets are uniquely sorted, we can safely jump past these already-matched
-        // elements in the scalar tail to prevent double-counting them.
-        ia += tmpcount;
-    }
+    @memcpy(A[count..].ptr, tmp[0..tmpcount]);
+    count += tmpcount;
+
+    // Lemire's optimization:
+    // If A didn't advance, tmpcount contains the matches for the current va.
+    // Because the sets are uniquely sorted, we can safely jump past these already-matched
+    // elements in the scalar tail to prevent double-counting them.
+    ia += tmpcount;
 
     // scalar intersect tail
     while (ia < A.len and ib < B.len) {
@@ -653,17 +650,18 @@ pub fn intersect_vector16_cardinality(
 }
 
 /// Batcher odd-even merge: two sorted 8-u16 vectors → 8 smallest + 8 largest sorted.
-fn sse_merge(v1: u16x8, v2: u16x8) struct { min: u16x8, max: u16x8 } {
+fn sse_merge(v1: u16x8, v2: u16x8, min: *u16x8, max: *u16x8) void {
     var cur = @min(v1, v2);
-    var max = @max(v1, v2);
+    var max2 = @max(v1, v2);
     inline for (0..7) |_| {
         cur = std.simd.rotateElementsLeft(cur, 1);
-        const new_min = @min(cur, max);
-        max = @max(cur, max);
+        const new_min = @min(cur, max2);
+        max2 = @max(cur, max2);
         cur = new_min;
     }
     cur = std.simd.rotateElementsLeft(cur, 1);
-    return .{ .min = cur, .max = max };
+    min.* = cur;
+    max.* = max2;
 }
 
 /// Writes unique elements from newval (deduped against old[7] and internally)
@@ -686,6 +684,40 @@ fn store_unique(old: u16x8, newval: u16x8, output: [*]u16) u32 {
         if (i < count) output[i] = p[i];
     }
     return count;
+}
+
+/// write vector vecTmp2 = [old[7], newval[0..6]], omitting elements where
+/// vecTmp2[i] equals either neighbor (XOR semantics: paired values cancel).
+fn store_unique_xor(old: u16x8, newval: u16x8, output: [*]u16) u32 {
+    // tmp1 = o[6], o[7], n[0], n[1], n[2], n[3], n[4], n[5]
+    var tmp1 = std.simd.shiftElementsRight(newval, 2, old[6]);
+    tmp1[1] = old[7];
+    // tmp2 = o[7], n[0], n[1], n[2], n[3], n[4], n[5], n[6]
+    const tmp2 = std.simd.shiftElementsRight(newval, 1, old[7]);
+    const equalleft: u8 = @bitCast(tmp2 == tmp1);
+    const equalright: u8 = @bitCast(tmp2 == newval);
+    const equalleftorright = equalleft | equalright;
+    const keep = ~equalleftorright;
+    const numberofnewvalues = @popCount(keep);
+    const key: BlockHalf = pshufbhalf(@as(BlockHalf, @bitCast(tmp2)), shuffle_mask16[keep]);
+    @memcpy(output, @as([8]u16, @bitCast(key))[0..]);
+    return numberofnewvalues;
+}
+
+/// removes consecutive duplicate pairs from a sorted array in-place (XOR
+/// semantics: equal elements cancel out entirely).
+fn unique_xor(out: []u16) u32 {
+    if (out.len == 0) return 0;
+    var pos: u32 = 1;
+    for (1..out.len) |i| {
+        if (out[i] != out[i - 1]) {
+            out[pos] = out[i];
+            pos += 1;
+        } else {
+            pos -= 1;
+        }
+    }
+    return pos;
 }
 
 /// removes consecutive duplicates from a sorted array in-place.
@@ -720,9 +752,9 @@ pub fn union_vector16(
     const vA: u16x8 = set1[0..8].*;
     const vB: u16x8 = set2[0..8].*;
 
-    const m0 = sse_merge(vA, vB);
-    var vecMin = m0.min;
-    var vecMax = m0.max;
+    var vecMin: u16x8 = undefined;
+    var vecMax: u16x8 = undefined;
+    sse_merge(vA, vB, &vecMin, &vecMax);
 
     var laststore: u16x8 = @splat(0xFFFF);
     var out = output + store_unique(laststore, vecMin, output);
@@ -746,16 +778,11 @@ pub fn union_vector16(
                     curB = set2[8 * pos2];
                 } else break;
             }
-            const m1 = sse_merge(V, vecMax);
-            vecMin = m1.min;
-            vecMax = m1.max;
+            sse_merge(V, vecMax, &vecMin, &vecMax);
             out += store_unique(laststore, vecMin, out);
             laststore = vecMin;
         }
-        // final merge of last V with vecMax
-        const m2 = sse_merge(V, vecMax);
-        vecMin = m2.min;
-        vecMax = m2.max;
+        sse_merge(V, vecMax, &vecMin, &vecMax);
         out += store_unique(laststore, vecMin, out);
         laststore = vecMin;
     }
@@ -768,28 +795,120 @@ pub fn union_vector16(
     var leftoversize = store_unique(laststore, vecMax, tmp[0..]);
     if (pos1 == len1) {
         const taillen: u32 = @intCast(set1.len - 8 * pos1);
-        if (taillen > 0) {
-            @memcpy(tmp[leftoversize..][0..taillen], set1[8 * pos1 ..].ptr);
-            leftoversize += taillen;
-        }
+        @memcpy(tmp[leftoversize..][0..taillen], set1[8 * pos1 ..].ptr);
+        leftoversize += taillen;
         std.mem.sortUnstable(u16, tmp[0..leftoversize], {}, std.sort.asc(u16));
         const ulen = unique(tmp[0..leftoversize]);
         out += union_uint16(tmp[0..ulen], set2[8 * pos2 ..], out);
     } else {
         const taillen: u32 = @intCast(set2.len - 8 * pos2);
-        if (taillen > 0) {
-            @memcpy(tmp[leftoversize..][0..taillen], set2[8 * pos2 ..].ptr);
-            leftoversize += taillen;
-        }
+        @memcpy(tmp[leftoversize..][0..taillen], set2[8 * pos2 ..].ptr);
+        leftoversize += taillen;
         std.mem.sortUnstable(u16, tmp[0..leftoversize], {}, std.sort.asc(u16));
         const ulen = unique(tmp[0..leftoversize]);
         out += union_uint16(tmp[0..ulen], set1[8 * pos1 ..], out);
     }
     const len = out - output;
-    if (builtin.is_test or builtin.fuzz) {
-        assert(len == 0 or len >= @max(set1.len, set2.len));
-        assert(len <= set1.len + set2.len);
+    assert(len == 0 or len >= @max(set1.len, set2.len));
+    assert(len <= set1.len + set2.len);
+    return @intCast(len);
+}
+
+/// one-pass SIMD xor of two sorted uint16 arrays.
+pub fn xor_vector16(
+    array1: []align(C.BLOCK_ALIGN) const u16,
+    array2: []align(C.BLOCK_ALIGN) const u16,
+    output: [*]align(C.BLOCK_ALIGN) u16,
+) usize {
+    if (array1.len < 8 or array2.len < 8) {
+        return xor_uint16(array1, array2, output[0 .. array1.len + array2.len].ptr);
     }
+    const len1 = array1.len / 8;
+    const len2 = array2.len / 8;
+    var pos1: u32 = 1;
+    var pos2: u32 = 1;
+
+    // we start the machine
+    const vA: u16x8 = array1[0..8].*;
+    const vB: u16x8 = array2[0..8].*;
+
+    var vecMin: u16x8 = undefined;
+    var vecMax: u16x8 = undefined;
+    sse_merge(vA, vB, &vecMin, &vecMax);
+
+    var laststore: u16x8 = @splat(0xFFFF);
+    var out = output + store_unique_xor(laststore, vecMin, output);
+    laststore = vecMin;
+
+    if (pos1 < len1 and pos2 < len2) {
+        var curA = array1[8 * pos1];
+        var curB = array2[8 * pos2];
+        var V: u16x8 = undefined;
+        while (true) {
+            if (curA <= curB) {
+                V = array1[8 * pos1 ..][0..8].*;
+                pos1 += 1;
+                if (pos1 < len1) {
+                    curA = array1[8 * pos1];
+                } else break;
+            } else {
+                V = array2[8 * pos2 ..][0..8].*;
+                pos2 += 1;
+                if (pos2 < len2) {
+                    curB = array2[8 * pos2];
+                } else break;
+            }
+            sse_merge(V, vecMax, &vecMin, &vecMax);
+            out += store_unique_xor(laststore, vecMin, out);
+            laststore = vecMin;
+        }
+        // final merge of last V with vecMax
+        sse_merge(V, vecMax, &vecMin, &vecMax);
+        out += store_unique_xor(laststore, vecMin, out);
+        laststore = vecMin;
+    }
+
+    // we finish the rest off using a scalar algorithm.  could be improved?
+    // conditionally stores the last value of laststore as well as all but the
+    // last value of vecMax, to "buffer"
+    var buffer: [17]u16 align(C.BLOCK_ALIGN) = undefined;
+    var leftoversize = store_unique_xor(laststore, vecMax, buffer[0..]);
+    const vec7 = vecMax[7];
+    if (vec7 != vecMax[6]) {
+        buffer[leftoversize] = vec7;
+        leftoversize += 1;
+    }
+
+    var len = out - output;
+    if (pos1 == len1) {
+        const taillen: u32 = @intCast(array1.len - 8 * pos1);
+        @memcpy(buffer[leftoversize..][0..taillen], array1.ptr[8 * pos1 ..]);
+        leftoversize += taillen;
+        if (leftoversize == 0) { // trivial case
+            const n = array2.len - 8 * pos2;
+            @memcpy(out, array2[8 * pos2 ..]);
+            len += n;
+        } else {
+            std.mem.sortUnstable(u16, buffer[0..leftoversize], {}, std.sort.asc(u16));
+            leftoversize = unique_xor(buffer[0..leftoversize]);
+            len += xor_uint16(buffer[0..leftoversize], array2[8 * pos2 ..], out);
+        }
+    } else {
+        const taillen: u32 = @intCast(array2.len - 8 * pos2);
+        @memcpy(buffer[leftoversize..][0..taillen], array2.ptr[8 * pos2 ..]);
+        leftoversize += taillen;
+        if (leftoversize == 0) { // trivial case
+            const n: usize = array1.len - 8 * pos1;
+            @memcpy(out, array1[8 * pos1 ..]);
+            len += n;
+        } else {
+            std.mem.sortUnstable(u16, buffer[0..leftoversize], {}, std.sort.asc(u16));
+            leftoversize = unique_xor(buffer[0..leftoversize]);
+            len += xor_uint16(buffer[0..leftoversize], array1[8 * pos1 ..], out);
+        }
+    }
+
+    assert(len <= array1.len + array2.len);
     return @intCast(len);
 }
 
@@ -856,8 +975,8 @@ pub fn union_uint16(
 
 pub fn xor_uint16(
     set1: []align(C.BLOCK_ALIGN) const u16,
-    set2: []align(C.BLOCK_ALIGN) const u16,
-    out: []align(C.BLOCK_ALIGN) u16,
+    set2: []const u16,
+    out: [*]u16,
 ) usize {
     var pos1: usize = 0;
     var pos2: usize = 0;
