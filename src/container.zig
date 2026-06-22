@@ -28,11 +28,12 @@ pub const Container = packed struct(u64) {
         r.remove_at_index(@intCast(c - r.array.ptr(.containers)));
     }
 
-    pub fn deinit_blocks(c: Container, r: Bitmap) void {
+    pub fn deinit_blocks(c: *const Container, r: Bitmap) void {
         const blockslen = r.array.ptr(.blockslen);
         if (c.blockoffset + c.nblocks() == blockslen.*)
-            blockslen.* -= c.nblocks();
-        @memset(c.get_blocks(r), @splat(0xFF));
+            blockslen.* -= c.nblocks(); // just decrement final blocks
+        if (builtin.is_test or builtin.fuzz or builtin.mode == .Debug)
+            @memset(c.get_blocks(r), @splat(0xFF));
     }
 
     pub fn slice(c: Container, T: type, blocks: []align(C.BLOCK_ALIGN) Block) []align(C.BLOCK_ALIGN) T {
@@ -3240,14 +3241,18 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         if (dst.calc_capacity() < max_card)
             try dst.array_container_grow(allocator, dstr, max_card, false);
 
-        if (C.HAS_AVX2) {
-            // TODO xor_vector16()
-        }
-        dst.cardinality = @intCast(misc.xor_uint16(
-            src1.blocks_as(.array, x1.*)[0..card1],
-            src2.blocks_as(.array, x2.*)[0..card2],
-            dst.blocks_as(.array, dstr.*),
-        ));
+        dst.cardinality = if (C.HAS_AVX2)
+            @intCast(misc.xor_vector16(
+                src1.blocks_as(.array, x1.*)[0..card1],
+                src2.blocks_as(.array, x2.*)[0..card2],
+                dst.blocks_as(.array, dstr.*),
+            ))
+        else
+            @intCast(misc.xor_uint16(
+                src1.blocks_as(.array, x1.*)[0..card1],
+                src2.blocks_as(.array, x2.*)[0..card2],
+                dst.blocks_as(.array, dstr.*),
+            ));
     }
 
     /// Compute the xor of src1 and src2 and write the result to dst (which
