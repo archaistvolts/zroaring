@@ -63,7 +63,7 @@ fn zr_benchmark_op(
         inline .maximum,
         .minimum,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o])),
-        .frozen_serialize => |o, t| if (false) { // TODO reenable
+        .frozen_serialize => |o, t| if (enable_frozen_ser) {
             _ = try @field(Bitmap, @tagName(t))(rs[o], ser_buf);
         },
         .portable_serialize => |o| {
@@ -77,6 +77,8 @@ fn zr_benchmark_op(
         // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
     }
 }
+
+const enable_frozen_ser = !std.debug.runtime_safety;
 
 fn cr_benchmark_op(
     op: fuzz.Op,
@@ -151,12 +153,12 @@ fn cr_benchmark_op(
         inline .run_optimize,
         .shrink_to_fit,
         => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o])),
-        .frozen_serialize => |o, t| if (false) { // TODO fix, reenable
+        .frozen_serialize => |o| if (enable_frozen_ser) {
+            // disabled in debug builds due to:
             // panic: null pointer passed as argument 2, which is declared to never be null
             // src/c/roaring.c:17593:5: 0x13dc48f in roaring_bitmap_frozen_serialize
             //     memcpy(key_zone, ra->keys, ra->size * sizeof(uint16_t));
-            if (rs[o]) |r|
-                @field(c, "roaring_bitmap_" ++ @tagName(t))(r, ser_buf.ptr);
+            c.roaring_bitmap_frozen_serialize(rs[o], ser_buf.ptr);
         },
         .portable_serialize => |o| std.mem.doNotOptimizeAway(
             c.roaring_bitmap_portable_serialize(rs[o], ser_buf.ptr),
@@ -173,7 +175,7 @@ fn cr_benchmark_op(
 
 fn runBenchmarkGeneric(
     io: Io,
-    rs: anytype,
+    bitmaps: anytype,
     allocator: std.mem.Allocator,
     ser_buf: []align(@alignOf(u64)) u8,
     op_stats: *OpStats,
@@ -182,16 +184,16 @@ fn runBenchmarkGeneric(
     extra_ops: []const fuzz.Op,
     random: std.Random,
 ) !void {
-    const is_cr = @TypeOf(rs) == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
+    const is_cr = @TypeOf(bitmaps) == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
 
     const totalts = Io.Timestamp.now(io, .real);
     for (crash_corpus) |ops| {
         for (ops) |op| {
             const ts = Io.Timestamp.now(io, .real);
             if (is_cr)
-                try cr_benchmark_op(op, rs, ser_buf)
+                try cr_benchmark_op(op, bitmaps, ser_buf)
             else
-                try zr_benchmark_op(op, rs, allocator, ser_buf);
+                try zr_benchmark_op(op, bitmaps, allocator, ser_buf);
             op_stats.getPtr(op)[1].nanoseconds += ts.untilNow(io, .real).toNanoseconds();
             op_stats.getPtr(op)[0] += 1;
         }
@@ -207,9 +209,9 @@ fn runBenchmarkGeneric(
         for (cur[0..group_count]) |op| {
             const ts = Io.Timestamp.now(io, .real);
             if (is_cr)
-                try cr_benchmark_op(op, rs, ser_buf)
+                try cr_benchmark_op(op, bitmaps, ser_buf)
             else
-                try zr_benchmark_op(op, rs, allocator, ser_buf);
+                try zr_benchmark_op(op, bitmaps, allocator, ser_buf);
             const elapsed_ns = ts.untilNow(io, .real).toNanoseconds();
             op_stats.getPtr(op)[0] += 1;
             op_stats.getPtr(op)[1].nanoseconds += elapsed_ns;
@@ -484,3 +486,4 @@ const NUM_BITMAPS = fuzz.NUM_BITMAPS;
 const root = @import("root.zig");
 const Bitmap = root.Bitmap;
 const c = root.c.root;
+const builtin = @import("builtin");
