@@ -22,8 +22,17 @@ pub fn build(b: *std.Build) !void {
     });
 
     const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build-options", .module = options.createModule() },
+            .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+        },
+    });
     const tests = b.addTest(.{
-        .root_module = zrmod,
+        .root_module = test_mod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
         .use_llvm = use_llvm,
     });
@@ -39,7 +48,7 @@ pub fn build(b: *std.Build) !void {
     libcroaring.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
     libcroaring.root_module.link_libc = true;
     b.installArtifact(libcroaring);
-    tests.root_module.linkLibrary(libcroaring);
+    test_mod.linkLibrary(libcroaring);
 
     b.step("test", "Run tests").dependOn(&b.addRunArtifact(tests).step);
     b.installArtifact(tests);
