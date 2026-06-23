@@ -1197,9 +1197,9 @@ pub fn bitset_set_list(
         pos = list1[0];
         offset = pos >> 6;
         index = @truncate(pos % 64);
-        load = words[offset];
+        load = words[@intCast(offset)];
         newload = load | @as(u64, 1) << index;
-        words[offset] = newload;
+        words[@intCast(offset)] = newload;
         list1 += 1;
     }
 }
