@@ -192,7 +192,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: @EnumLiteral(), values
 
 fn validateMisc(allocator: mem.Allocator, zr: Bitmap, cr: [*c]c.roaring_bitmap_t) !void {
     // to_uint32_array
-    const len = zr.get_cardinality();
+    const len: usize = @intCast(zr.get_cardinality());
     const crbuf = try allocator.alloc(u32, len);
     defer allocator.free(crbuf);
     c.roaring_bitmap_to_uint32_array(cr, crbuf.ptr);
@@ -354,5 +354,5 @@ const Io = std.Io;
 const testing = std.testing;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
-const c = zroaring.c.root;
+const c = @import("croaring");
 const misc = @import("misc.zig");

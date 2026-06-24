@@ -40,7 +40,7 @@ fn bail(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var args = init.minimal.args.iterate();
+    var args = try init.minimal.args.iterateAllocator(init.arena.allocator());
     _ = args.next();
     const arg1 = args.next() orelse bail("Missing command argument.\n", .{});
     var command = if (meta.stringToEnum(Command.Tag, arg1)) |x| switch (x) {
@@ -82,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     switch (command) {
         .@"api-coverage" => {
-            const cr_syms = try collect_api(zroaring.c.root, arena);
+            const cr_syms = try collect_api(croaring, arena);
             const bitmap_syms = try collect_api(zroaring.Bitmap, arena);
             const ctr_syms = try collect_api(zroaring.Container, arena);
 
@@ -188,7 +188,7 @@ fn collect_api(T: type, arena: mem.Allocator) !StringMap {
     var r = StringMap.empty;
     try r.ensureTotalCapacity(arena, 10_000);
     @setEvalBranchQuota(30_000);
-    const is_croaring = T == zroaring.c.root;
+    const is_croaring = T == croaring;
     for (meta.declarations(T)) |decl| {
         const declname = decl.name;
         if (!is_croaring or
@@ -222,3 +222,4 @@ const mem = std.mem;
 const meta = std.meta;
 const Type = std.builtin.Type;
 const zroaring = @import("zroaring");
+const croaring = @import("croaring");

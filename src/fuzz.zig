@@ -239,15 +239,16 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
 
 // -- AFL fuzzing
 
-var arena_impl: std.heap.ArenaAllocator = .{
-    .child_allocator = std.heap.smp_allocator,
-    .state = .{},
-};
 export fn zig_fuzz_init() void {}
 
 pub export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
     zig_fuzz_test1(dataptr[0..size]) catch unreachable;
 }
+
+var arena_impl: std.heap.ArenaAllocator = .{
+    .child_allocator = std.heap.page_allocator,
+    .state = .{},
+};
 
 fn zig_fuzz_test1(in: []const u8) !void {
     _ = arena_impl.reset(.retain_capacity);
@@ -1251,4 +1252,4 @@ const testgpa = testing.allocator;
 const assert = std.debug.assert;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
-const c = zroaring.c.root;
+const c = @import("croaring");

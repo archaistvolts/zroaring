@@ -112,7 +112,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
 * [x] allocation failures test with crash corpus.
 * [x] container: match croaring binop param ordering: src1, src2, dst
-* [ ] optimize: store blocks in a separtate allocation to reduce copying in realloc_array, shrink_to_fit, run_optimize.
+* [x] optimize: store blocks in a separtate allocation to reduce copying in realloc_array, shrink_to_fit, run_optimize, etc.
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
 * [ ] Support more set sizes than just u32. with generics - Bitmap(T)?
@@ -130,7 +130,8 @@ Human contributions are very welcome.  Please open a pull request or issue on co
   * [ ] slow fuzzing - check for HashMapOracle leaks
   * [ ] try again to use croaring, address build issues, remove HashMapOracle
 * [ ] CI: windows failure: use translate-c to replace pre-translated src/c/roaring.zig
-
+  * [x] workaround until translate-c fixes (hopefully 0.17) - introduce src/c/roaring-subset.h with symbols copied from roaring.h which translate-c can handle.
+* [ ] bench with reordered Array fields.  also bench without field alignments.
 
 # References
 * https://github.com/RoaringBitmap/RoaringFormatSpec

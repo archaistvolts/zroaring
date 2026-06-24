@@ -6,29 +6,38 @@ pub fn build(b: *std.Build) !void {
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output. default false.") orelse false);
     options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "print fuzzer FuzzOps which may be added to src/fuzz-crash-corpus.zon to reproduce crashes. default false.") orelse false);
     options.addOption(bool, "run_slow_tests", b.option(bool, "run-slow-tests", "perform long running tests such as checkAllocationFailures(). default false.") orelse false);
+    const options_mod = options.createModule();
+    const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
+    const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
 
-    // TODO // const translate_c = b.addTranslateC(.{ .root_source_file = b.path("c/roaring.h"), .target = target, .optimize = optimize });
     const zrmod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "build-options", .module = options.createModule() },
+            .{ .name = "build-options", .module = options_mod },
             .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
         },
     });
 
-    const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
+    const translate_cr = b.addTranslateC(.{
+        .root_source_file = b.path("src/c/roaring-subset.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const translate_cr_mod = translate_cr.createModule();
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "build-options", .module = options.createModule() },
             .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+            .{ .name = "croaring", .module = translate_cr_mod },
         },
     });
     const tests = b.addTest(.{
@@ -37,17 +46,17 @@ pub fn build(b: *std.Build) !void {
         .use_llvm = use_llvm,
     });
 
-    const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
-
     const libcroaring = b.addLibrary(.{
         .name = "croaring",
-        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
     });
     libcroaring.root_module.addIncludePath(b.path("src/c"));
     libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
     libcroaring.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    libcroaring.root_module.link_libc = true;
-    b.installArtifact(libcroaring);
     test_mod.linkLibrary(libcroaring);
 
     b.step("test", "Run tests").dependOn(&b.addRunArtifact(tests).step);
@@ -83,13 +92,13 @@ pub fn build(b: *std.Build) !void {
                 .fuzz = true,
                 .imports = &.{
                     .{ .name = "zroaring", .module = zrmod },
-                    .{ .name = "build-options", .module = options.createModule() },
+                    .{ .name = "build-options", .module = options_mod },
                     .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                    .{ .name = "croaring", .module = translate_cr_mod },
                 },
             }),
         });
-        // TODO // afl_obj.root_module.linkLibrary(libcroaring);
-        // https://github.com/kristoff-it/zig-afl-kit/issues/14
+        afl_obj.root_module.linkLibrary(libcroaring); // https://github.com/kristoff-it/zig-afl-kit/issues/14
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
@@ -108,10 +117,12 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = b.path("src/main.zig"),
             .optimize = optimize,
             .target = target,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "zroaring", .module = zrmod },
-                .{ .name = "build-options", .module = options.createModule() },
+                .{ .name = "build-options", .module = options_mod },
                 .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                .{ .name = "croaring", .module = translate_cr_mod },
             },
         }),
     });
@@ -128,7 +139,8 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .imports = &.{
                 .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
-                .{ .name = "build-options", .module = options.createModule() },
+                .{ .name = "build-options", .module = options_mod },
+                .{ .name = "croaring", .module = translate_cr_mod },
             },
         }),
     });
@@ -141,9 +153,11 @@ pub fn build(b: *std.Build) !void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/fuzz-main.zig"),
             .target = target,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
-                .{ .name = "build-options", .module = options.createModule() },
+                .{ .name = "build-options", .module = options_mod },
+                .{ .name = "croaring", .module = translate_cr_mod },
             },
         }),
     });
@@ -157,9 +171,11 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = b.path("src/bench.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
-                .{ .name = "build-options", .module = options.createModule() },
+                .{ .name = "build-options", .module = options_mod },
+                .{ .name = "croaring", .module = translate_cr_mod },
             },
         }),
     });

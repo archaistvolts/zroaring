@@ -309,8 +309,8 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
 
     var cr_fmt_buf: [16]u8 = undefined;
     var zr_fmt_buf: [16]u8 = undefined;
-    const cr_speed: usize = cr_ops_len * std.time.ns_per_s / @as(u64, @intCast(cr_total_ns));
-    const zr_speed: usize = zr_ops_len * std.time.ns_per_s / @as(u64, @intCast(zr_total_ns));
+    const cr_speed: usize = cr_ops_len * std.time.ns_per_s / @as(usize, @intCast(@as(u64, @intCast(cr_total_ns))));
+    const zr_speed: usize = zr_ops_len * std.time.ns_per_s / @as(usize, @intCast(@as(u64, @intCast(zr_total_ns))));
     const zr_cr_ratio =
         @as(f32, @floatFromInt((zr_speed * 100_000) / cr_speed)) / 100_000;
     const cr_dur_fmt = try std.fmt.bufPrint(&cr_fmt_buf, "{f:.1}", .{Io.Duration{ .nanoseconds = cr_total_ns }});
@@ -485,5 +485,5 @@ const crash_corpus: []const []const fuzz.Op = @import("fuzz-crash-corpus.zon");
 const NUM_BITMAPS = fuzz.NUM_BITMAPS;
 const root = @import("root.zig");
 const Bitmap = root.Bitmap;
-const c = root.c.root;
+const c = @import("croaring");
 const builtin = @import("builtin");
