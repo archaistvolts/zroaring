@@ -3,21 +3,25 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "0 0 * * 1"
-
+    - cron: "0 0 * * 1" # weekly mon 5/4pm pst
 jobs:
   test:
     strategy:
       matrix:
         optimize: [Debug, ReleaseSafe, ReleaseFast]
-        runs-on: [ubuntu-latest, windows-latest]
+        runs-on: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.runs-on }}
     steps:
       - uses: actions/checkout@v3
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # -Drun-slow-tests: +allocation failures tests
       - run: zig build test -Doptimize=${{ matrix.optimize }} --summary all -Drun-slow-tests
+      - name: Fuzz
+        # FIXME skip windows fuzzing - not supported by zig yet
+        if: runner.os != 'Windows'
+        run: zig build test -Doptimize=ReleaseSafe --fuzz=40000
 
   lint:
     runs-on: ubuntu-latest

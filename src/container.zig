@@ -1355,29 +1355,31 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     /// Simple CSA over Block
-    fn CSA(h: *Block, l: *Block, a: Block, b: Block, c: Block) void {
+    fn CSA(h: *u8x32, l: *u8x32, a: u8x32, b: u8x32, c: u8x32) void {
         const u = a ^ b;
         h.* = (a & b) | (u & c);
         l.* = u ^ c;
     }
 
-    fn popcount256(v: Block) root.Block64 {
-        const lookuppos: Block = .{
+    const u8x32 = root.u8x32;
+    const u64x4 = root.u64x4;
+    fn popcount256(v: u8x32) u64x4 {
+        const lookuppos: u8x32 = .{
             4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
             4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
             4 + 0, 4 + 1, 4 + 1, 4 + 2, 4 + 1, 4 + 2, 4 + 2, 4 + 3,
             4 + 1, 4 + 2, 4 + 2, 4 + 3, 4 + 2, 4 + 3, 4 + 3, 4 + 4,
         };
 
-        const lookupneg: Block = .{
+        const lookupneg: u8x32 = .{
             4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
             4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
             4 - 0, 4 - 1, 4 - 1, 4 - 2, 4 - 1, 4 - 2, 4 - 2, 4 - 3,
             4 - 1, 4 - 2, 4 - 2, 4 - 3, 4 - 2, 4 - 3, 4 - 3, 4 - 4,
         };
 
-        const low_mask: Block = @splat(0x0f);
-        const shift_amt: Block = @splat(4);
+        const low_mask: u8x32 = @splat(0x0f);
+        const shift_amt: u8x32 = @splat(4);
         const lo = v & low_mask;
         const hi = (v >> shift_amt) & low_mask;
         const popcnt1 = misc.pshufb(lookuppos, lo);
@@ -1387,19 +1389,19 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     /// Fast Harley-Seal AVX population count function
-    fn avx2_harley_seal_popcount(data: []root.Block) u64 {
-        var total: root.Block64 = @splat(0);
-        var ones: Block = @splat(0);
-        var twos: Block = @splat(0);
-        var fours: Block = @splat(0);
-        var eights: Block = @splat(0);
-        var sixteens: Block = @splat(0);
-        var twosA: Block = undefined;
-        var twosB: Block = undefined;
-        var foursA: Block = undefined;
-        var foursB: Block = undefined;
-        var eightsA: Block = undefined;
-        var eightsB: Block = undefined;
+    fn avx2_harley_seal_popcount(data: []root.u8x32) u64 {
+        var total: u64x4 = @splat(0);
+        var ones: u8x32 = @splat(0);
+        var twos: u8x32 = @splat(0);
+        var fours: u8x32 = @splat(0);
+        var eights: u8x32 = @splat(0);
+        var sixteens: u8x32 = @splat(0);
+        var twosA: u8x32 = undefined;
+        var twosB: u8x32 = undefined;
+        var foursA: u8x32 = undefined;
+        var foursB: u8x32 = undefined;
+        var eightsA: u8x32 = undefined;
+        var eightsB: u8x32 = undefined;
         const size = data.len;
         const limit = size - size % 16;
         var i: u64 = 0;
@@ -1535,24 +1537,24 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             }
 
             fn avx2_harley_seal_popcount_op(
-                data1: [*]const Block,
-                data2: [*]const Block,
+                data1: [*]const u8x32,
+                data2: [*]const u8x32,
                 size: u64,
             ) u64 {
-                var total: root.Block64 = @splat(0);
-                var ones: Block = @splat(0);
-                var twos: Block = @splat(0);
-                var fours: Block = @splat(0);
-                var eights: Block = @splat(0);
-                var sixteens: Block = @splat(0);
-                var twosA: Block = undefined;
-                var twosB: Block = undefined;
-                var foursA: Block = undefined;
-                var foursB: Block = undefined;
-                var eightsA: Block = undefined;
-                var eightsB: Block = undefined;
-                var A1: Block = undefined;
-                var A2: Block = undefined;
+                var total: u64x4 = @splat(0);
+                var ones: u8x32 = @splat(0);
+                var twos: u8x32 = @splat(0);
+                var fours: u8x32 = @splat(0);
+                var eights: u8x32 = @splat(0);
+                var sixteens: u8x32 = @splat(0);
+                var twosA: u8x32 = undefined;
+                var twosB: u8x32 = undefined;
+                var foursA: u8x32 = undefined;
+                var foursB: u8x32 = undefined;
+                var eightsA: u8x32 = undefined;
+                var eightsB: u8x32 = undefined;
+                var A1: u8x32 = undefined;
+                var A2: u8x32 = undefined;
                 const limit = size - size % 16;
                 var i: usize = 0;
                 while (i < limit) : (i += 16) {
@@ -1602,25 +1604,25 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             }
 
             fn avx2_harley_seal_popcount_op_store(
-                data1: [*]const Block,
-                data2: [*]const Block,
-                out: [*]Block,
+                data1: [*]const u8x32,
+                data2: [*]const u8x32,
+                out: [*]u8x32,
                 size: u64,
             ) u64 {
-                var total: root.Block64 = @splat(0);
-                var ones: Block = @splat(0);
-                var twos: Block = @splat(0);
-                var fours: Block = @splat(0);
-                var eights: Block = @splat(0);
-                var sixteens: Block = @splat(0);
-                var twosA: Block = undefined;
-                var twosB: Block = undefined;
-                var foursA: Block = undefined;
-                var foursB: Block = undefined;
-                var eightsA: Block = undefined;
-                var eightsB: Block = undefined;
-                var A1: Block = undefined;
-                var A2: Block = undefined;
+                var total: u64x4 = @splat(0);
+                var ones: u8x32 = @splat(0);
+                var twos: u8x32 = @splat(0);
+                var fours: u8x32 = @splat(0);
+                var eights: u8x32 = @splat(0);
+                var sixteens: u8x32 = @splat(0);
+                var twosA: u8x32 = undefined;
+                var twosB: u8x32 = undefined;
+                var foursA: u8x32 = undefined;
+                var foursB: u8x32 = undefined;
+                var eightsA: u8x32 = undefined;
+                var eightsB: u8x32 = undefined;
+                var A1: u8x32 = undefined;
+                var A2: u8x32 = undefined;
                 const limit = size - size % 16;
                 var i: usize = 0;
                 while (i < limit) : (i += 16) {
@@ -1705,9 +1707,9 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 dst: [*]align(C.BLOCK_ALIGN) u64,
             ) Cardinality {
                 const innerloop = 8;
-                var blocks1: [*]const root.Block64 = @ptrCast(words1);
-                var blocks2: [*]const root.Block64 = @ptrCast(words2);
-                var blocksout: [*]root.Block64 = @ptrCast(dst);
+                var blocks1: [*]const u64x4 = @ptrCast(words1);
+                var blocks2: [*]const u64x4 = @ptrCast(words2);
+                var blocksout: [*]u64x4 = @ptrCast(dst);
                 const blocksend = dst + C.BITSET_CONTAINER_SIZE_IN_WORDS;
                 while (@intFromPtr(blocksout) < @intFromPtr(blocksend)) {
                     inline for (
