@@ -126,6 +126,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * [ ] audit endian sensitive methods.  aim for endian awareness throughout.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex
 * [ ] strategy for reclaiming blocks to reduce memory usage.  depending on users calling shrink_to_fit() doesn't seem viable.
+  * [x] add compaction to realloc_blocks shrink code path
 * [ ] AFL fuzzer
   * [ ] slow fuzzing - check for HashMapOracle leaks
   * [ ] try again to use croaring, address build issues, remove HashMapOracle

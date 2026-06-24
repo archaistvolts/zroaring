@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) !void {
     // AFL++ fuzzing exe
     if (b.option(bool, "fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
         // a step for generating fuzzing tooling
-        // an oblect file that contains the test function
+        // an object file that contains the test function
         const afl_obj = b.addObject(.{
             .name = "fuzz_obj",
             .use_llvm = use_llvm,
@@ -98,7 +98,7 @@ pub fn build(b: *std.Build) !void {
                 },
             }),
         });
-        afl_obj.root_module.linkLibrary(libcroaring); // https://github.com/kristoff-it/zig-afl-kit/issues/14
+        // TODO afl_obj.root_module.linkLibrary(libcroaring); // https://github.com/kristoff-it/zig-afl-kit/issues/14
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
         // Generate an instrumented executable and install.  but only when afl-cc is present.
@@ -177,6 +177,7 @@ pub fn build(b: *std.Build) !void {
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
+            // .strip = false,
         }),
     });
     bench_exe.root_module.linkLibrary(libcroaring);

@@ -98,11 +98,18 @@ pub const Container = packed struct(u64) {
         }
     }
 
-    /// modify conatiner so it can hold additional moreblocks.
+    /// modify container so it can hold additional moreblocks.
     ///
+    /// version 2 is used in ReleaseSmall builds as it significantly improved
+    /// benchmarked.
+    const add_container_blocks = if (builtin.mode == .ReleaseSmall)
+        add_container_blocks_at_end
+    else
+        add_container_blocks_move_trailing;
+
     /// moves all blocks after c's blocks forward and modifies all affected
     /// container blockoffsets.
-    fn add_container_blocks(
+    fn add_container_blocks_move_trailing(
         r: *Bitmap,
         allocator: Allocator,
         c: *Container,
@@ -117,19 +124,57 @@ pub const Container = packed struct(u64) {
         }
         // move blocks and update blocks info
         const blocks = r.blocks.items[0..r.blocks.capacity];
-        const c2 = &r.array.ptr(.containers)[cid];
+        const cs = r.array.ptr(.containers);
+        const c2 = &cs[cid];
         const rest = blocks[c2.blockoffset + c2.nblocks() .. blockslen];
         @memmove(rest.ptr + moreblocks, rest);
         c2.nblocks_minus1 += @intCast(moreblocks);
         r.blocks.len += moreblocks;
 
-        // update blockoffsets of containers with moved blocks
-        for (r.slice(.containers, .len)) |*c3| {
-            // consider limiting loop and remove .uninit check w/out a noisy len param.
-            if (c3.blockoffset <= c2.blockoffset or c3.* == uninit)
-                continue;
-            c3.blockoffset += @intCast(moreblocks);
+        // update blockoffsets of containers whose blocks were moved
+        for (cs[0..r.array.ptr(.len).*]) |*c3| {
+            c3.blockoffset += @intCast(moreblocks *
+                @intFromBool(c3.blockoffset > c2.blockoffset and
+                    c3.* != uninit)); // FIXME can we somehow remove .uninit check?
         }
+    }
+
+    /// if c's blocks are at end grow in place. else copy container blocks to
+    /// end leaving a hole to avoid copying all blocks after c's blocks.
+    fn add_container_blocks_at_end(
+        r: *Bitmap,
+        allocator: Allocator,
+        c: *Container,
+        moreblocks: u32,
+    ) !void {
+        assert(moreblocks != 0);
+        const cid = c - r.array.ptr(.containers);
+        const blockslen = r.blocks.len;
+        const old_nblocks = c.nblocks();
+        const old_offset = c.blockoffset;
+
+        if (old_offset + old_nblocks == blockslen) {
+            // tail: grow in place, no shifting needed
+            if (blockslen + moreblocks > r.blocks.capacity)
+                try r.ensure_unused_capacity(allocator, 0, moreblocks);
+            const c2 = &r.array.ptr(.containers)[cid];
+            c2.nblocks_minus1 += @intCast(moreblocks);
+            r.blocks.len += moreblocks;
+            return;
+        }
+
+        // non-tail: copy container to end, leaving hole
+        const new_nblocks = old_nblocks + moreblocks;
+        if (blockslen + new_nblocks > r.blocks.capacity)
+            try r.ensure_unused_capacity(allocator, 0, new_nblocks);
+        const blocks = r.blocks.items;
+        @memcpy(blocks[blockslen..][0..old_nblocks], blocks[old_offset..]);
+        if (builtin.is_test or builtin.mode == .Debug)
+            @memset(blocks[old_offset..][0..old_nblocks], @splat(0xFF));
+        const c2 = &r.array.ptr(.containers)[cid];
+        c2.blockoffset = @intCast(blockslen);
+        c2.nblocks_minus1 = @intCast(new_nblocks - 1);
+        r.blocks.len = blockslen + new_nblocks;
     }
 
     /// add enough blocks to container to hold mincapacity.
@@ -642,6 +687,8 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     pub fn internal_validate(v: Container, reason: *?[]const u8, r: Bitmap) bool {
+        if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+            return;
         if (v == uninit) return true; // FIXME
         if (v.cardinality == 0) {
             reason.* = "container is empty";
@@ -988,8 +1035,6 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
 
     /// total number of elements an array or run container can hold given its
     /// allocated number of blocks.
-    ///
-    /// nblocks() * C.BLOCK_LEN<N> where N=16 for array containers and 32 for runs.
     pub fn calc_capacity(c: Container) u32 {
         return if (c == uninit)
             0
@@ -4324,7 +4369,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         return std.math.maxInt(u16);
     }
 
-    /// Returns the smallest value (assumes not empty)
+    /// Returns the largest value (assumes not empty)
     pub fn bitset_container_maximum(words: [*]align(C.BLOCK_ALIGN) const u64) u16 {
         var i: u16 = C.BITSET_CONTAINER_SIZE_IN_WORDS;
         while (true) {

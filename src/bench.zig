@@ -319,10 +319,10 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         \\overall:
         \\
     ++ sep ++
-        \\CRoaring: {} ops {s: <10} {B:.2} ops/sec
-        \\ZRoaring: {} ops {s: <10} {B:.2} ops/sec
+        \\CRoaring: {} ops {s: <10} {B:.3} ops/sec
+        \\ZRoaring: {} ops {s: <10} {B:.3} ops/sec
         \\
-        \\                                  ratio -- {d:.2} {s}
+        \\                                 ratio -- {d:.3} {s}
         \\
         \\
     , .{
@@ -475,7 +475,7 @@ pub fn main(init: std.process.Init) !void {
             return error.Arg);
     }
 
-    try runBenchmark(init.gpa, init.io, parsed_args);
+    try runBenchmark(std.heap.c_allocator, init.io, parsed_args);
 }
 
 const std = @import("std");

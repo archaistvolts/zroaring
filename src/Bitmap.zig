@@ -1046,6 +1046,8 @@ pub fn internal_validate_header(r: Bitmap, reason: *?[]const u8) bool {
 /// - Shared containers are only used when the bitmap is COW
 ///
 pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
+    if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+        return;
     reason.* = null;
     // trace(@src(), "{f}", .{r});
     if (r.is_empty()) return true;
@@ -1079,10 +1081,6 @@ pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
     }
 
     return true;
-}
-
-pub fn internal_validate_container(r: Bitmap, c: Container, reason: *?[]const u8) bool {
-    return c.internal_validate(reason, r);
 }
 
 pub fn assert_valid(r: Bitmap) void {
@@ -1123,6 +1121,7 @@ pub fn realloc_array(r: *Bitmap, allocator: Allocator, new_capacity: u32) !void 
         r.deinit(allocator);
         return;
     }
+    assert(new_capacity != r.array.ptr(.capacity).*);
 
     const newlens: Model.Lengths = .{ .capacity = new_capacity };
     const lens = r.array.calcLens();
@@ -1174,27 +1173,27 @@ pub fn realloc_blocks(
     assert(!r.is_empty());
     errdefer r.deinit(allocator);
 
-    const newblocks = try allocator.alloc(Block, new_blockscapacity);
     const blocks = r.blocks.items[0..r.blocks.capacity];
     if (new_blockscapacity < r.blocks.capacity) {
         // shrink
+        const newblocks = try allocator.alloc(Block, new_blockscapacity);
         const blockslen = r.compact_blocks(newblocks, blocks);
         r.blocks = .{
             .items = newblocks.ptr,
             .capacity = new_blockscapacity,
             .len = blockslen,
         };
+        allocator.free(blocks);
     } else {
         assert(new_blockscapacity > r.blocks.capacity);
         // grow: copy existing blocks without compacting
-        @memcpy(newblocks.ptr, blocks);
+        const newblocks = try allocator.realloc(blocks, new_blockscapacity);
         r.blocks = .{
             .items = newblocks.ptr,
             .capacity = new_blockscapacity,
             .len = r.blocks.len,
         };
     }
-    allocator.free(blocks);
 }
 
 /// similar to croaring.extend_array.
@@ -1222,12 +1221,12 @@ pub fn ensure_unused_capacity(
     if (desired_len > capacity or desired_blockslen > r.blocks.capacity) {
         const new_capacity = @min(
             C.MAX_CONTAINERS,
-            if (len < 1024) 2 * desired_len else @divFloor(5 * desired_len, 4),
+            if (len < 1024) 2 * desired_len else 5 * desired_len / 4,
         );
 
         const new_blockscapacity = @min(
             C.MAX_BLOCKS,
-            if (len < 1024) 2 * desired_blockslen else @divFloor(5 * desired_blockslen, 4),
+            if (len < 1024) 2 * desired_blockslen else 5 * desired_blockslen / 4,
         );
 
         if (new_capacity > capacity)
