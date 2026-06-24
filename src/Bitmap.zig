@@ -1,7 +1,8 @@
 const Bitmap = @This();
 
-/// header, keys, containers and container storage blocks in a single allocation.
+/// header, keys, containers in a single allocation.
 array: *flexible.Struct(Array),
+/// container storage blocks
 blocks: Blocks,
 
 pub const Array = extern struct {
@@ -18,6 +19,7 @@ pub const Array = extern struct {
     containers: flexible.Array(Container, .capacity) align(C.BLOCK_ALIGN),
 };
 
+/// an array list of blocks
 pub const Blocks = struct {
     /// blocks count. [0, 1<<24]
     len: u32,
@@ -55,8 +57,7 @@ pub const free = deinit;
 pub fn deinit(r: *Bitmap, allocator: Allocator) void {
     if (r.array != empty.array)
         r.array.destroy(allocator);
-    if (r.blocks.capacity != 0)
-        allocator.free(r.blocks.items[0..r.blocks.capacity]);
+    allocator.free(r.blocks.items[0..r.blocks.capacity]);
     r.* = empty;
 }
 
@@ -1101,13 +1102,15 @@ pub fn assert_valid(r: Bitmap) void {
 
 /// copy r to newarray
 pub fn copy_to(r: *const Bitmap, newarray: *Model) void {
-    inline for (Model.sorted_fields) |sf| {
-        if (@hasField(Model.Lengths, sf.name)) continue; // skip lengths
-        const f = @field(Model.Field, sf.name);
-        // TODO dont copy blocks here when they need to be immediately moved
-        // again (ie when growing an array container).
-        newarray.copyField(r.array, f);
-    }
+    // batch memcpy calls. slightly better than copyField() on each field.
+    const capp = newarray.ptr(.capacity);
+    const cap = capp.*;
+    const bytes = r.array.asBytes();
+    const non_array_offs = @offsetOf(Array, "keys");
+    @memcpy(newarray.asBytes()[0..non_array_offs], bytes[0..non_array_offs]); // copy leading, non-array fields
+    capp.* = cap;
+    newarray.copyField(r.array, .keys);
+    newarray.copyField(r.array, .containers);
 }
 
 /// ensure new capacity. deinit if new capacity is 0. shrink if new capacity is
@@ -1140,6 +1143,23 @@ pub fn realloc_array(r: *Bitmap, allocator: Allocator, new_capacity: u32) !void 
     r.array = newarray;
 }
 
+/// compact container blocks copying from blocks to newblocks. new order matches
+/// containers order.  returns number of blocks copied.
+fn compact_blocks(r: *Bitmap, newblocks: []Block, blocks: []const Block) u32 {
+    var newblock = newblocks.ptr;
+    for (r.slice(.containers, .len)) |*c| {
+        const nblocks = c.nblocks();
+        @memcpy(newblock, blocks[c.blockoffset..][0..nblocks]);
+        c.blockoffset = @intCast(newblock - newblocks.ptr);
+        newblock += nblocks;
+    }
+    return @intCast(newblock - newblocks.ptr);
+}
+
+/// ensure new blocks capacity. deinit if 0. shrink and compact if
+/// less than existing.
+///
+/// modifies `Blocks` capacity and moves Array to a new allocation.
 pub fn realloc_blocks(
     r: *Bitmap,
     allocator: Allocator,
@@ -1154,17 +1174,26 @@ pub fn realloc_blocks(
     errdefer r.deinit(allocator);
 
     const newblocks = try allocator.alloc(Block, new_blockscapacity);
-    if (r.blocks.capacity != 0) {
-        const blocks = r.blocks.items[0..r.blocks.capacity];
+    const blocks = r.blocks.items[0..r.blocks.capacity];
+    if (new_blockscapacity < r.blocks.capacity) {
+        // shrink
+        const blockslen = r.compact_blocks(newblocks, blocks);
+        r.blocks = .{
+            .items = newblocks.ptr,
+            .capacity = new_blockscapacity,
+            .len = blockslen,
+        };
+    } else {
+        assert(new_blockscapacity > r.blocks.capacity);
+        // grow: copy existing blocks without compacting
         @memcpy(newblocks.ptr, blocks);
-        allocator.free(blocks);
+        r.blocks = .{
+            .items = newblocks.ptr,
+            .capacity = new_blockscapacity,
+            .len = r.blocks.len,
+        };
     }
-
-    r.blocks = .{
-        .items = newblocks.ptr,
-        .capacity = @intCast(newblocks.len),
-        .len = r.blocks.len,
-    };
+    allocator.free(blocks);
 }
 
 /// similar to croaring.extend_array.
@@ -1396,7 +1425,9 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
     );
 }
 
-/// shrink containers if they use extra blocks then copy used blocks to a new allocation.
+/// call shrink_to_fit() on all containers which may reduce their required blocks.
+/// shrink array if len < cap.
+/// shrink blocks if block savings percent above 20.
 pub fn shrink_to_fit(r: *Bitmap, allocator: Allocator) !usize {
     const capacity = r.array.ptr(.capacity).*;
     const len = r.array.ptr(.len).*;
@@ -1410,49 +1441,24 @@ pub fn shrink_to_fit(r: *Bitmap, allocator: Allocator) !usize {
         newblockscap += c.nblocks();
     }
 
-    if (containersavings == 0 and capacity == len and r.blocks.capacity == newblockscap)
+    if (containersavings == 0 and
+        capacity == len and
+        r.blocks.capacity == newblockscap)
         return 0; // no shrinking possible
 
-    const newlens = Model.Lengths{ .capacity = len };
-    const newsize = Model.calcSize(newlens);
-    const buf = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, newsize);
-    errdefer allocator.free(buf);
-    // copy leading, non-array fields
-    const non_array_offs = @offsetOf(Array, "keys");
-    @memcpy(buf[0..non_array_offs], r.array.asBytes()[0..non_array_offs]);
-    const newarray: *Model = @ptrCast(buf);
-    newarray.ptr(.capacity).* = len;
-    newarray.ptr(.len).* = len;
-    // copy keys and containers
-    newarray.copyField(r.array, .keys);
-    newarray.copyField(r.array, .containers);
-    const size = Model.calcSize(.{ .capacity = capacity });
-    // move blocks if newcap 5% greater or more. subject to tuning.
-    if ((r.blocks.capacity - newblockscap) * 1000 / r.blocks.capacity > 20) {
-        // copy blocks
-        const blocks = try allocator.alloc(Block, newblockscap);
-        var block = blocks.ptr;
-        const cs = r.array.ptr(.containers);
-        const newcs = newarray.ptr(.containers);
-        const newr = Bitmap{ .array = newarray, .blocks = .{
-            .items = blocks.ptr,
-            .capacity = @intCast(blocks.len),
-            .len = @intCast(blocks.len),
-        } };
-        for (0..len) |i| {
-            newcs[i].blockoffset = @intCast(block - blocks.ptr);
-            block += cs[i].nblocks();
-            @memcpy(newcs[i].get_blocks(newr), cs[i].get_blocks(r.*));
-        }
-        allocator.free(r.array.asBytes()[0..size]);
-        allocator.free(r.blocks.items[0..r.blocks.capacity]);
-        r.* = newr;
-    } else {
-        allocator.free(r.array.asBytes()[0..size]);
-        r.array = newarray;
+    assert(len <= capacity);
+    if (len != capacity)
+        try r.realloc_array(allocator, len);
+
+    // realloc blocks when savings > 20%.  subject to tuning.
+    const blocksavings = r.blocks.capacity - newblockscap;
+    if (blocksavings * 100 > r.blocks.capacity * 20) {
+        try r.realloc_blocks(allocator, newblockscap);
     }
 
-    return containersavings + size - newsize;
+    return containersavings +
+        (capacity - len) * (@sizeOf(u16) + @sizeOf(Container)) +
+        blocksavings * @sizeOf(Block);
 }
 
 pub fn remove_at_index(r: *Bitmap, i: u32) void {
@@ -1544,7 +1550,7 @@ pub fn copy(r: Bitmap, allocator: Allocator) !Bitmap {
         .array = .initBuffer(abuf, alens),
         .blocks = .{
             .items = bbuf.ptr,
-            .capacity = @intCast(bbuf.len),
+            .capacity = r.blocks.capacity,
             .len = r.blocks.len,
         },
     };
