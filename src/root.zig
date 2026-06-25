@@ -18,6 +18,7 @@ pub const u64x4 = @Vector(4, u64);
 pub const constants = @import("constants.zig");
 pub const container = @import("container.zig");
 pub const Container = container.Container;
+pub const Iterator = @import("Iterator.zig");
 
 pub const Magic = enum(u16) {
     SERIAL_COOKIE_NO_RUNCONTAINER = 12346,
