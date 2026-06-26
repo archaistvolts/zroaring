@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
             const cr_syms = try collect_api(croaring, arena);
             const bitmap_syms = try collect_api(zroaring.Bitmap, arena);
             const ctr_syms = try collect_api(zroaring.Container, arena);
+            const it_syms = try collect_api(zroaring.Iterator, arena);
 
             // table from cr_sym to (zr_sym, zr_namespace)
             var result = std.StringArrayHashMapUnmanaged([2]?[]const u8).empty;
@@ -100,23 +101,36 @@ pub fn main(init: std.process.Init) !void {
                         break i;
                     }
                 } else unreachable;
-                var gop = try result.getOrPut(arena, cr_sym);
+                const gop = try result.getOrPut(arena, cr_sym);
                 std.debug.assert(!gop.found_existing);
                 gop.value_ptr.* = .{ null, null };
                 syms_stats_by_prefix[i][1] += 1; // total
 
+                var found = false;
                 for (bitmap_syms.keys()) |bsym| {
                     if (mem.eql(u8, cr_sym, bsym) or mem.eql(u8, cr_sym_suffix, bsym)) {
                         gop.value_ptr.* = .{ bsym, "Bitmap" };
-                        gop.found_existing = true;
+                        found = true;
                         syms_stats_by_prefix[i][0] += 1; // found
+                        break;
                     }
                 }
-
-                for (ctr_syms.keys()) |ctrsym| {
-                    if (mem.eql(u8, cr_sym, ctrsym) or mem.eql(u8, cr_sym_suffix, ctrsym)) {
-                        gop.value_ptr.* = .{ ctrsym, "Container" };
-                        syms_stats_by_prefix[i][0] += 1; // found
+                if (!found) {
+                    for (ctr_syms.keys()) |ctrsym| {
+                        if (mem.eql(u8, cr_sym, ctrsym) or mem.eql(u8, cr_sym_suffix, ctrsym)) {
+                            gop.value_ptr.* = .{ ctrsym, "Container" };
+                            syms_stats_by_prefix[i][0] += 1; // found
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    for (it_syms.keys()) |itsym| {
+                        if (mem.eql(u8, cr_sym, itsym) or mem.eql(u8, cr_sym_suffix, itsym)) {
+                            gop.value_ptr.* = .{ itsym, "Iterator" };
+                            syms_stats_by_prefix[i][0] += 1; // found
+                            break;
+                        }
                     }
                 }
             }
@@ -135,13 +149,13 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
 
-            std.debug.print("\nsymbols coverage:\n  {s: <20}: {s: <20}:\n", .{ "prefix", "found / total / %" });
+            std.debug.print("\nsymbols coverage:\n  {s: <25} {s}\n", .{ "prefix", "found total %" });
             const sep = "---------------------------------------------\n";
             std.debug.print(sep, .{});
             for (crprefixes, syms_stats_by_prefix) |crp, stat| {
                 const found, const total = stat;
                 std.debug.print(
-                    "  {s: <20}: {: <5} / {: <5} / {:2.1}%\n",
+                    "  {s: <25} {: <5} {: <5} {:2.1}%\n",
                     .{ crp, found, total, found / total * 100 },
                 );
             }
@@ -154,7 +168,7 @@ pub fn main(init: std.process.Init) !void {
                 const found, const total = totals;
                 std.debug.print(sep, .{});
                 std.debug.print(
-                    "  {s: <20}: {: <5} / {: <5} / {:2.1}%\n",
+                    "  {s: <25} {: <5} {: <5} {:2.1}%\n",
                     .{ "total", found, total, found / total * 100 },
                 );
             }
@@ -163,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
                 const found = filtered_cr_syms_found;
                 std.debug.print(sep, .{});
                 std.debug.print(
-                    "  {s: <20}: {: <5} / {: <5} / {:2.1}%\n",
+                    "  {s: <25}: {: <5} / {: <5} / {:2.1}%\n",
                     .{ "filtered", found, total, found / total * 100 },
                 );
             }
@@ -178,7 +192,8 @@ const crprefixes = [_][]const u8{
     "run_container_",
     "bitset_container_",
     "array_container_",
-    "iter",
+    "roaring_iterator_",
+    "roaring_uint32_iterator_",
 };
 
 /// map of found names to prefix len after which match is found
