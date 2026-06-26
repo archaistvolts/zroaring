@@ -20,5 +20,4 @@ buildAndTest
 opt="-Doptimize=ReleaseSmall"
 buildAndTest
 
-zig build test -Drun-slow-tests -Doptimize=ReleaseSmall
-# zig build test -Drun-slow-tests -Doptimize=ReleaseSafe
+zig build test -Drun-slow-tests -Doptimize=ReleaseSafe
