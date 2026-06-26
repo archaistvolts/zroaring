@@ -1,11 +1,17 @@
 const std = @import("std");
 const afl = @import("afl_kit");
+const BenchTarget = @import("src/bench2.zig").BenchTarget;
 
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output. default false.") orelse false);
-    options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "print fuzzer FuzzOps which may be added to src/fuzz-crash-corpus.zon to reproduce crashes. default false.") orelse false);
+    options.addOption(bool, "fuzzprint", b.option(bool, "fuzzprint", "print fuzz.Ops which may be added to src/fuzz-crash-corpus.zon to reproduce crashes. default false.") orelse false);
     options.addOption(bool, "run_slow_tests", b.option(bool, "run-slow-tests", "perform long running tests such as checkAllocationFailures(). default false.") orelse false);
+    const bench_target = b.option(BenchTarget, "bench-target", "bench2 target");
+    options.addOption(BenchTarget, "bench_target", bench_target orelse .zr);
+    const bench_op = b.option([]const u8, "bench-op", "bench2 op");
+    options.addOption(?[]const u8, "bench_op", bench_op);
+
     const options_mod = options.createModule();
     const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
@@ -185,4 +191,23 @@ pub fn build(b: *std.Build) !void {
     if (b.args) |args| bench_run.addArgs(args);
     b.step("bench", "Run the zroaring benchmark").dependOn(&bench_run.step);
     b.installArtifact(bench_exe);
+    const bench_exe2 = b.addExecutable(.{
+        .name = if (bench_op) |bo|
+            b.fmt("bench-{t}-{s}", .{ bench_target orelse .zr, bo })
+        else
+            b.fmt("bench-{t}", .{bench_target orelse .zr}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench2.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                .{ .name = "build-options", .module = options_mod },
+                .{ .name = "croaring", .module = translate_cr_mod },
+            },
+        }),
+    });
+    bench_exe2.root_module.linkLibrary(libcroaring);
+    b.installArtifact(bench_exe2);
 }

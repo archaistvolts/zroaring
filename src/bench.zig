@@ -1,4 +1,4 @@
-fn zr_benchmark_op(
+pub fn zr_benchmark_op(
     op: fuzz.Op,
     rs: *[NUM_BITMAPS]Bitmap,
     allocator: std.mem.Allocator,
@@ -56,7 +56,7 @@ fn zr_benchmark_op(
         inline .rank,
         .select,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], o.val)),
-        .clear => |o| rs[o].clear_retaining_capacity(),
+        .clear => |o| rs[o].clear(allocator),
         inline .run_optimize,
         .shrink_to_fit,
         => |o, t| _ = try @field(Bitmap, @tagName(t))(&rs[o], allocator),
@@ -80,7 +80,7 @@ fn zr_benchmark_op(
 
 const enable_frozen_ser = !std.debug.runtime_safety;
 
-fn cr_benchmark_op(
+pub fn cr_benchmark_op(
     op: fuzz.Op,
     rs: *[NUM_BITMAPS][*c]c.roaring_bitmap_t,
     ser_buf: []align(2) u8,
@@ -149,8 +149,8 @@ fn cr_benchmark_op(
             var ele: u32 = undefined;
             std.mem.doNotOptimizeAway(c.roaring_bitmap_select(rs[o.idx], o.val, &ele));
         },
-        inline .clear => |o, t| @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o]),
-        inline .run_optimize,
+        inline .clear,
+        .run_optimize,
         .shrink_to_fit,
         => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o])),
         .frozen_serialize => |o| if (enable_frozen_ser) {
@@ -263,16 +263,30 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         }
     }
 
-    // run, collect results
+    // warmup once each
     var cr_ops_len: usize = 0;
     var cr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
     var cr_total_ns: i96 = 0;
     var zr_ops_len: usize = 0;
     var zr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
     var zr_total_ns: i96 = 0;
-    for (0..5) |_| {
-        try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
-        try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
+    try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+    try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
+    // run, collect results
+    cr_ops_len = 0;
+    cr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
+    cr_total_ns = 0;
+    zr_ops_len = 0;
+    zr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
+    zr_total_ns = 0;
+    for (0..10) |i| {
+        if (i & 0b11 == 1) {
+            try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+            try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
+        } else {
+            try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
+            try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+        }
     }
 
     const write_csv_row = parsed_args.contains(.write_csv_row);
@@ -467,7 +481,11 @@ fn unixTimestampToUTC(timestamp: i64) DateTime {
 
 const Arg = enum { write_csv_row };
 pub fn main(init: std.process.Init) !void {
-    var args = try init.minimal.args.iterateAllocator(init.arena.allocator());
+    const gpa = if (builtin.cpu.arch.isWasm() and !builtin.link_libc)
+        std.heap.wasm_allocator
+    else
+        std.heap.c_allocator;
+    var args = try init.minimal.args.iterateAllocator(gpa);
     _ = args.next();
     var parsed_args: std.EnumSet(Arg) = .initEmpty();
     while (args.next()) |arg| {
@@ -475,7 +493,7 @@ pub fn main(init: std.process.Init) !void {
             return error.Arg);
     }
 
-    try runBenchmark(std.heap.c_allocator, init.io, parsed_args);
+    try runBenchmark(gpa, init.io, parsed_args);
 }
 
 const std = @import("std");
