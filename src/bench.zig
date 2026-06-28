@@ -63,13 +63,22 @@ pub fn zr_benchmark_op(
         inline .maximum,
         .minimum,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o])),
-        .frozen_serialize => |o, t| if (enable_frozen_ser) {
-            _ = try @field(Bitmap, @tagName(t))(rs[o], ser_buf);
+        .frozen_serialize => |o| {
+            try rs[o].frozen_serialize(ser_buf[0..rs[o].frozen_size_in_bytes()]);
+            std.mem.doNotOptimizeAway(ser_buf[0]);
         },
         .portable_serialize => |o| {
             var w = Io.Writer.fixed(ser_buf);
             var runflags: root.RunFlags = undefined;
+            std.mem.doNotOptimizeAway(try rs[o].portable_serialize(&w, &runflags));
+        },
+        .portable_deserialize => |o| {
+            var w = Io.Writer.fixed(ser_buf);
+            var runflags: root.RunFlags = undefined;
             _ = try rs[o].portable_serialize(&w, &runflags);
+            var x = try Bitmap.portable_deserialize(allocator, ser_buf);
+            defer x.deinit(allocator);
+            std.mem.doNotOptimizeAway(ser_buf[0]);
         },
         inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
             @field(Bitmap, @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
@@ -77,8 +86,6 @@ pub fn zr_benchmark_op(
         // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
     }
 }
-
-const enable_frozen_ser = !std.debug.runtime_safety;
 
 pub fn cr_benchmark_op(
     op: fuzz.Op,
@@ -153,16 +160,17 @@ pub fn cr_benchmark_op(
         .run_optimize,
         .shrink_to_fit,
         => |o, t| std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o])),
-        .frozen_serialize => |o| if (enable_frozen_ser) {
-            // disabled in debug builds due to:
-            // panic: null pointer passed as argument 2, which is declared to never be null
-            // src/c/roaring.c:17593:5: 0x13dc48f in roaring_bitmap_frozen_serialize
-            //     memcpy(key_zone, ra->keys, ra->size * sizeof(uint16_t));
+        .frozen_serialize => |o| if (rs[o].*.high_low_container.allocation_size != 0) {
             c.roaring_bitmap_frozen_serialize(rs[o], ser_buf.ptr);
         },
         .portable_serialize => |o| std.mem.doNotOptimizeAway(
             c.roaring_bitmap_portable_serialize(rs[o], ser_buf.ptr),
         ),
+        .portable_deserialize => |o| {
+            const size = c.roaring_bitmap_portable_serialize(rs[o], ser_buf.ptr);
+            const tmp = c.roaring_bitmap_portable_deserialize_safe(ser_buf.ptr, size);
+            c.roaring_bitmap_free(tmp);
+        },
         inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
             @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
         ),
@@ -225,7 +233,7 @@ fn runBenchmarkGeneric(
 /// count and time for each op
 const OpStats = std.EnumArray(fuzz.Op.Tag, struct { u64, Io.Duration });
 
-const sep = "-" ** 50 ++ "\n";
+const sep = "-" ** 52 ++ "\n";
 const fast = "⚡";
 const ok = "👍🏻";
 const slow = "🥔";
@@ -245,7 +253,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
     const extra_ops = try allocator.alloc(fuzz.Op, random.intRangeLessThan(u32, 250, 1000));
     defer allocator.free(extra_ops);
     for (extra_ops) |*op| {
-        switch (random.int(u8) % 4) {
+        switch (random.int(u8) % 5) {
             0 => op.* = .{ .minimum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
             1 => op.* = .{ .maximum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
             2 => op.* = .{ .contains = .{
@@ -259,6 +267,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
                 const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
                 op.* = .{ .contains_range = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } };
             },
+            4 => op.* = .{ .portable_deserialize = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
             else => unreachable,
         }
     }
@@ -367,7 +376,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
         });
 
     std.debug.print(sep ++ "individual ops: speed=ops/sec\n" ++ sep, .{});
-    std.debug.print("op                 cr speed zr speed #    ratio\n" ++ sep, .{});
+    std.debug.print("op                   cr speed zr speed #    ratio\n" ++ sep, .{});
     for (std.meta.tags(fuzz.Op.Tag), 0..) |op, i| {
         const cr_speed_op: u64 = cr_op_stats.get(op).@"0" * std.time.ns_per_s /
             @as(usize, @intCast(cr_op_stats.get(op).@"1".toNanoseconds()));
@@ -375,7 +384,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
             @as(usize, @intCast(zr_op_stats.get(op).@"1".toNanoseconds()));
         const zr_cr_ratio_op =
             @as(f32, @floatFromInt((zr_speed_op * 100_000) / cr_speed_op)) / 100_000;
-        std.debug.print("{t: <18} {B: <8.2} {B: <8.2} {: <4} {d: <5.2} {s}\n", .{
+        std.debug.print("{t: <20} {B: <8.2} {B: <8.2} {: <4} {d: <5.2} {s}\n", .{
             op,
             cr_speed_op,
             zr_speed_op,

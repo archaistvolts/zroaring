@@ -9,8 +9,8 @@ pub fn build(b: *std.Build) !void {
     options.addOption(bool, "run_slow_tests", b.option(bool, "run-slow-tests", "perform long running tests such as checkAllocationFailures(). default false.") orelse false);
     const bench_target = b.option(BenchTarget, "bench-target", "bench2 target");
     options.addOption(BenchTarget, "bench_target", bench_target orelse .zr);
-    const bench_op = b.option([]const u8, "bench-op", "bench2 op");
-    options.addOption(?[]const u8, "bench_op", bench_op);
+    const opt_bench_op = b.option([]const u8, "bench-op", "Benchmark a specific op.  A fuzz.Op tag name.  Results in zig-out/bin/bench-<bench-target>-<bench-op>, an executable which runs a single op on recorded crash corpus.");
+    options.addOption(?[]const u8, "bench_op", opt_bench_op);
 
     const options_mod = options.createModule();
     const use_llvm = b.option(bool, "llvm", "use llvm. null by default. needed when fuzzing with zig.") orelse null;
@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
 
-    const zrmod = b.addModule("zroaring", .{
+    const zr_mod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -46,11 +46,6 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "croaring", .module = translate_cr_mod },
         },
     });
-    const tests = b.addTest(.{
-        .root_module = test_mod,
-        .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
-        .use_llvm = use_llvm,
-    });
 
     const libcroaring = b.addLibrary(.{
         .name = "croaring",
@@ -62,13 +57,18 @@ pub fn build(b: *std.Build) !void {
     });
     libcroaring.root_module.addIncludePath(b.path("src/c"));
     libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
-    libcroaring.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    test_mod.linkLibrary(libcroaring);
+    if (!avx512) libcroaring.root_module.addCMacro("CROARING_COMPILER_SUPPORTS_AVX512", "0");
 
+    const tests = b.addTest(.{
+        .root_module = test_mod,
+        .filters = b.option([]const []const u8, "test-filter", "filter tests") orelse &.{},
+        .use_llvm = use_llvm,
+    });
+    test_mod.linkLibrary(libcroaring);
     b.step("test", "Run tests").dependOn(&b.addRunArtifact(tests).step);
     b.installArtifact(tests);
 
-    const lib = b.addLibrary(.{ .root_module = zrmod, .name = "zroaring" });
+    const lib = b.addLibrary(.{ .root_module = zr_mod, .name = "zroaring" });
     const docs = b.addInstallDirectory(.{
         .source_dir = lib.getEmittedDocs(),
         .install_dir = .{ .prefix = {} },
@@ -76,11 +76,6 @@ pub fn build(b: *std.Build) !void {
     });
     const docs_step = b.step("docs", "Generate documentation to zig-out/docs.");
     docs_step.dependOn(&docs.step);
-
-    const exe_check = b.addExecutable(.{ .name = "check", .root_module = zrmod });
-    const check = b.step("check", "Check if everything compiles");
-    check.dependOn(&exe_check.step);
-    check.dependOn(&tests.step);
 
     // AFL++ fuzzing exe
     if (b.option(bool, "fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
@@ -97,7 +92,7 @@ pub fn build(b: *std.Build) !void {
                 .stack_check = false,
                 .fuzz = true,
                 .imports = &.{
-                    .{ .name = "zroaring", .module = zrmod },
+                    .{ .name = "zroaring", .module = zr_mod },
                     .{ .name = "build-options", .module = options_mod },
                     .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                     .{ .name = "croaring", .module = translate_cr_mod },
@@ -125,7 +120,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "zroaring", .module = zrmod },
+                .{ .name = "zroaring", .module = zr_mod },
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "croaring", .module = translate_cr_mod },
@@ -155,9 +150,9 @@ pub fn build(b: *std.Build) !void {
         .dependOn(&b.addRunArtifact(gen_corpus).step);
 
     const afl_main = b.addExecutable(.{
-        .name = "afl-main",
+        .name = "afl-run",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/fuzz-main.zig"),
+            .root_source_file = b.path("src/fuzz-afl-run.zig"),
             .target = target,
             .link_libc = true,
             .imports = &.{
@@ -168,7 +163,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     b.installArtifact(afl_main);
-    b.step("afl-main", "fuzz a single afl/output file")
+    b.step("afl-run", "fuzz a single afl/output/ file")
         .dependOn(&b.addRunArtifact(afl_main).step);
 
     const bench_exe = b.addExecutable(.{
@@ -189,10 +184,11 @@ pub fn build(b: *std.Build) !void {
     bench_exe.root_module.linkLibrary(libcroaring);
     const bench_run = b.addRunArtifact(bench_exe);
     if (b.args) |args| bench_run.addArgs(args);
-    b.step("bench", "Run the zroaring benchmark").dependOn(&bench_run.step);
+    b.step("bench", "Run simple benchmark with CRoaring.").dependOn(&bench_run.step);
     b.installArtifact(bench_exe);
+
     const bench_exe2 = b.addExecutable(.{
-        .name = if (bench_op) |bo|
+        .name = if (opt_bench_op) |bo|
             b.fmt("bench-{t}-{s}", .{ bench_target orelse .zr, bo })
         else
             b.fmt("bench-{t}", .{bench_target orelse .zr}),
@@ -210,4 +206,38 @@ pub fn build(b: *std.Build) !void {
     });
     bench_exe2.root_module.linkLibrary(libcroaring);
     b.installArtifact(bench_exe2);
+
+    const exe_check = b.addExecutable(.{ .name = "check", .root_module = zr_mod });
+    const check = b.step("check", "Check if everything compiles");
+    check.dependOn(&exe_check.step);
+    check.dependOn(&tests.step);
+    check.dependOn(&bench_exe.step);
+    check.dependOn(&bench_exe2.step);
+    check.dependOn(&gen_corpus.step);
+
+    if (opt_bench_op) |bench_op| {
+        const gen_corpus_playback = b.addExecutable(.{
+            .name = "gen-corpus-playback",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bench-gen-corpus-playback.zig"),
+                .target = target,
+                .optimize = .Debug,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
+                    .{ .name = "build-options", .module = options_mod },
+                    .{ .name = "croaring", .module = translate_cr_mod },
+                    .{ .name = "zroaring", .module = zr_mod },
+                },
+            }),
+        });
+        gen_corpus_playback.root_module.linkLibrary(libcroaring);
+        const run_gen = b.addRunArtifact(gen_corpus_playback);
+        run_gen.addArg(bench_op);
+        const bench_options = b.addOptions();
+        const bin_name = b.fmt("corpus_replay_{s}_bin", .{bench_op});
+        bench_options.addOptionPath(bin_name, run_gen.addOutputFileArg(bin_name));
+        bench_exe2.root_module.addImport("bench_options", bench_options.createModule());
+        check.dependOn(&gen_corpus_playback.step);
+    }
 }

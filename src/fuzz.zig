@@ -83,6 +83,7 @@ pub const Op = union(enum) {
     run_optimize: u8,
     shrink_to_fit: u8,
     portable_serialize: u8,
+    portable_deserialize: u8,
     frozen_serialize: u8,
     minimum: u8,
     maximum: u8,
@@ -105,6 +106,7 @@ pub const Op = union(enum) {
     xor: BinOp,
     andnot: BinOp,
     lazy_or: BinOp,
+
     or_inplace: BinOp2, // two bitmap idx
     and_inplace: BinOp2,
     is_subset: BinOp2,
@@ -117,7 +119,6 @@ pub const Op = union(enum) {
 
     or_many: ManyOp, // many bitmap idx
 
-    // portable_deserialize, // TODO skipped due to slow/akward file write. could use mmap but not cross platform.
     // get_index, // TODO
 
     // bitmap idx with 1 u32 param
@@ -144,7 +145,7 @@ pub const Op = union(enum) {
     pub const Tag = std.meta.Tag(Op);
 };
 
-const crash_corpus: []const []const Op = @import("fuzz-crash-corpus.zon");
+pub const crash_corpus: []const []const Op = @import("fuzz-crash-corpus.zon");
 
 pub const MAX_VAL = 100_000_000;
 pub const MAX_RANGE_LEN = 500_000;
@@ -221,6 +222,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .run_optimize,
             .shrink_to_fit,
             .portable_serialize,
+            .portable_deserialize,
             .frozen_serialize,
             .minimum,
             .maximum,
@@ -343,6 +345,7 @@ const AflSmith = struct {
             .run_optimize,
             .shrink_to_fit,
             .portable_serialize,
+            .portable_deserialize,
             .frozen_serialize,
             .minimum,
             .maximum,
@@ -441,7 +444,7 @@ pub fn writeOpFile(ctx: AflCtx, ops: []const Op) !void {
 
 pub fn writeOp(op: Op, writer: *Io.Writer) !void {
     try writer.writeByte(@intFromEnum(op));
-    switch (op) {
+    switch (op) { // write idx for all ops
         inline else => |x| try writer.writeByte(if (@TypeOf(x) == u8) x else x.idx),
         .or_many => {},
     }
@@ -467,7 +470,8 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
         .xor,
         .andnot,
         .lazy_or,
-        => |o| try writer.writeAll(&.{ o.idx, o.src1, o.src2 }),
+        => |o| try writer.writeAll(&.{ o.src1, o.src2 }),
+        .equals,
         .or_inplace,
         .is_subset,
         .and_inplace,
@@ -476,7 +480,7 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
         .xor_cardinality,
         .andnot_cardinality,
         .jaccard_index,
-        => |o| try writer.writeAll(&.{ o.idx, o.src1 }),
+        => |o| try writer.writeAll(&.{o.src1}),
         .or_many,
         => |o| {
             try writer.writeByte(@intCast(o.idxs.len));
@@ -490,11 +494,91 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
         .run_optimize,
         .shrink_to_fit,
         .portable_serialize,
+        .portable_deserialize,
         .frozen_serialize,
-        .equals,
         .minimum,
         .maximum,
         => {},
+    }
+}
+
+pub fn readOp(r: *Io.Reader, buf: []u32) !Op {
+    const tag: Op.Tag = @enumFromInt(try r.takeByte());
+    switch (tag) {
+        inline .clear,
+        .run_optimize,
+        .shrink_to_fit,
+        .portable_serialize,
+        .portable_deserialize,
+        .frozen_serialize,
+        .minimum,
+        .maximum,
+        => |t| return @unionInit(Op, @tagName(t), try r.takeByte()),
+        inline .add,
+        .contains,
+        .rank,
+        .select,
+        => |t| {
+            const idx = try r.takeByte();
+            const val = try r.takeInt(u32, .little);
+            return @unionInit(Op, @tagName(t), .{ .idx = idx, .val = val });
+        },
+        .add_many => {
+            const idx = try r.takeByte();
+            const len = try r.takeByte();
+            for (buf[0..len]) |*v| v.* = try r.takeInt(u32, .little);
+            return .{ .add_many = .{ .idx = idx, .vals = buf[0..len] } };
+        },
+        inline .add_range_closed,
+        .contains_range,
+        .range_cardinality,
+        => |t| {
+            const idx = try r.takeByte();
+            const start = try r.takeInt(u32, .little);
+            const len = try r.takeInt(u32, .little);
+            _ = try r.takeInt(u32, .little); // skip val1, val2
+            _ = try r.takeInt(u32, .little);
+            return @unionInit(Op, @tagName(t), .{
+                .idx = idx,
+                .vals = .{ start, start + len + 1 },
+            });
+        },
+        .remove => {
+            const idx = try r.takeByte();
+            const pick_existing = try r.takeByte();
+            const val = try r.takeInt(u32, .little);
+            return .{ .remove = .{ .idx = idx, .val = val, .pick_existing = pick_existing } };
+        },
+        inline .@"and",
+        .@"or",
+        .xor,
+        .andnot,
+        .lazy_or,
+        => |t| {
+            const idx = try r.takeByte();
+            const src1 = try r.takeByte();
+            const src2 = try r.takeByte();
+            return @unionInit(Op, @tagName(t), .{ .idx = idx, .src1 = src1, .src2 = src2 });
+        },
+        inline .or_inplace,
+        .is_subset,
+        .and_inplace,
+        .and_cardinality,
+        .or_cardinality,
+        .xor_cardinality,
+        .andnot_cardinality,
+        .jaccard_index,
+        .equals,
+        => |t| {
+            const idx = try r.takeByte();
+            const src1 = try r.takeByte();
+            return @unionInit(Op, @tagName(t), .{ .idx = idx, .src1 = src1 });
+        },
+        .or_many => {
+            const len = try r.takeByte();
+            const idxs = try r.take(len);
+            return .{ .or_many = .{ .idxs = idxs } };
+        },
     }
 }
 
@@ -512,7 +596,7 @@ fn perform_op(
     const is_hashmap = Os == *[NUM_BITMAPS]HashMapOracle;
     comptime assert(is_cr or is_hashmap);
     switch (op) {
-        .add, // only print ops which may modify
+        .add, // only print ops which may mutate
         .remove,
         .@"and",
         .@"or",
@@ -532,8 +616,9 @@ fn perform_op(
         => |x| fuzzprint(".{{ .add_many = .{{ .idx = {}, .vals = .{any} }} }},\n", .{ x.idx, x.vals }),
         .or_many,
         => |x| fuzzprint(".{{ .or_many = .{{ .idxs = .{any} }} }},\n", .{x.idxs}),
-        // don't print ops which don't modify - usually not part of reproduction
+        // don't print ops which don't mutate - usually not part of reproduction
         .portable_serialize,
+        .portable_deserialize,
         .frozen_serialize,
         .equals,
         .minimum,
@@ -903,7 +988,7 @@ fn perform_op(
             );
         },
         .clear => |idx| {
-            rs[idx].clear_retaining_capacity();
+            rs[idx].clear(allocator);
             if (is_cr)
                 c.roaring_bitmap_clear(oracles[idx])
             else
@@ -926,18 +1011,38 @@ fn perform_op(
             var w = Io.Writer.Allocating.init(allocator);
             defer w.deinit();
             var runflags: zroaring.RunFlags = undefined;
-            const x = rs[idx].portable_serialize(&w.writer, &runflags) catch |e| switch (e) {
-                // this allows test "allocation failures" to pass
-                error.WriteFailed => return error.OutOfMemory,
+            const size = rs[idx].portable_serialize(&w.writer, &runflags) catch |e| switch (e) {
+                error.WriteFailed => return error.OutOfMemory, // allow allocation failures tests to pass
             };
-            const buf = try allocator.alloc(u8, x);
+            const buf = try allocator.alloc(u8, size);
             defer allocator.free(buf);
             if (is_cr) {
                 try testing.expectEqual(
                     c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr),
-                    x,
+                    size,
                 );
                 try testing.expectEqualSlices(u8, buf, w.written());
+            }
+        },
+        .portable_deserialize => |idx| {
+            const zbuf = try allocator.alloc(u8, rs[idx].portable_size_in_bytes());
+            defer allocator.free(zbuf);
+            var w = Io.Writer.fixed(zbuf);
+            var runflags: zroaring.RunFlags = undefined;
+            const zrsize = rs[idx].portable_serialize(&w, &runflags) catch |e| switch (e) {
+                error.WriteFailed => return error.OutOfMemory, // allows allocation failures test to pass
+            };
+            var z = try Bitmap.portable_deserialize(allocator, zbuf);
+            defer z.deinit(allocator);
+
+            if (is_cr) {
+                const buf = try allocator.alloc(u8, z.portable_size_in_bytes());
+                defer allocator.free(buf);
+                const crsize = c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr);
+                const cr = c.roaring_bitmap_portable_deserialize(buf.ptr);
+                defer c.roaring_bitmap_free(cr);
+                try testing.expectEqual(crsize, zrsize);
+                try testing.expectEqualSlices(u8, buf, zbuf);
             }
         },
         .frozen_serialize => |idx| {
@@ -950,11 +1055,14 @@ fn perform_op(
                     c.roaring_bitmap_frozen_size_in_bytes(oracles[idx]),
                     size,
                 );
-                // TODO repro and file bug for UB in c.roaring_bitmap_frozen_serialize here
-                // const buf2 = try allocator.alloc(u8, size);
-                // defer allocator.free(buf2);
-                // c.roaring_bitmap_frozen_serialize(oracle, buf2.ptr);
-                // try testing.expectEqualSlices(u8, buf, buf2);
+                // TODO is it documented that c.roaring_bitmap_frozen_serialize
+                // needs a non-empty bitmap.  if not make issue.
+                if (oracles[idx].*.high_low_container.size != 0) {
+                    const buf2 = try allocator.alloc(u8, size);
+                    defer allocator.free(buf2);
+                    c.roaring_bitmap_frozen_serialize(oracles[idx], buf2.ptr);
+                    try testing.expectEqualSlices(u8, buf, buf2);
+                }
             }
         },
         .equals => |o| {
@@ -1161,8 +1269,9 @@ fn perform_op(
                         total_matched += zrn;
                     }
                 },
-                .or_many, // excluded - no idx field
+                .or_many, // excluded - not slow
                 .portable_serialize,
+                .portable_deserialize,
                 .frozen_serialize,
                 .equals,
                 .minimum,
