@@ -40,8 +40,8 @@ pub const Cookie = extern struct {
 pub const Typecode = enum(u2) { shared, bitset, array, run };
 pub const Rle16 = extern struct { value: u16, length: u16 };
 pub const KeyCard = extern struct { key: u16, cardinality_minus1: u16 };
-/// a bitset of u8 which can represent MAX_CONTAINERS. answers which containers are
-/// run containers: `[8192]u8`.
+/// a bitset of u8 which can represent MAX_CONTAINERS: `[8192]u8`. answers which
+/// containers are run containers.
 pub const RunFlags = [constants.MAX_CONTAINERS / 8]u8;
 
 test {

@@ -60,6 +60,7 @@ pub const Flag = enum(u8) {
 
 pub const free = deinit;
 
+// free all allocated memory and enter empty state
 pub fn deinit(r: *Bitmap, allocator: Allocator) void {
     if (r.array != empty.array)
         r.array.destroy(allocator);
@@ -135,9 +136,7 @@ pub fn info_from_file(io: Io, bitmap_file: Io.File) !Info {
 
 /// reads only the first 2 fields, cookie and len.
 /// advances `freader` by 4 bytes or 8 bytes when `magic` == `SERIAL_COOKIE`.
-pub fn info_from_file_reader(freader: *Io.File.Reader) !Info {
-    assert(freader.logicalPos() == 0);
-    const r = &freader.interface;
+pub fn info_from_file_reader(r: *Io.Reader) !Info {
     const cookie = try r.takeStruct(root.Cookie, .little);
     if (cookie.magic != .SERIAL_COOKIE and
         cookie.magic != .SERIAL_COOKIE_NO_RUNCONTAINER)
@@ -151,31 +150,35 @@ pub fn info_from_file_reader(freader: *Io.File.Reader) !Info {
     return .{ .cookie = cookie, .len = len };
 }
 
-/// Allocates and returns a Bitmap, read from `bitmap_file` which must be a
-/// seekable/positional file. `read_buf` is a temporary buffer.
-/// TODO non-positional/streaming files.
-pub fn portable_deserialize(
+/// Read bitmap from a serialized buffer.
+///
+/// This is meant to be compatible with the Java and Go versions:
+/// https://github.com/RoaringBitmap/RoaringFormatSpec
+pub fn portable_deserialize(allocator: Allocator, buf: []const u8) !Bitmap {
+    var r = Io.Reader.fixed(buf);
+    return try portable_deserialize_reader(allocator, &r);
+}
+
+/// Allocates and returns a Bitmap read from `bitmap_file`. `read_buf` is a
+/// temporary buffer.
+pub fn portable_deserialize_file(
     allocator: Allocator,
     io: Io,
     bitmap_file: Io.File,
     read_buf: []u8,
 ) !Bitmap {
     var freader = bitmap_file.reader(io, read_buf);
-    return try portable_deserialize_file_reader(allocator, &freader);
+    const r = try portable_deserialize_reader(allocator, &freader.interface);
+    assert(freader.logicalPos() == r.portable_size_in_bytes());
+    return r;
 }
 
-/// Allocates and returns a Bitmap, read from `bitmap_freader` which must be a
-/// seekable/positional file.
-/// TODO non-positional/streaming files.
-pub fn portable_deserialize_file_reader(
-    allocator: Allocator,
-    bitmap_file_reader: *Io.File.Reader,
-) !Bitmap {
-    const ainfo = try info_from_file_reader(bitmap_file_reader);
+/// Allocates and returns a Bitmap read from `r`.
+pub fn portable_deserialize_reader(allocator: Allocator, r: *Io.Reader) !Bitmap {
+    const ainfo = try info_from_file_reader(r);
     trace(@src(), "{}", .{ainfo});
 
-    const alens = Model.Lengths{ .capacity = ainfo.len };
-    const array = try Model.create(allocator, alens);
+    const array = try Model.create(allocator, .{ .capacity = ainfo.len });
     errdefer array.destroy(allocator);
 
     const blocks = try allocator.alloc(Block, ainfo.len * C.BITSET_BLOCKS);
@@ -194,16 +197,14 @@ pub fn portable_deserialize_file_reader(
     ret.array.ptr(.flags).* = 0;
 
     var run_flags: root.RunFlags = undefined;
-    try ret.deserialize_file_reader(bitmap_file_reader, &run_flags);
-    assert(bitmap_file_reader.logicalPos() == ret.portable_size());
+    try ret.deserialize_reader(r, &run_flags);
 
-    const r = &bitmap_file_reader.interface;
     const containers = ret.array.ptr(.containers);
     const blocks_start = ret.blocks.items;
     const blocks_end = ret.blocks.items + ret.blocks.capacity;
     var curblock = blocks_start;
-    // read bitset blocks to end in reverse to keep them together so they can be
-    // moved into separate allocation.
+    // write bitset blocks from blocks_end in reverse. keep together so they can
+    // be moved into separate allocation.
     var curblock_bs = blocks_end;
     for (0..ret.array.ptr(.len).*) |k| { // read container data
         const c = &containers[k];
@@ -251,9 +252,6 @@ pub fn portable_deserialize_file_reader(
         }
     }
 
-    assert(builtin.os.tag == .wasi or builtin.os.tag == .windows or // FIXME: remove this. why fail on wasi and windows?
-        bitmap_file_reader.size == null or bitmap_file_reader.atEnd());
-
     // move bitset_blocks into a separate allocation, copy, and fixup bitset
     // container offsets.
     ret.bitset_blocks.len = @intCast(blocks_end - curblock_bs);
@@ -271,20 +269,14 @@ pub fn portable_deserialize_file_reader(
     ret.blocks.items = (try allocator.realloc(ret.blocks.items[0..ret.blocks.capacity], ret.blocks.len)).ptr;
     ret.blocks.capacity = ret.blocks.len;
 
-    // FIXME - portable_size_in_bytes() doesn't match logicalPos() on testdatawithruns - 48056 48050
-    if (bitmap_file_reader.logicalPos() != ret.portable_size_in_bytes()) {
-        // trace(@src(), "Error: readerpos={} portablesize={}", .{ freader.logicalPos(), ret.portable_size_in_bytes() });
-        // assert(false);
-    }
-
     return ret;
 }
 
 /// read/write all header cardinalities and keys along with run_flags
 /// when present.  stops before container data.
-pub fn deserialize_file_reader(
+pub fn deserialize_reader(
     rb: Bitmap,
-    freader: *Io.File.Reader,
+    r: *Io.Reader,
     run_flags: ?*root.RunFlags,
 ) !void {
     const array = rb.array;
@@ -292,7 +284,6 @@ pub fn deserialize_file_reader(
     assert(magic == .SERIAL_COOKIE or magic == .SERIAL_COOKIE_NO_RUNCONTAINER); // TODO
     const len = array.ptr(.len).*;
     assert(len <= C.MAX_KEY_CARDINALITY); // data must be corrupted
-    const r = &freader.interface;
     const hasruns = magic == .SERIAL_COOKIE;
 
     if (hasruns) {
@@ -308,8 +299,6 @@ pub fn deserialize_file_reader(
     // skip file offsets
     if (!hasruns or (hasruns and len >= C.NO_OFFSET_THRESHOLD))
         _ = try r.discard(.limited(len * @sizeOf(u32)));
-
-    assert(freader.logicalPos() == rb.portable_size());
 }
 
 /// insert key and container at index i, increment array.len by 1.
@@ -802,9 +791,7 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     ))
         return false;
 
-    for (h1.ptr(.containers)[0..len], h2.ptr(.containers)) |*c1, *c2| {
-        assert(c1 != c2);
-
+    for (h1.ptr(.containers)[0..len], h2.ptr(.containers)) |c1, c2| {
         if (!c1.equals(r1, c2, r2))
             return false;
     }
@@ -1403,6 +1390,7 @@ fn arena_alloc(T: type, arena: *[*]u8, count: usize) []align(1) T {
     return @as([]align(1) T, @ptrCast(arena.*[0..size]))[0..count];
 }
 
+/// in safe builds, `buf` must have size `r.frozen_size_in_bytes()`.
 pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
     // Note: we do not require user to supply a specifically aligned buffer.
 
@@ -1541,6 +1529,7 @@ fn clear_containers(r: Bitmap) void {
     }
 }
 
+/// set lengths to 0.  retains allocated memory.
 pub fn clear_retaining_capacity(r: *Bitmap) void {
     if (r.is_empty()) return;
     @memset(r.array.slice(.containers), undefined);
@@ -1549,6 +1538,9 @@ pub fn clear_retaining_capacity(r: *Bitmap) void {
     r.blocks.len = 0;
     r.bitset_blocks.len = 0;
 }
+
+/// Same as `deinit` because we don't free a Bitmap pointer like CRoaring.
+pub const clear = deinit;
 
 pub fn remove(r: *Bitmap, allocator: Allocator, val: u32) !void {
     _ = try r.remove_checked(allocator, val);
@@ -2547,7 +2539,7 @@ test Bitmap {
         const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
         defer f.close(testio);
         var rbuf: [256]u8 = undefined;
-        var rb = try portable_deserialize(testing.allocator, testio, f, &rbuf);
+        var rb = try portable_deserialize_file(testing.allocator, testio, f, &rbuf);
         defer rb.deinit(testing.allocator);
         try testing.expectEqual(.SERIAL_COOKIE_NO_RUNCONTAINER, rb.array.ptr(.magic).*);
         try validateTestdataFile(rb);
@@ -2557,7 +2549,7 @@ test Bitmap {
         const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
         defer f.close(testio);
         var rbuf: [256]u8 = undefined;
-        var rb = try portable_deserialize(testing.allocator, testio, f, &rbuf);
+        var rb = try portable_deserialize_file(testing.allocator, testio, f, &rbuf);
         defer rb.deinit(testing.allocator);
         try testing.expectEqual(.SERIAL_COOKIE, rb.array.ptr(.magic).*);
         try validateTestdataFile(rb);

@@ -65,7 +65,7 @@ pub const Container = packed struct(u64) {
             r.blocks.items[c.blockoffset..][0..c.nblocks()];
     }
 
-    pub fn get_blocks_tagged(c: Container, comptime typecode: Typecode, r: Bitmap) []Block {
+    pub inline fn get_blocks_tagged(c: Container, comptime typecode: Typecode, r: Bitmap) []Block {
         assert(c.typecode == typecode);
         return if (typecode == .bitset)
             r.bitset_blocks.items[c.blockoffset..][0..c.nblocks()]
@@ -75,7 +75,7 @@ pub const Container = packed struct(u64) {
 
     /// return container blocks as aligned slice of u16 when typecode == .array etc.
     /// slices by capacity.
-    pub fn blocks_as(
+    pub inline fn blocks_as(
         c: Container,
         comptime typecode: root.Typecode,
         r: Bitmap,
@@ -653,7 +653,7 @@ pub const Container = packed struct(u64) {
         return true;
     }
 
-    inline fn array_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+    fn array_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
         if (c1.cardinality != c2.cardinality)
             return false;
         return misc.memequals(
@@ -663,7 +663,7 @@ pub const Container = packed struct(u64) {
         );
     }
 
-    inline fn run_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
+    fn run_container_equals(c1: Container, x1: Bitmap, c2: Container, x2: Bitmap) bool {
         if (c1.cardinality != c2.cardinality)
             return false;
         return misc.memequals(
@@ -673,25 +673,22 @@ pub const Container = packed struct(u64) {
         );
     }
 
-    pub inline fn equals(
-        c1p: *const Container,
+    pub fn equals(
+        c1: Container,
         x1: Bitmap,
-        c2p: *const Container,
+        c2: Container,
         x2: Bitmap,
     ) bool {
-        assert(c1p != c2p);
-        const c1 = c1p.*;
-        const c2 = c2p.*;
-        return c1 == c2 or switch (misc.pair(c1.typecode, c2.typecode)) { // zig fmt: off
-misc.pair(.bitset, .bitset) =>      bitset_container_equals(c1, x1, c2, x2),
-misc.pair(.array, .array) =>         array_container_equals(c1, x1, c2, x2),
-misc.pair(.run, .run) =>               run_container_equals(c1, x1, c2, x2),
-misc.pair(.bitset, .run) =>     run_container_equals_bitset(c2, x2, c1, x1),
-misc.pair(.run, .bitset) =>     run_container_equals_bitset(c1, x1, c2, x2),
-misc.pair(.bitset, .array) => array_container_equals_bitset(c2, x2, c1, x1),
-misc.pair(.array, .bitset) => array_container_equals_bitset(c1, x1, c2, x2),
-misc.pair(.array, .run) =>       run_container_equals_array(c2, x2, c1, x1),
-misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // zig fmt: on
+        return switch (misc.pair(c1.typecode, c2.typecode)) { // zig fmt: off
+misc.pair(.bitset, .bitset) =>       bitset_container_equals(c1, x1, c2, x2),
+misc.pair(.array,  .array) =>         array_container_equals(c1, x1, c2, x2),
+misc.pair(.run,    .run) =>             run_container_equals(c1, x1, c2, x2),
+misc.pair(.bitset, .run) =>      run_container_equals_bitset(c2, x2, c1, x1),
+misc.pair(.run,    .bitset) =>   run_container_equals_bitset(c1, x1, c2, x2),
+misc.pair(.bitset, .array) =>  array_container_equals_bitset(c2, x2, c1, x1),
+misc.pair(.array,  .bitset) => array_container_equals_bitset(c1, x1, c2, x2),
+misc.pair(.array,  .run) =>       run_container_equals_array(c2, x2, c1, x1),
+misc.pair(.run,    .array) =>     run_container_equals_array(c1, x1, c2, x2), // zig fmt: on
             else => unreachable,
         };
     }
@@ -1107,18 +1104,25 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         @memset(bc.get_blocks_tagged(.bitset, r), @splat(0));
     }
 
-    pub fn bitset_container_create(
+    pub fn bitset_container_create_noinit(
         allocator: Allocator,
         r: *Bitmap,
     ) !Container {
         try r.ensure_unused_capacity(allocator, 1, C.BITSET_BLOCKS, .bitset_blocks);
         defer r.bitset_blocks.len += C.BITSET_BLOCKS;
-        const bc = Container{
+        return .{
             .typecode = .bitset,
             .cardinality = 0,
             .blockoffset = @intCast(r.bitset_blocks.len),
             .nblocks_minus1 = C.BITSET_BLOCKS - 1,
         };
+    }
+
+    pub fn bitset_container_create(
+        allocator: Allocator,
+        r: *Bitmap,
+    ) !Container {
+        const bc = try bitset_container_create_noinit(allocator, r);
         bitset_container_clear(bc, r.*);
         return bc;
     }
@@ -1828,7 +1832,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             src2.blocks_as(.bitset, x2.*).ptr,
         );
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
-            dst.* = try bitset_container_create(allocator, dstr);
+            dst.* = try bitset_container_create_noinit(allocator, dstr);
             _ = bitset_container_and_nocard(
                 src1.blocks_as(.bitset, x1.*).ptr,
                 src2.blocks_as(.bitset, x2.*).ptr,
@@ -3015,7 +3019,6 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     /// create bitset, union with run/array containers c1 and c2, then run
     /// optimize. this is a workaround from croaring due to nblocks_minus1 limit
     /// [0, C.BITSET_BLOCKS).
-    // TODO can we do better than this?
     fn run_array_conatiner_inplace_union(
         c1: *Container,
         allocator: Allocator,
@@ -3026,12 +3029,13 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         const c1id = c1 - x1.array.ptr(.containers);
         const resultid = x1.array.ptr(.len).*;
         const result = try bitset_container_create(allocator, x1);
+        // TODO remove hack.  maybe change convert_run_optimize somehow?
         // temporarily insert result into containers to appease
-        // convert_run_optimize which needs a pointer to containers, not a
-        // stack local
+        // convert_run_optimize which needs a pointer to containers, and not a
+        // stack local.
         try x1.insert_new_key_value_at(allocator, undefined, result, resultid);
         defer {
-            if (!x1.is_empty()) x1.array.ptr(.len).* -|= 1;
+            if (!x1.is_empty()) x1.array.ptr(.len).* -= 1;
         }
         const resultptr = &x1.array.ptr(.containers)[resultid];
         array_bitset_container_union(c2, x2, resultptr, x1, resultptr, x1);
@@ -3159,7 +3163,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             misc.pair(.array, .bitset) => {
                 // c1 is an array, so no in-place possible
                 const c1id = c1 - x1.array.ptr(.containers);
-                var result = try bitset_container_create(allocator, x1);
+                var result = try bitset_container_create_noinit(allocator, x1);
                 array_bitset_container_union(&x1.array.ptr(.containers)[c1id], x1, c2, x2, &result, x1);
                 return result;
             },
@@ -3175,7 +3179,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             misc.pair(.run, .bitset) => {
                 if (run_container_is_full(c1.*, x1.*)) return c1.*;
                 const c1id = c1 - x1.array.ptr(.containers);
-                var result = try bitset_container_create(allocator, x1);
+                var result = try bitset_container_create_noinit(allocator, x1);
                 run_bitset_container_union(&x1.array.ptr(.containers)[c1id], x1, c2, x2, &result, x1);
                 return result;
             },
@@ -3211,7 +3215,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         var result: Container = .uninit;
         switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => {
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 bitset_container_or(c1, x1, c2, x2, &result, dstr);
             },
             misc.pair(.array, .array) => {
@@ -3222,18 +3226,18 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 result = try result.convert_run_to_efficient_container_and_free(allocator, dstr);
             },
             misc.pair(.bitset, .array) => {
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 array_bitset_container_union(c2, x2, c1, x1, &result, dstr);
             },
             misc.pair(.array, .bitset) => {
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 array_bitset_container_union(c1, x1, c2, x2, &result, dstr);
             },
             misc.pair(.bitset, .run) => {
                 if (run_container_is_full(c2.*, x2.*)) {
                     try run_container_copy(c2.*, allocator, &result, c2.blocks_as(.run, x2.*).ptr, dstr);
                 } else {
-                    result = try bitset_container_create(allocator, dstr);
+                    result = try bitset_container_create_noinit(allocator, dstr);
                     run_bitset_container_union(c2, x2, c1, x1, &result, dstr);
                 }
             },
@@ -3241,7 +3245,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 if (run_container_is_full(c1.*, x1.*)) {
                     try c1.run_container_copy(allocator, &result, c1.blocks_as(.run, x1.*).ptr, dstr);
                 } else {
-                    result = try bitset_container_create(allocator, dstr);
+                    result = try bitset_container_create_noinit(allocator, dstr);
                     run_bitset_container_union(c1, x1, c2, x2, &result, dstr);
                 }
             },
@@ -3283,7 +3287,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dst: *Container,
         dstr: *Bitmap,
     ) !void {
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         bitset_container_xor(src1, x1, src2, x2, dst, dstr);
         if (dst.cardinality <= C.DEFAULT_MAX_SIZE) {
             const answer = try array_container_from_bitset(dst, allocator, dstr);
@@ -3333,7 +3337,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         bitset_container_copy(dst, dstr, src2.*, x2.*);
         dst.cardinality = @intCast(misc.bitset_flip_list_withcard(
             dst.blocks_as(.bitset, dstr.*).ptr,
@@ -3395,7 +3399,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         bitset_container_copy(dst, dstr, src2.*, x2.*);
         const runs = src1.blocks_as(.run, x1.*);
         const dwords = dst.blocks_as(.bitset, dstr.*);
@@ -3655,7 +3659,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         const card = bitset_container_andnot(src1, x1, src2, x2, dst, dstr);
 
         if (card <= C.DEFAULT_MAX_SIZE) {
@@ -3713,7 +3717,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         bitset_container_copy(dst, dstr, src1.*, x1.*);
         dst.cardinality = @truncate(misc.bitset_clear_list(
             dst.blocks_as(.bitset, dstr.*).ptr,
@@ -3764,7 +3768,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        dst.* = try bitset_container_create(allocator, dstr);
+        dst.* = try bitset_container_create_noinit(allocator, dstr);
         bitset_container_copy(dst, dstr, src1.*, x1.*);
         const src2runs = src2.blocks_as(.run, x2.*);
         const dstwords = dst.blocks_as(.bitset, dstr.*);
@@ -4837,7 +4841,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
             },
             misc.pair(.array, .bitset) => {
                 // c1 is an array, so no in-place possible
-                result = try bitset_container_create(allocator, x1);
+                result = try bitset_container_create_noinit(allocator, x1);
                 const c1b = &x1.array.ptr(.containers)[c1id];
                 const c2b = &x2.array.ptr(.containers)[c2id];
                 array_bitset_container_lazy_union(c1b, x1, c2b, x2, &result, x1); // is lazy
@@ -4857,7 +4861,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 if (run_container_is_full(c1.*, x1.*)) {
                     return c1.*;
                 }
-                result = try bitset_container_create(allocator, x1);
+                result = try bitset_container_create_noinit(allocator, x1);
                 const c1b = &x1.array.ptr(.containers)[c1id];
                 const c2b = &x2.array.ptr(.containers)[c2id];
                 run_bitset_container_lazy_union(c1b, x1, c2b, x2, &result, x1); //  lazy
@@ -5011,7 +5015,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
         const c2id = c2 - x2.array.ptr(.containers);
         switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => {
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 _ = bitset_container_or_nocard(
                     c1.blocks_as(.bitset, x1.*).ptr,
                     c2.blocks_as(.bitset, x2.*).ptr,
@@ -5036,13 +5040,13 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                 return try convert_run_to_efficient_container_and_free(result, allocator, dstr);
             },
             misc.pair(.bitset, .array) => {
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 array_bitset_container_lazy_union(c2, x2, c1, x1, &result, dstr); // is lazy
                 return result;
             },
             misc.pair(.array, .bitset) => {
                 // c1 is an array, so no in-place possible
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 array_bitset_container_lazy_union(c1, x1, c2, x2, &result, dstr); // is lazy
                 return result;
             },
@@ -5054,7 +5058,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                     try run_container_copy(c2b, allocator, &result, c2runs, dstr);
                     return result;
                 }
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 const c1b = &x1.array.ptr(.containers)[c1id];
                 const c2b = &x2.array.ptr(.containers)[c2id];
                 run_bitset_container_lazy_union(c2b, x2, c1b, x1, &result, dstr); // is lazy
@@ -5068,7 +5072,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
                     try run_container_copy(c1b, allocator, &result, c1runs, dstr);
                     return result;
                 }
-                result = try bitset_container_create(allocator, dstr);
+                result = try bitset_container_create_noinit(allocator, dstr);
                 run_bitset_container_lazy_union(c1, x1, c2, x2, &result, dstr); //  lazy
                 return result;
             },
@@ -5457,7 +5461,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     /// Moves the iterator to the next entry. Returns true if a value is present.
-    fn iterator_next(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
+    pub fn iterator_next(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
         switch (c.typecode) {
             .bitset => {
                 const words = c.blocks_as(.bitset, r);
@@ -5505,7 +5509,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     /// Moves the iterator to the previous entry. Returns true if a value is present.
-    fn iterator_prev(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
+    pub fn iterator_prev(c: Container, r: Bitmap, it: *Iterator, value: *u16) bool {
         switch (c.typecode) {
             .bitset => {
                 it.index -= 1;
@@ -5544,7 +5548,7 @@ misc.pair(.run, .array) =>       run_container_equals_array(c1, x1, c2, x2), // 
     }
 
     /// Moves the iterator to the first element >= val. Returns true if found.
-    fn iterator_lower_bound(c: Container, r: Bitmap, it: *Iterator, value_out: *u16, val: u16) bool {
+    pub fn iterator_lower_bound(c: Container, r: Bitmap, it: *Iterator, value_out: *u16, val: u16) bool {
         switch (c.typecode) {
             .bitset => {
                 const words = c.blocks_as(.bitset, r);

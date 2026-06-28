@@ -1170,7 +1170,7 @@ pub fn bitset_flip_list_withcard(
         const load = words[offset];
         const newload = load ^ (@as(u64, 1) << index);
         const inc: u32 = @truncate(1 -% ((load >> index) & 1) * 2); // avoid branch
-        std.debug.assert(inc == std.math.maxInt(u32) or inc == 1); //  +1 or -1
+        std.debug.assert(inc == math.maxInt(u32) or inc == 1); //  +1 or -1
         card_out +%= inc;
         words[offset] = newload;
     }
@@ -1319,50 +1319,56 @@ pub fn bitset_extract_setbits_avx2(
     return @intCast(outcur - out);
 }
 
-pub inline fn memequals(
-    s1: [*]align(C.BLOCK_ALIGN) const u8,
-    s2: [*]align(C.BLOCK_ALIGN) const u8,
+pub inline fn cmpBlock(
+    a: [*]const u8,
+    b: [*]const u8,
+) root.BlockMask {
+    const ablk: [*]const Block = @ptrCast(@alignCast(a[0..C.BLOCK_SIZE]));
+    const bblk: [*]const Block = @ptrCast(@alignCast(b[0..C.BLOCK_SIZE]));
+    return @bitCast(ablk[0] == bblk[0]);
+}
+
+pub fn memequals(
+    a: [*]align(C.BLOCK_ALIGN) const u8,
+    b: [*]align(C.BLOCK_ALIGN) const u8,
     n: usize,
 ) bool {
-    var ptr1 = s1;
-    var ptr2 = s2;
-    const end1 = @intFromPtr(ptr1 + n);
-    const size8 = @sizeOf(u64);
-    const sizeb = C.BLOCK_SIZE;
-    const end8 = @intFromPtr(ptr1 + n / size8 * size8);
-    const end32 = @intFromPtr(ptr1 + n / sizeb * sizeb);
+    if (a == b) return true;
 
-    while (@intFromPtr(ptr1) < end32) {
-        const r1: Block = ptr1[0..C.BLOCK_SIZE].*;
-        const r2: Block = ptr2[0..C.BLOCK_SIZE].*;
-        const mask: root.BlockMask = @bitCast(r1 == r2);
-        if (mask != std.math.maxInt(root.BlockMask))
+    const B = C.BLOCK_SIZE;
+    var i: usize = 0;
+    while (i + B * 4 <= n) : (i += B * 4) {
+        if (cmpBlock(a + i + B * 0, b + i + B * 0) &
+            cmpBlock(a + i + B * 1, b + i + B * 1) &
+            cmpBlock(a + i + B * 2, b + i + B * 2) &
+            cmpBlock(a + i + B * 3, b + i + B * 3) !=
+            math.maxInt(root.BlockMask))
             return false;
-        ptr1 += sizeb;
-        ptr2 += sizeb;
     }
-
-    var ptr18: [*]align(@alignOf(u64)) const u8 = ptr1;
-    var ptr28: [*]align(@alignOf(u64)) const u8 = ptr2;
-    while (@intFromPtr(ptr18) < end8) {
-        const v1: u64 = @bitCast(ptr18[0..size8].*);
-        const v2: u64 = @bitCast(ptr28[0..size8].*);
-        if (v1 != v2)
+    while (i + B * 2 <= n) : (i += B * 2) {
+        if (cmpBlock(a + i + B * 0, b + i + B * 0) &
+            cmpBlock(a + i + B * 1, b + i + B * 1) !=
+            math.maxInt(root.BlockMask))
             return false;
-        ptr18 += size8;
-        ptr28 += size8;
     }
-
-    var ptr11: [*]const u8 = ptr18;
-    var ptr21: [*]const u8 = ptr28;
-    while (@intFromPtr(ptr11) < end1) {
-        if (ptr11[0] != ptr21[0])
+    while (i + B <= n) : (i += B) {
+        if (cmpBlock(a + i + B * 0, b + i + B * 0) !=
+            math.maxInt(root.BlockMask))
             return false;
-        ptr11 += 1;
-        ptr21 += 1;
     }
-
-    return true;
+    // tail compare
+    //
+    // TODO remove local Blocks and memcpy.  instead zero block padding when blocks
+    // are allocated.
+    const tail = n - i;
+    assert(tail < B);
+    var ablock: Block = @splat(0);
+    var bblock: Block = @splat(0);
+    const aptr: [*]u8 = @ptrCast(&ablock);
+    const bptr: [*]u8 = @ptrCast(&bblock);
+    @memcpy(aptr[0..tail], a + i);
+    @memcpy(bptr[0..tail], b + i);
+    return cmpBlock(aptr, bptr) == std.math.maxInt(root.BlockMask);
 }
 
 pub const pshufb =
@@ -1479,3 +1485,4 @@ const root = @import("root.zig");
 const C = root.constants;
 const Block = root.Block;
 const builtin = @import("builtin");
+const math = std.math;
