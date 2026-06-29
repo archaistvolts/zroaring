@@ -13,7 +13,7 @@ set key horizontal maxcolumns 5
 set key spacing 0.8
 set key samplen 1
 unset xtics
-set ytics 0, 1, 3
-set yrange [0:3]
+set ytics 0, 0.5, 2
+set yrange [0:2]
 
 plot for [op in allops] "bench-data.csv" using 1:(column(op."_ratio")) with linespoints title op

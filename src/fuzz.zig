@@ -77,13 +77,15 @@ test "croaring oracle crashes" {
     }
 }
 
-/// all ops have a bitmap idx.  Rest have additional params
+/// all ops have a bitmap idx. Rest have additional params.
+///
+/// DONT RE-ORDER FIELDS - must be kept in sync with testdata/bench-data.csv
+/// ordering to avoid breaking bench charts
 pub const Op = union(enum) {
     clear: u8, // bitmap idx only
     run_optimize: u8,
     shrink_to_fit: u8,
     portable_serialize: u8,
-    portable_deserialize: u8,
     frozen_serialize: u8,
     minimum: u8,
     maximum: u8,
@@ -118,6 +120,8 @@ pub const Op = union(enum) {
     jaccard_index: BinOp2,
 
     or_many: ManyOp, // many bitmap idx
+
+    portable_deserialize: u8,
 
     // get_index, // TODO
 
