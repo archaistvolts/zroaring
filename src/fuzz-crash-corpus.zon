@@ -2131,4 +2131,15 @@
         .{ .remove = .{ .idx = 0, .val = 26307108, .pick_existing = 116 } },
         .{ .add_range_closed = .{ .idx = 1, .vals = .{ 10581678, 10582341 } } },
     },
+    .{
+        .{ .add_range_closed = .{ .idx = 2, .vals = .{ 80880660, 81461812 } } },
+        .{ .add_many = .{ .idx = 7, .vals = .{ 72148091, 6293303, 54776974, 79684196, 54776974, 2726847, 79039423 } } },
+        .{ .or_many = .{ .idxs = .{ 3, 6, 5, 2, 7, 7, 6, 2 } } },
+        .{ .lazy_or = .{ .idx = 2, .src1 = 3, .src2 = 3 } },
+        .{ .or_inplace = .{ .idx = 2, .src1 = 0 } },
+        .{ .andnot = .{ .idx = 7, .src1 = 6, .src2 = 2 } },
+        .{ .run_optimize = 3 },
+        .{ .is_subset = .{ .idx = 0, .src1 = 3 } },
+        .{ .or_inplace = .{ .idx = 3, .src1 = 2 } },
+    },
 }

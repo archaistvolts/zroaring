@@ -20,16 +20,12 @@ fn validateRoundTrip(
     for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
             const key, const val = [2]u16{ @truncate(v >> 16), @truncate(v) };
-            misc.trace(@src(), "Bitmap missing value {}:0x{x} hb/lb {}/{}:0x{x}/0x{x}, #containers {} at values index {}", .{ v, v, key, val, key, val, zr.array.ptr(.len).*, i });
-            misc.trace(@src(), "  keys {}", .{zr.array.ptr(.len).*});
+            misc.trace(@src(), "Bitmap missing value {}:0x{x} hb/lb {}/{}:0x{x}/0x{x}, #containers {} at values index {}", .{ v, v, key, val, key, val, zr.array.len, i });
+            misc.trace(@src(), "  keys {}", .{zr.array.len});
             misc.trace(@src(), "  values {} index {}", .{ values.len, zr.get_index(v) });
             misc.trace(@src(), "  zr {f}", .{zr});
-            const c1 = zr.array.ptr(.containers)[@intCast(zr.get_index(v))];
+            const c1 = zr.array.containers[@intCast(zr.get_index(v))];
             misc.trace(@src(), "  container {}: {f}", .{ zr.get_index(v), c1.fmt(zr, key) });
-            // misc.trace(@src(), "    {}", .{c1});
-            // if (c1.typecode == .array) {
-            //     misc.trace(@src(), "array={any}", .{c1.blocks_as(.array, zr)[0..c1.cardinality]});
-            // }
             return e;
         };
     }

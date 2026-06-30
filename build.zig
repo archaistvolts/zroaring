@@ -17,7 +17,6 @@ pub fn build(b: *std.Build) !void {
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const flexible = b.dependency("flexible_struct", .{ .target = target, .optimize = optimize });
 
     const zr_mod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
@@ -25,7 +24,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "build-options", .module = options_mod },
-            .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
         },
     });
 
@@ -42,7 +40,6 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "build-options", .module = options.createModule() },
-            .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
             .{ .name = "croaring", .module = translate_cr_mod },
         },
     });
@@ -94,7 +91,6 @@ pub fn build(b: *std.Build) !void {
                 .imports = &.{
                     .{ .name = "zroaring", .module = zr_mod },
                     .{ .name = "build-options", .module = options_mod },
-                    .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                     .{ .name = "croaring", .module = translate_cr_mod },
                 },
             }),
@@ -122,7 +118,6 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{
                 .{ .name = "zroaring", .module = zr_mod },
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
         }),
@@ -139,7 +134,6 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = b.path("src/fuzz-gen.zig"),
             .target = target,
             .imports = &.{
-                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
@@ -156,7 +150,6 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
@@ -174,7 +167,6 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
@@ -198,7 +190,6 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                 .{ .name = "build-options", .module = options_mod },
                 .{ .name = "croaring", .module = translate_cr_mod },
             },
@@ -224,7 +215,6 @@ pub fn build(b: *std.Build) !void {
                 .optimize = .Debug,
                 .link_libc = true,
                 .imports = &.{
-                    .{ .name = "flexible_struct", .module = flexible.module("flexible_struct") },
                     .{ .name = "build-options", .module = options_mod },
                     .{ .name = "croaring", .module = translate_cr_mod },
                     .{ .name = "zroaring", .module = zr_mod },

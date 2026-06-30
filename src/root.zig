@@ -21,7 +21,9 @@ pub const Container = container.Container;
 pub const Iterator = @import("Iterator.zig");
 
 pub const Magic = enum(u16) {
+    /// no run containers are used
     SERIAL_COOKIE_NO_RUNCONTAINER = 12346,
+    /// run containers may be present
     SERIAL_COOKIE = 12347,
     FROZEN_COOKIE = 13766,
     _,
@@ -48,5 +50,4 @@ test {
     _ = Bitmap;
     _ = @import("validate.zig");
     _ = @import("fuzz.zig");
-    _ = @import("flexible_struct");
 }

@@ -10,7 +10,7 @@ current_value: u32,
 has_value: bool,
 
 fn load_first_value(it: *Iterator) bool {
-    if (it.container_index >= it.parent.array.ptr(.len).* or
+    if (it.container_index >= it.parent.array.len or
         it.container_index < 0)
     {
         it.current_value = std.math.maxInt(u32);
@@ -18,9 +18,9 @@ fn load_first_value(it: *Iterator) bool {
         return false;
     }
     it.has_value = true;
-    const containers = it.parent.array.ptr(.containers);
+    const containers = it.parent.array.containers;
     it.container = &containers[it.container_index];
-    it.highbits = @as(u32, it.parent.array.ptr(.keys)[it.container_index]) << 16;
+    it.highbits = @as(u32, it.parent.array.keys[it.container_index]) << 16;
     var value: u16 = undefined;
     it.container_it = it.container.init_iterator(it.parent, &value);
     it.current_value = it.highbits | value;
@@ -28,15 +28,15 @@ fn load_first_value(it: *Iterator) bool {
 }
 
 fn load_last_value(it: *Iterator) bool {
-    if (it.container_index >= it.parent.array.ptr(.len).* or it.container_index < 0) {
+    if (it.container_index >= it.parent.array.len or it.container_index < 0) {
         it.current_value = std.math.maxInt(u32);
         it.has_value = false;
         return false;
     }
     it.has_value = true;
-    const containers = it.parent.array.ptr(.containers);
+    const containers = it.parent.array.containers;
     it.container = &containers[it.container_index];
-    it.highbits = @as(u32, it.parent.array.ptr(.keys)[it.container_index]) << 16;
+    it.highbits = @as(u32, it.parent.array.keys[it.container_index]) << 16;
     var value: u16 = undefined;
     it.container_it = it.containerinit_iterator_last(it.parent, &value);
     it.current_value = it.highbits | value;
@@ -68,7 +68,7 @@ pub fn init(r: Bitmap) Iterator {
 
 /// Initialize an iterator at the last value.
 pub fn init_last(r: Bitmap) Iterator {
-    const size = r.array.ptr(.len).*;
+    const size = r.array.len;
     var it = Iterator{
         .parent = r,
         .container = undefined,
@@ -84,7 +84,7 @@ pub fn init_last(r: Bitmap) Iterator {
 
 /// Advance the iterator. Returns has_value.
 pub fn advance(it: *Iterator) bool {
-    if (it.container_index >= @as(i32, @intCast(it.parent.array.ptr(.len).*))) {
+    if (it.container_index >= @as(i32, @intCast(it.parent.array.len))) {
         it.has_value = false;
         return false;
     }
@@ -110,8 +110,8 @@ pub fn previous(it: *Iterator) bool {
         it.has_value = false;
         return false;
     }
-    if (it.container_index >= @as(i32, @intCast(it.parent.array.ptr(.len).*))) {
-        it.container_index = @as(i32, @intCast(it.parent.array.ptr(.len).*)) - 1;
+    if (it.container_index >= @as(i32, @intCast(it.parent.array.len))) {
+        it.container_index = @as(i32, @intCast(it.parent.array.len)) - 1;
         it.has_value = it.load_last_value();
         return it.has_value;
     }
@@ -131,7 +131,7 @@ pub fn move_equalorlarger(it: *Iterator, val: u32) bool {
     const hb: u16 = @truncate(val >> 16);
     const i = it.parent.get_key_index(hb);
     if (i >= 0) {
-        const containers = it.parent.array.ptr(.containers);
+        const containers = it.parent.array.containers;
         const low_max = Container.maximum(containers[@intCast(i)], it.parent);
         const lb: u16 = @truncate(val);
         if (low_max < lb) {

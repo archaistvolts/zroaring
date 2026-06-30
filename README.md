@@ -1,5 +1,5 @@
 # About
-A Roaring Bitmap with a flat, pointerless layout and API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring).  Implemented with [resizable struct](https://codeberg.org/ziglang/zig/pulls/30823) ([2](https://github.com/archaistvolts/resizable-struct)), all Bitmap data shares a single, serialization and simd friendly allocation.
+A Roaring Bitmap with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring).  All Bitmap data is allocated in 3 allocations with container data in simd sized blocks.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -66,24 +66,26 @@ zig build && zig-out/bin/afl-main afl/output/default/crashes...
 date +%F; zig build run -- api-coverage
 ```
 ```console
-2026-06-16
+2026-06-30
 
 parsed command:
   api-coverage --filter API-COVERAGE-FILTER-NONE
 
 symbols coverage:
-  prefix              : found / total / %   :
+  prefix                    found total %
 ---------------------------------------------
-  roaring_bitmap_     : 57    / 93    / 61.3%
-  ra_                 : 15    / 40    / 37.5%
-  container_          : 39    / 64    / 60.9%
-  run_container_      : 33    / 60    / 55.0%
-  bitset_container_   : 30    / 66    / 45.5%
-  array_container_    : 30    / 58    / 51.7%
+  roaring_bitmap_           59    91    64.8%
+  ra_                       16    40    40.0%
+  container_                11    18    61.1%
+  run_container_            16    37    43.2%
+  bitset_container_         21    49    42.9%
+  array_container_          12    31    38.7%
+  roaring_iterator_         0     1     0.0%
+  roaring_uint32_iterator_  2     2     100.0%
 ---------------------------------------------
-  total               : 204   / 381   / 53.5%
+  total                     137   269   50.9%
 ---------------------------------------------
-  filtered            : 0     / 0     / -nan%
+  filtered                  0     0     -nan%
 ```
 
 Add `--filter`, a substring to search, if you want to see individual method coverage.
@@ -107,7 +109,7 @@ gnuplot testdata/bench-total.gp -p
 Human contributions are very welcome.  Please open a pull request or issue on codeberg if you run into a TODO, FIXME or any problems while using this project.  There is a lot of work yet to be done here.
 
 # Ideas / TODOs - contributions welcome
-* [x] in memory layout - a single allocation, resizable struct to model state - serialization friendly, single write, single read.
+* [x] in memory layout - 3 allocations: array, bitset_blocks and run/array blocks.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
 * [x] allocation failures test with crash corpus.
@@ -139,5 +141,3 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/RoaringBitmap/CRoaring
 * https://github.com/awesomo4000/rawr
 * https://github.com/lalinsky/roaring.zig
-* https://codeberg.org/ziglang/zig/pulls/30823
-  * https://github.com/archaistvolts/resizable-struct

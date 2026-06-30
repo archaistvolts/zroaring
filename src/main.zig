@@ -177,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
                 const found = filtered_cr_syms_found;
                 std.debug.print(sep, .{});
                 std.debug.print(
-                    "  {s: <25}: {: <5} / {: <5} / {:2.1}%\n",
+                    "  {s: <25} {: <5} {: <5} {:2.1}%\n",
                     .{ "filtered", found, total, found / total * 100 },
                 );
             }
