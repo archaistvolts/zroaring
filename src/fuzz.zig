@@ -167,13 +167,10 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
     while (!smith.eos()) {
         const tag = smith.value(Op.Tag);
         const idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS);
+        var vals: [8]u32 = undefined;
         const fuzz_op: Op = fuzz_op: switch (tag) {
-            .add => {
-                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                break :fuzz_op .{ .add = .{ .idx = idx, .val = val } };
-            },
+            .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) } },
             .add_many => {
-                var vals: [8]u32 = undefined;
                 const len = smith.valueRangeLessThan(u8, 1, vals.len);
                 for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 break :fuzz_op .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
@@ -185,12 +182,13 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
-                const val1 = smith.valueRangeLessThan(u32, start, start + len);
-                const val2 = smith.valueRangeLessThan(u32, start + len, start + len * 2);
                 break :fuzz_op @unionInit(
                     Op,
                     @tagName(t),
-                    .{ .idx = idx, .vals = .{ val1, val2 } },
+                    .{ .idx = idx, .vals = .{
+                        smith.valueRangeLessThan(u32, start, start + len),
+                        smith.valueRangeLessThan(u32, start + len, start + len * 2),
+                    } },
                 );
             },
             .remove => break :fuzz_op .{ .remove = .{
@@ -236,14 +234,14 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .minimum,
             .maximum,
             .statistics,
-            => |t| break :fuzz_op @unionInit(Op, @tagName(t), idx),
+            => |t| @unionInit(Op, @tagName(t), idx),
             inline .rank,
             .select,
             .contains,
-            => |t| {
-                const val = smith.valueRangeLessThan(u32, 0, MAX_VAL);
-                break :fuzz_op @unionInit(Op, @tagName(t), .{ .idx = idx, .val = val });
-            },
+            => |t| @unionInit(Op, @tagName(t), .{
+                .idx = idx,
+                .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
+            }),
         };
         try perform_op(fuzz_op, &oracles, &rs, allocator);
     }

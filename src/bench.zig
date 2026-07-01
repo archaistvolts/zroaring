@@ -267,31 +267,92 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
     // generate a list of extra ops which are missing from fuzz-crash-corpus.zon
     var prng = std.Random.DefaultPrng.init(0);
     const random = prng.random();
-    const extra_ops = try allocator.alloc(fuzz.Op, 2000);
+    const extra_ops = try allocator.alloc(fuzz.Op, 1000);
     defer allocator.free(extra_ops);
+    var arenas = std.heap.ArenaAllocator.init(allocator);
+    defer arenas.deinit();
+    const arena = arenas.allocator();
+
     for (extra_ops) |*op| {
-        switch (random.int(u8) % 7) {
-            0 => op.* = .{ .minimum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
-            1 => op.* = .{ .maximum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
-            2 => op.* = .{ .contains = .{
-                .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
-                .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL),
-            } },
-            3, 6 => |x| {
+        const tag = random.enumValue(fuzz.Op.Tag);
+        const idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS);
+        const vals_len = 8;
+        op.* = fuzz_op: switch (tag) {
+            .add => .{ .add = .{ .idx = idx, .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL) } },
+            .add_many => {
+                const len = random.intRangeLessThan(u8, 1, vals_len);
+                const vals = try arena.alloc(u32, len);
+                for (0..len) |i| vals[i] = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL);
+                break :fuzz_op .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
+            },
+            inline .add_range_closed,
+            .contains_range,
+            .range_cardinality,
+            .flip,
+            => |t| {
                 const start = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL);
                 const len = random.intRangeLessThan(u32, 1, fuzz.MAX_RANGE_LEN);
-                const val1 = random.intRangeLessThan(u32, start, start + len);
-                const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
-                op.* = if (x == 3)
-                    .{ .contains_range = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } }
-                else
-                    .{ .flip = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } };
+                break :fuzz_op @unionInit(
+                    fuzz.Op,
+                    @tagName(t),
+                    .{ .idx = idx, .vals = .{
+                        random.intRangeLessThan(u32, start, start + len),
+                        random.intRangeLessThan(u32, start + len, start + len * 2),
+                    } },
+                );
             },
-            4 => op.* = .{ .portable_deserialize = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
-            5 => op.* = .{ .statistics = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
-
-            else => unreachable,
-        }
+            .remove => break :fuzz_op .{ .remove = .{
+                .idx = idx,
+                .pick_existing = random.int(u8),
+                .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL),
+            } },
+            inline .@"and",
+            .@"or",
+            .xor,
+            .andnot,
+            .lazy_or,
+            => |t| break :fuzz_op @unionInit(fuzz.Op, @tagName(t), .{
+                .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+                .src1 = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+                .src2 = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+            }),
+            inline .or_inplace,
+            .is_subset,
+            .and_inplace,
+            .and_cardinality,
+            .or_cardinality,
+            .xor_cardinality,
+            .andnot_cardinality,
+            .jaccard_index,
+            .equals,
+            => |t| break :fuzz_op @unionInit(fuzz.Op, @tagName(t), .{
+                .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+                .src1 = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
+            }),
+            inline .or_many => |t| {
+                const idxs = try arena.create([NUM_BITMAPS + 1]u8);
+                const len = random.intRangeLessThan(u8, 0, NUM_BITMAPS + 1);
+                for (idxs[0..len]) |*x| x.* = random.intRangeLessThan(u8, 0, NUM_BITMAPS);
+                break :fuzz_op @unionInit(fuzz.Op, @tagName(t), .{ .idxs = idxs[0..len] });
+            },
+            inline .clear,
+            .run_optimize,
+            .shrink_to_fit,
+            .portable_serialize,
+            .portable_deserialize,
+            .frozen_serialize,
+            .minimum,
+            .maximum,
+            .statistics,
+            => |t| @unionInit(fuzz.Op, @tagName(t), idx),
+            inline .rank,
+            .select,
+            .contains,
+            => |t| @unionInit(fuzz.Op, @tagName(t), .{
+                .idx = idx,
+                .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL),
+            }),
+        };
     }
 
     // warmup once each
@@ -310,14 +371,14 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
     zr_ops_len = 0;
     zr_op_stats = OpStats.initFill(.{ 0, .fromNanoseconds(0) });
     zr_total_ns = 0;
-    for (0..10) |i| {
-        if (i & 0b11 == 1) {
-            try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
-            try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
-        } else {
-            try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
-            try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+    for (0..10) |_| {
+        for (&crs) |*x| {
+            c.roaring_bitmap_free(x.*);
+            x.* = c.roaring_bitmap_create();
         }
+        try runBenchmarkGeneric(io, &crs, allocator, &ser_buf, &cr_op_stats, &cr_ops_len, &cr_total_ns, extra_ops, random);
+        for (&zrs) |*x| x.deinit(allocator);
+        try runBenchmarkGeneric(io, &zrs, allocator, &ser_buf, &zr_op_stats, &zr_ops_len, &zr_total_ns, extra_ops, random);
     }
 
     const write_csv_row = parsed_args.contains(.write_csv_row);
@@ -340,8 +401,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
             }
         }
         const ts = unixTimestampToUTC(Io.Timestamp.now(io, .real).toMilliseconds());
-        // write timestamp
-        try fw.print(
+        try fw.print( // write timestamp
             "\n{}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3},",
             .{ ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second, ts.millisecond },
         );

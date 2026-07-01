@@ -58,7 +58,7 @@ nix-shell
 
 #### Reproducing with an AFL crash/hang file
 ```console
-zig build && zig-out/bin/afl-main afl/output/default/crashes...
+zig build && zig-out/bin/afl-run afl/output/default/crashes...
 ```
 
 # CRoaring API coverage

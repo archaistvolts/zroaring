@@ -192,7 +192,6 @@ const crprefixes = [_][]const u8{
     "run_container_",
     "bitset_container_",
     "array_container_",
-    "roaring_iterator_",
     "roaring_uint32_iterator_",
 };
 
