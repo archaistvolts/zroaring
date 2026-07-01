@@ -62,6 +62,7 @@ pub fn zr_benchmark_op(
         => |o, t| _ = try @field(Bitmap, @tagName(t))(&rs[o], allocator),
         inline .maximum,
         .minimum,
+        .statistics,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o])),
         .frozen_serialize => |o| {
             try rs[o].frozen_serialize(ser_buf[0..rs[o].frozen_size_in_bytes()]);
@@ -79,6 +80,11 @@ pub fn zr_benchmark_op(
             var x = try Bitmap.portable_deserialize(allocator, ser_buf);
             defer x.deinit(allocator);
             std.mem.doNotOptimizeAway(ser_buf[0]);
+        },
+        .flip => |o| {
+            const result = try rs[o.idx].flip(allocator, o.vals[0], o.vals[1]);
+            rs[o.idx].deinit(allocator);
+            rs[o.idx] = result;
         },
         inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
             @field(Bitmap, @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
@@ -174,9 +180,20 @@ pub fn cr_benchmark_op(
         inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
             @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
         ),
-        inline .minimum, .maximum => |o, t| std.mem.doNotOptimizeAway(
-            @field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o]),
-        ),
+        inline .minimum, .maximum, .statistics => |o, t| {
+            if (t == .statistics) {
+                var stat: c.roaring_statistics_t = undefined;
+                c.roaring_bitmap_statistics(rs[o], &stat);
+                std.mem.doNotOptimizeAway(stat);
+            } else {
+                std.mem.doNotOptimizeAway(@field(c, "roaring_bitmap_" ++ @tagName(t))(rs[o]));
+            }
+        },
+        .flip => |o| {
+            const result = c.roaring_bitmap_flip(rs[o.idx], o.vals[0], o.vals[1]);
+            c.roaring_bitmap_free(rs[o.idx]);
+            rs[o.idx] = result;
+        },
         // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
     }
 }
@@ -250,24 +267,29 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
     // generate a list of extra ops which are missing from fuzz-crash-corpus.zon
     var prng = std.Random.DefaultPrng.init(0);
     const random = prng.random();
-    const extra_ops = try allocator.alloc(fuzz.Op, random.intRangeLessThan(u32, 250, 1000));
+    const extra_ops = try allocator.alloc(fuzz.Op, 2000);
     defer allocator.free(extra_ops);
     for (extra_ops) |*op| {
-        switch (random.int(u8) % 5) {
+        switch (random.int(u8) % 7) {
             0 => op.* = .{ .minimum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
             1 => op.* = .{ .maximum = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
             2 => op.* = .{ .contains = .{
                 .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS),
                 .val = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL),
             } },
-            3 => {
+            3, 6 => |x| {
                 const start = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL);
                 const len = random.intRangeLessThan(u32, 1, fuzz.MAX_RANGE_LEN);
                 const val1 = random.intRangeLessThan(u32, start, start + len);
                 const val2 = random.intRangeLessThan(u32, start + len, start + len * 2);
-                op.* = .{ .contains_range = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } };
+                op.* = if (x == 3)
+                    .{ .contains_range = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } }
+                else
+                    .{ .flip = .{ .idx = random.intRangeLessThan(u8, 0, NUM_BITMAPS), .vals = .{ val1, val2 } } };
             },
             4 => op.* = .{ .portable_deserialize = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
+            5 => op.* = .{ .statistics = random.intRangeLessThan(u8, 0, NUM_BITMAPS) },
+
             else => unreachable,
         }
     }
@@ -489,6 +511,7 @@ fn unixTimestampToUTC(timestamp: i64) DateTime {
 }
 
 const Arg = enum { write_csv_row };
+
 pub fn main(init: std.process.Init) !void {
     const gpa = if (builtin.cpu.arch.isWasm() and !builtin.link_libc)
         std.heap.wasm_allocator
