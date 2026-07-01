@@ -79,8 +79,8 @@ test "croaring oracle crashes" {
 
 /// all ops have a bitmap idx. Rest have additional params.
 ///
-/// DONT RE-ORDER FIELDS - must be kept in sync with testdata/bench-data.csv
-/// ordering to avoid breaking bench charts
+/// APPEND ONLY LIST.  add new ops last too stay synced with testdata/bench-data.csv
+/// ordering and avoid breaking bench charts.
 pub const Op = union(enum) {
     clear: u8, // bitmap idx only
     run_optimize: u8,
@@ -121,9 +121,10 @@ pub const Op = union(enum) {
 
     or_many: ManyOp, // many bitmap idx
 
+    // new ops go last to match existing csv column order
     portable_deserialize: u8,
-
-    // get_index, // TODO
+    statistics: u8,
+    flip: Vals2,
 
     // bitmap idx with 1 u32 param
     const Val = struct { idx: u8, val: u32 };
@@ -177,7 +178,11 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 break :fuzz_op .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
             },
-            inline .add_range_closed, .contains_range, .range_cardinality => |t| {
+            inline .add_range_closed,
+            .contains_range,
+            .range_cardinality,
+            .flip,
+            => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
                 const val1 = smith.valueRangeLessThan(u32, start, start + len);
@@ -230,6 +235,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .frozen_serialize,
             .minimum,
             .maximum,
+            .statistics,
             => |t| break :fuzz_op @unionInit(Op, @tagName(t), idx),
             inline .rank,
             .select,
@@ -303,7 +309,11 @@ const AflSmith = struct {
                 for (buf[0..len]) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 return .{ .add_many = .{ .idx = idx, .vals = buf[0..len] } };
             },
-            inline .add_range_closed, .contains_range, .range_cardinality => |t| {
+            inline .add_range_closed,
+            .contains_range,
+            .range_cardinality,
+            .flip,
+            => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
                 const val1 = smith.valueRangeLessThan(u32, start, start + len) orelse return null;
@@ -353,6 +363,7 @@ const AflSmith = struct {
             .frozen_serialize,
             .minimum,
             .maximum,
+            .statistics,
             => |t| @unionInit(Op, @tagName(t), idx),
             inline .rank,
             .select,
@@ -458,7 +469,11 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
             try writer.writeByte(@intCast(o.vals.len));
             for (o.vals) |v| try writer.writeInt(u32, v, .little);
         },
-        .add_range_closed, .contains_range, .range_cardinality => |o| {
+        .add_range_closed,
+        .contains_range,
+        .range_cardinality,
+        .flip,
+        => |o| {
             const len = o.vals[1] - o.vals[0];
             try writer.writeInt(u32, o.vals[0], .little);
             try writer.writeInt(u32, len - 1, .little);
@@ -502,6 +517,7 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
         .frozen_serialize,
         .minimum,
         .maximum,
+        .statistics,
         => {},
     }
 }
@@ -517,6 +533,7 @@ pub fn readOp(r: *Io.Reader, buf: []u32) !Op {
         .frozen_serialize,
         .minimum,
         .maximum,
+        .statistics,
         => |t| return @unionInit(Op, @tagName(t), try r.takeByte()),
         inline .add,
         .contains,
@@ -536,6 +553,7 @@ pub fn readOp(r: *Io.Reader, buf: []u32) !Op {
         inline .add_range_closed,
         .contains_range,
         .range_cardinality,
+        .flip,
         => |t| {
             const idx = try r.takeByte();
             const start = try r.takeInt(u32, .little);
@@ -602,8 +620,6 @@ fn perform_op(
     switch (op) {
         .add, // only print ops which may mutate
         .remove,
-        .@"and",
-        .@"or",
         .xor,
         .andnot,
         .lazy_or,
@@ -615,11 +631,15 @@ fn perform_op(
         .shrink_to_fit,
         => fuzzprint("{},\n", .{op}),
         .add_range_closed,
-        => |x| fuzzprint(".{{ .add_range_closed = .{{ .idx = {}, .vals = .{{ {}, {} }} }} }},\n", .{ x.idx, x.vals[0], x.vals[1] }),
+        .flip,
+        => |x| fuzzprint(".{{ .{t} = .{{ .idx = {}, .vals = .{{ {}, {} }} }} }},\n", .{ op, x.idx, x.vals[0], x.vals[1] }),
         .add_many,
-        => |x| fuzzprint(".{{ .add_many = .{{ .idx = {}, .vals = .{any} }} }},\n", .{ x.idx, x.vals }),
+        => |x| fuzzprint(".{{ .{t} = .{{ .idx = {}, .vals = .{any} }} }},\n", .{ op, x.idx, x.vals }),
         .or_many,
         => |x| fuzzprint(".{{ .or_many = .{{ .idxs = .{any} }} }},\n", .{x.idxs}),
+        .@"and",
+        .@"or",
+        => |x| fuzzprint(".{{ .@\"{t}\" = .{{ .idx = {}, .src1 = {}, .src2 = {} }} }},\n", .{ op, x.idx, x.src1, x.src2 }),
         // don't print ops which don't mutate - usually not part of reproduction
         .portable_serialize,
         .portable_deserialize,
@@ -627,6 +647,7 @@ fn perform_op(
         .equals,
         .minimum,
         .maximum,
+        .statistics,
         .contains,
         .contains_range,
         .rank,
@@ -1190,6 +1211,44 @@ fn perform_op(
                 rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
             );
         },
+        .statistics => |idx| if (is_cr) {
+            var cs: c.roaring_statistics_t = undefined;
+            c.roaring_bitmap_statistics(oracles[idx], &cs);
+            const zs = rs[idx].statistics(); // zig fmt: off
+try testing.expectEqual(cs.n_containers,               zs.n_containers);
+try testing.expectEqual(cs.n_array_containers,         zs.n_array_containers);
+try testing.expectEqual(cs.n_run_containers,           zs.n_run_containers);
+try testing.expectEqual(cs.n_bitset_containers,        zs.n_bitset_containers);
+try testing.expectEqual(cs.n_values_array_containers,  zs.n_values_array_containers);
+try testing.expectEqual(cs.n_values_run_containers,    zs.n_values_run_containers);
+try testing.expectEqual(cs.n_values_bitset_containers, zs.n_values_bitset_containers);
+try testing.expectEqual(cs.n_bytes_array_containers,   zs.n_bytes_array_containers);
+try testing.expectEqual(cs.n_bytes_run_containers,     zs.n_bytes_run_containers);
+try testing.expectEqual(cs.n_bytes_bitset_containers,  zs.n_bytes_bitset_containers);
+try testing.expectEqual(cs.min_value,                  zs.min_value);
+try testing.expectEqual(cs.max_value,                  zs.max_value);
+try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig fmt: on
+        },
+        .flip => |o| {
+            const result = try rs[o.idx].flip(allocator, o.vals[0], o.vals[1]);
+            rs[o.idx].deinit(allocator);
+            rs[o.idx] = result;
+
+            if (is_cr) {
+                const cr_res = c.roaring_bitmap_flip(oracles[o.idx], o.vals[0], o.vals[1]);
+                c.roaring_bitmap_free(oracles[o.idx]);
+                oracles[o.idx] = cr_res;
+            } else {
+                const start, const end = o.vals;
+                var i = start;
+                while (i < end) : (i += 1) {
+                    if (oracles[o.idx].contains(i))
+                        _ = oracles[o.idx].swapRemove(i)
+                    else
+                        try oracles[o.idx].put(allocator, i, {});
+                }
+            }
+        },
     }
 
     for (0..NUM_BITMAPS) |i| {
@@ -1207,7 +1266,7 @@ fn perform_op(
                 roaring_bitmap_printf_describe(oracle, std.debug.print);
                 std.debug.print("\n", .{});
             }
-            try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.ptr(.len).*);
+            try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
             for (r.slice(.containers, .len), 0..) |zc, i| {
                 //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
                 try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
@@ -1225,6 +1284,7 @@ fn perform_op(
                 inline .add,
                 .add_many,
                 .add_range_closed,
+                .flip,
                 .remove,
                 .@"and",
                 .@"or",
@@ -1280,6 +1340,7 @@ fn perform_op(
                 .equals,
                 .minimum,
                 .maximum,
+                .statistics,
                 .rank,
                 .select,
                 .contains,

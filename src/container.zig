@@ -5864,6 +5864,186 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, x1, c2, x2), //
         }
         return result;
     }
+
+    /// Negation across a range of the container.
+    /// Compute the negation of src and write result to dst
+    /// and return result.
+    fn array_container_negation_range(
+        src: *const Container,
+        allocator: Allocator,
+        x: *const Bitmap,
+        range_start: u32,
+        range_end: u32,
+        dstr: *Bitmap,
+    ) !Container {
+        assert(src.typecode == .array);
+        if (range_start >= range_end) {
+            return try src.array_container_clone(allocator, x, dstr);
+        }
+
+        var srcarray = src.blocks_as(.array, x.*);
+        const cardinality = src.cardinality;
+        var start_index = misc.binarySearch(srcarray[0..cardinality], @truncate(range_start));
+        if (start_index < 0) start_index = -start_index - 1;
+        var last_index = misc.binarySearch(srcarray[0..cardinality], @truncate(range_end - 1));
+        if (last_index < 0) last_index = -last_index - 2;
+
+        const current_values_in_range: u32 = @intCast(last_index - start_index + 1);
+        const span_to_be_flipped = range_end - range_start;
+        const new_values_in_range = span_to_be_flipped - current_values_in_range;
+        const cardinality_change = new_values_in_range -% current_values_in_range;
+        const new_cardinality = cardinality +% cardinality_change;
+
+        if (new_cardinality > C.DEFAULT_MAX_SIZE) {
+            var temp = try src.bitset_container_from_array_dst(allocator, x, dstr);
+            misc.bitset_flip_range(temp.blocks_as(.bitset, dstr.*).ptr, range_start, range_end);
+            temp.cardinality = @intCast(new_cardinality);
+            return temp;
+        }
+        if (new_cardinality == 0) {
+            return uninit;
+        }
+
+        const srcid = src - x.array.containers;
+        var arr = try array_container_create_given_capacity(allocator, new_cardinality, dstr);
+        const arrarray = arr.blocks_as(.array, dstr.*);
+        srcarray = x.array.containers[srcid].blocks_as(.array, x.*);
+        // copy stuff before the active area
+        @memcpy(arrarray[0..@intCast(start_index)], srcarray.ptr);
+
+        // work on the range
+        var out_pos: u32 = @intCast(start_index);
+        var in_pos: u32 = @intCast(start_index);
+        var val_in_range = range_start;
+        while (val_in_range < range_end and in_pos <= last_index) : (val_in_range += 1) {
+            if (@as(u16, @truncate(val_in_range)) != srcarray[in_pos]) {
+                arrarray[out_pos] = @intCast(val_in_range);
+                out_pos += 1;
+            } else {
+                in_pos += 1;
+            }
+        }
+        while (val_in_range < range_end) : (val_in_range += 1) {
+            arrarray[out_pos] = @intCast(val_in_range);
+            out_pos += 1;
+        }
+
+        // content after the active range
+        const last_index_u: u32 = @intCast(last_index + 1);
+        @memcpy(
+            arrarray[out_pos..][0 .. src.cardinality - last_index_u],
+            srcarray.ptr + last_index_u,
+        );
+        arr.cardinality = @intCast(new_cardinality);
+        return arr;
+    }
+
+    /// Negation across a range of the container.
+    /// Compute negation of src, write result to dst and return result.
+    fn bitset_container_negation_range(
+        src: *const Container,
+        allocator: Allocator,
+        x: *const Bitmap,
+        range_start: u32,
+        range_end: u32,
+        dstr: *Bitmap,
+    ) !Container {
+        // TODO maybe consider density-based estimate
+        // and sometimes build result directly as array, with
+        // conversion back to bitset if wrong.  Or determine
+        // actual result cardinality, then go directly for the known final cont.
+
+        // keep computation using bitsets as long as possible.
+        assert(src.typecode == .bitset);
+        var t = try src.bitset_container_clone(allocator, x, dstr);
+        const words = t.blocks_as(.bitset, dstr.*).ptr;
+        misc.bitset_flip_range(words, range_start, range_end);
+        t.cardinality = bitset_container_compute_cardinality(words);
+
+        if (t.cardinality > C.DEFAULT_MAX_SIZE) {
+            return t;
+        } else {
+            const answer = try array_container_from_bitset(&t, allocator, dstr);
+            t.deinit_blocks(dstr);
+            return answer;
+        }
+    }
+
+    /// Negation across a range of the container.
+    /// Compute negation of src, write the result to dst and return result.
+    fn run_container_negation_range(
+        src: *const Container,
+        allocator: Allocator,
+        x: *const Bitmap,
+        range_start: u32,
+        range_end: u32,
+        dstr: *Bitmap,
+    ) !Container {
+        // follows the Java implementation
+        assert(src.typecode == .run);
+        if (range_end <= range_start) {
+            return try src.run_container_clone(allocator, x, dstr);
+        }
+
+        const nruns = src.cardinality;
+        var ans = try run_container_create_given_capacity(allocator, nruns + 1, dstr);
+        const srcruns = src.blocks_as(.run, x.*);
+        const ansruns = ans.blocks_as(.run, dstr.*);
+
+        var k: u32 = 0;
+        while (k < nruns and srcruns[k].value < range_start) : (k += 1) {
+            ansruns[k] = srcruns[k];
+            ans.cardinality += 1;
+        }
+
+        ans.run_container_smart_append_exclusive(
+            ansruns.ptr,
+            @intCast(range_start),
+            @intCast(range_end - range_start - 1),
+        );
+
+        while (k < nruns) : (k += 1) {
+            ans.run_container_smart_append_exclusive(
+                ans.blocks_as(.run, dstr.*).ptr,
+                srcruns[k].value,
+                srcruns[k].length,
+            );
+        }
+
+        const answer = try convert_run_to_efficient_container(ans, allocator, dstr);
+        if (answer.typecode != .run) ans.deinit_blocks(dstr);
+        return answer;
+    }
+
+    /// Negation across a range of the container.
+    /// Compute the negation of src within the range [range_start, range_end).
+    /// Follows CRoaring's container_not_range.
+    pub fn not_range(
+        c: *const Container,
+        allocator: Allocator,
+        x: *const Bitmap,
+        range_start: u32,
+        range_end: u32,
+        dstr: *Bitmap,
+    ) !Container {
+        return switch (c.typecode) {
+            .bitset => try c.bitset_container_negation_range(allocator, x, range_start, range_end, dstr),
+            .array => try c.array_container_negation_range(allocator, x, range_start, range_end, dstr),
+            .run => try c.run_container_negation_range(allocator, x, range_start, range_end, dstr),
+            .shared => unreachable,
+        };
+    }
+
+    /// Compute the full negation of a container (range [0, 0x10000)).
+    /// Follows CRoaring's container_not.
+    pub fn not(
+        c: *const Container,
+        allocator: Allocator,
+        x: *const Bitmap,
+        dstr: *Bitmap,
+    ) !Container {
+        return try c.not_range(allocator, x, 0, C.MAX_KEY_CARDINALITY, dstr);
+    }
 };
 
 /// For bitset and array containers this is the index of the bit / entry.

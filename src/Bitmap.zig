@@ -2558,7 +2558,243 @@ pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
         pos1 += 1;
     }
 
-    r1.array.ptr(.len).* = intersection_size;
+    r1.array.len = intersection_size;
+}
+
+/// (For advanced users.)
+/// Statistics can be used to collect detailed statistics about the composition
+/// of a roaring bitmap.
+pub const Statistics = struct {
+    /// number of containers
+    n_containers: u32,
+    /// number of array containers
+    n_array_containers: u32,
+    /// number of run containers
+    n_run_containers: u32,
+    /// number of bitset containers
+    n_bitset_containers: u32,
+    /// number of values in array containers
+    n_values_array_containers: u32,
+    /// number of values in run containers
+    n_values_run_containers: u32,
+    /// number of values in bitset containers
+    n_values_bitset_containers: u32,
+    /// number of allocated bytes in array
+    n_bytes_array_containers: u32,
+    /// number of allocated bytes in run
+    n_bytes_run_containers: u32,
+    /// number of allocated bytes in  bitmap
+    n_bytes_bitset_containers: u32,
+    /// the maximal value, undefined if cardinality is zero
+    max_value: u32,
+    /// the minimal value, undefined if cardinality is zero
+    min_value: u32,
+    /// deprecated always zero
+    sum_value: u64,
+    /// total number of values stored in the bitmap
+    cardinality: u64,
+};
+
+/// (For advanced users.)
+/// Collect statistics about the bitmap.
+pub fn statistics(bm: Bitmap) Statistics {
+    const len = bm.array.len;
+    var stat: Statistics = undefined;
+    @memset(mem.asBytes(&stat), 0);
+    stat.n_containers = len;
+    stat.min_value = if (len > 0) bm.minimum() else std.math.maxInt(u32);
+    stat.max_value = if (len > 0) bm.maximum() else 0;
+
+    for (bm.slice(.containers, .len)) |c| {
+        const card = c.get_cardinality(bm);
+        const sbytes = c.size_in_bytes();
+        stat.cardinality += card;
+        switch (c.typecode) {
+            .bitset => {
+                stat.n_bitset_containers += 1;
+                stat.n_values_bitset_containers += card;
+                stat.n_bytes_bitset_containers += sbytes;
+            },
+            .array => {
+                stat.n_array_containers += 1;
+                stat.n_values_array_containers += card;
+                stat.n_bytes_array_containers += sbytes;
+            },
+            .run => {
+                stat.n_run_containers += 1;
+                stat.n_values_run_containers += card;
+                stat.n_bytes_run_containers += sbytes;
+            },
+            .shared => unreachable,
+        }
+    }
+    return stat;
+}
+
+/// Compute the negation of the bitmap in the interval [range_start, range_end).
+/// The number of negated values is range_end - range_start.
+/// Areas outside the range are passed through unchanged.
+pub fn flip(x1: *const Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !Bitmap {
+    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1) {
+        return x1.copy(allocator);
+    }
+    return x1.flip_closed(allocator, @truncate(range_start), @truncate(range_end - 1));
+}
+
+fn append_copy(
+    ra: *Bitmap,
+    allocator: mem.Allocator,
+    sa: *const Bitmap,
+    index: u16,
+    copy_on_write: bool,
+) !void {
+    try ra.ensure_unused_capacity(allocator, 1, 0, .blocks);
+    const pos = ra.array.len;
+    // old contents is junk that does not need freeing
+    ra.array.keys[pos] = sa.array.keys[index];
+    // the shared container will be in both bitmaps
+    if (copy_on_write) {
+        const cpy = try sa.array.containers[index].get_copy_of_container(allocator, sa, ra, copy_on_write);
+        sa.array.containers[index] = cpy;
+        assert(cpy != Container.uninit);
+        assert(cpy.cardinality != 0);
+        ra.array.containers[pos] = cpy;
+    } else {
+        const cpy = try sa.array.containers[index].clone(allocator, sa, ra);
+        assert(cpy != Container.uninit);
+        assert(cpy.cardinality != 0);
+        ra.array.containers[pos] = cpy;
+    }
+    ra.array.len += 1;
+}
+
+fn append_copies_until(
+    ra: *Bitmap,
+    allocator: mem.Allocator,
+    sa: *const Bitmap,
+    stopping_key: u16,
+    copy_on_write: bool,
+) !void {
+    for (0..sa.array.len, sa.array.keys) |i, k| {
+        if (k >= stopping_key) break;
+        try ra.append_copy(allocator, sa, @intCast(i), copy_on_write);
+    }
+}
+
+fn append_copies_after(ra: *Bitmap, allocator: mem.Allocator, sa: *const Bitmap, before_start: u16, copy_on_write: bool) !void {
+    var start_location = get_key_index(sa.*, before_start);
+    if (start_location >= 0)
+        start_location += 1
+    else
+        start_location = -start_location - 1;
+    try ra.append_copy_range(
+        allocator,
+        sa,
+        @intCast(start_location),
+        sa.array.len,
+        copy_on_write,
+    );
+}
+
+/// Compute the negation of the bitmap in the interval [range_start, range_end].
+/// The number of negated values is range_end - range_start + 1.
+/// Areas outside the range are passed through unchanged.
+fn flip_closed(x1: *const Bitmap, allocator: Allocator, range_start: u32, range_end: u32) !Bitmap {
+    trace(@src(), "{f} {} {}", .{ x1.fmtLong(), range_start, range_end });
+    if (range_start > range_end)
+        return x1.copy(allocator);
+
+    var hb_start: u16 = @truncate(range_start >> 16);
+    const lb_start: u16 = @truncate(range_start);
+    var hb_end: u16 = @truncate(range_end >> 16);
+    const lb_end: u16 = @truncate(range_end);
+
+    const max_containers = x1.array.len + (hb_end - hb_start + 1);
+    var ans = try create_with_capacity(allocator, max_containers, 0);
+    defer ans.assert_valid();
+    errdefer ans.deinit(allocator);
+    ans.set_copy_on_write(x1.is_cow());
+
+    try ans.append_copies_until(allocator, x1, hb_start, x1.is_cow());
+
+    if (hb_start == hb_end) {
+        try ans.insert_flipped_container(allocator, x1, hb_start, lb_start, lb_end);
+    } else { // start and end containers are distinct
+        if (lb_start > 0) { // handle first (partial) container
+            try ans.insert_flipped_container(allocator, x1, hb_start, lb_start, 0xFFFF);
+            hb_start += 1;
+        }
+
+        if (lb_end != 0xFFFF) hb_end -= 1; // later we'll handle the partial block
+
+        var hb: u32 = hb_start;
+        while (hb <= hb_end) : (hb += 1) {
+            try ans.insert_fully_flipped_container(allocator, x1, @truncate(hb));
+        }
+
+        if (lb_end != 0xFFFF) { // handle a partial final container
+            try ans.insert_flipped_container(allocator, x1, hb_end + 1, 0, lb_end);
+            hb_end += 1;
+        }
+    }
+
+    try ans.append_copies_after(allocator, x1, hb_end, x1.is_cow());
+
+    return ans;
+}
+
+/// flip the range [lb_start, lb_end] within key hb.
+///
+/// compute (in place) the negation of the roaring bitmap within a specified
+/// interval: [range_start, range_end). The number of negated values is
+/// range_end - range_start.
+/// Areas outside the range are passed through unchanged.
+fn insert_flipped_container(
+    ans: *Bitmap,
+    allocator: Allocator,
+    x1: *const Bitmap,
+    hb: u16,
+    lb_start: u16,
+    lb_end: u16,
+) !void {
+    const i = x1.get_key_index(hb);
+    const j = ans.get_key_index(hb);
+    if (i >= 0) {
+        const container_to_flip = &x1.array.containers[@intCast(i)];
+        const flipped_container = try container_to_flip.not_range(allocator, x1, lb_start, @as(u32, lb_end) + 1, ans);
+        if (flipped_container.nonzero_cardinality(ans.*)) {
+            try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, flipped_container);
+        } else if (flipped_container != Container.uninit and flipped_container.cardinality != 0) {
+            flipped_container.deinit_blocks(ans);
+        }
+    } else {
+        const result = try ans.range_of_ones(allocator, lb_start, @as(u32, lb_end) + 1);
+        try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, result);
+    }
+}
+
+/// flip the full key hb (range [0, 0xFFFF]).
+fn insert_fully_flipped_container(
+    ans: *Bitmap,
+    allocator: Allocator,
+    x1: *const Bitmap,
+    hb: u16,
+) !void {
+    const i = x1.get_key_index(hb);
+    const j = ans.get_key_index(hb);
+
+    if (i >= 0) {
+        const flipped_container = try x1.array.containers[@intCast(i)]
+            .not(allocator, x1, ans);
+        if (flipped_container.nonzero_cardinality(ans.*)) {
+            try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, flipped_container);
+        } else if (flipped_container != Container.uninit) {
+            flipped_container.deinit_blocks(ans);
+        }
+    } else {
+        const result = try ans.range_of_ones(allocator, 0, C.MAX_KEY_CARDINALITY);
+        try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, result);
+    }
 }
 
 fn validateTestdataFile(rb: Bitmap) !void {

@@ -35,6 +35,7 @@ fn deserializeOp(
         .frozen_serialize,
         .minimum,
         .maximum,
+        .statistics,
         => |idx| try deserializeFn(r, &rs[idx], allocator),
         .add,
         .contains,
@@ -46,6 +47,7 @@ fn deserializeOp(
         .add_range_closed,
         .contains_range,
         .range_cardinality,
+        .flip,
         => |o| try deserializeFn(r, &rs[o.idx], allocator),
         .remove,
         => |o| try deserializeFn(r, &rs[o.idx], allocator),
@@ -121,6 +123,9 @@ fn runBenchmarkOp(
     }
 }
 
+// FIXME - this approach reqiures building 2 * #fuzz.Op executables.  need to
+// modify gen-corups-playback to write a single file with all ops and a header
+// with op offsets.  and then call with `zig-out/bin/bench2 cr add`.
 fn runBenchmark(io: std.Io, allocator: std.mem.Allocator) !void {
     var ser_buf: [1024 * 1024]u8 align(zr.constants.BLOCK_ALIGN) = undefined;
     switch (build_options.bench_target) {
