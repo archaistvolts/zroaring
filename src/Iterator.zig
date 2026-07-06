@@ -19,10 +19,10 @@ fn load_first_value(it: *Iterator) bool {
     }
     it.has_value = true;
     const containers = it.parent.array.containers;
-    it.container = &containers[it.container_index];
+    it.container = containers[it.container_index];
     it.highbits = @as(u32, it.parent.array.keys[it.container_index]) << 16;
     var value: u16 = undefined;
-    it.container_it = it.container.init_iterator(it.parent, &value);
+    it.container_it = it.container.init_iterator(&value);
     it.current_value = it.highbits | value;
     return true;
 }
@@ -154,7 +154,7 @@ pub fn read(it: *Iterator, buf: []u32) u32 {
     while (it.has_value and ret < buf.len) {
         var consumed: u32 = 0;
         var low16: u16 = @truncate(it.current_value);
-        const has_val = it.container.iterator_read_into_uint32(it.parent, &it.container_it, it.highbits, buf[ret..], &consumed, &low16);
+        const has_val = it.container.iterator_read_into_uint32(&it.container_it, it.highbits, buf[ret..], &consumed, &low16);
         ret += consumed;
         if (has_val) {
             it.has_value = true;

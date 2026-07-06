@@ -1422,21 +1422,24 @@ inline fn psadbw_avx2(a: Block, b: Block) root.Block64 {
     );
 }
 
-/// number of groups of size in num. `size=8 | 0=>0, [1,8]=>1, [9,16]=>2` etc.
+/// number of groups of `size` in `num`. `size=8 | 0=>0, [1,8]=>1, [9,16]=>2` etc.
 ///
-/// align num forward to size and divide by size.
+/// align num forward to `size` and divide by `size`.
 ///
 /// example: `elemscapacity = numGroupsOfSize(capacity*@sizeOf(u16), elem_size)`.
-pub fn numGroupsOfSize(num: anytype, comptime size: anytype) @TypeOf(num) {
-    return (num + size - 1) / size;
+pub fn numGroupsOfSize(
+    num: anytype,
+    comptime size: anytype,
+) std.math.IntFittingRange(0, (math.maxInt(@TypeOf(num)) + size - 1) / size) {
+    return @intCast((num + size - 1) / size);
 }
 
 test numGroupsOfSize {
-    try testing.expectEqual(0, numGroupsOfSize(0, 8));
-    try testing.expectEqual(1, numGroupsOfSize(1, 8));
-    try testing.expectEqual(1, numGroupsOfSize(8, 8));
-    try testing.expectEqual(2, numGroupsOfSize(9, 8));
-    try testing.expectEqual(2, numGroupsOfSize(16, 8));
+    try testing.expectEqual(0, numGroupsOfSize(@as(u8, 0), 8));
+    try testing.expectEqual(1, numGroupsOfSize(@as(u8, 1), 8));
+    try testing.expectEqual(1, numGroupsOfSize(@as(u8, 8), 8));
+    try testing.expectEqual(2, numGroupsOfSize(@as(u8, 9), 8));
+    try testing.expectEqual(2, numGroupsOfSize(@as(u8, 16), 8));
 }
 
 /// a u8 with t1 in hi nibble, t2 in lo nibble
