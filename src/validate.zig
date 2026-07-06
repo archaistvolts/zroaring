@@ -25,7 +25,7 @@ fn validateRoundTrip(
             misc.trace(@src(), "  values {} index {}", .{ values.len, zr.get_index(v) });
             misc.trace(@src(), "  zr {f}", .{zr});
             const c1 = zr.array.containers[@intCast(zr.get_index(v))];
-            misc.trace(@src(), "  container {}: {f}", .{ zr.get_index(v), c1.fmt(zr, key) });
+            misc.trace(@src(), "  container {}: {f}", .{ zr.get_index(v), c1.fmt(key) });
             return e;
         };
     }

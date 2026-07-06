@@ -250,7 +250,7 @@ fn runBenchmarkGeneric(
 /// count and time for each op
 const OpStats = std.EnumArray(fuzz.Op.Tag, struct { u64, Io.Duration });
 
-const sep = "-" ** 52 ++ "\n";
+const sep = @as([52]u8, @splat('-')) ++ "\n";
 const fast = "⚡";
 const ok = "👍🏻";
 const slow = "🥔";

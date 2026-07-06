@@ -1,7 +1,7 @@
 test "croaring oracle fuzz" { // primary zig fuzzing routine
     const Context = struct {
         fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
-            try croaringOracle(smith, testgpa);
+            try croaringOracle(testgpa, smith);
         }
     };
     const corpus = try loadCorpus(testing.io, "testdata/crashfiles");
@@ -10,6 +10,29 @@ test "croaring oracle fuzz" { // primary zig fuzzing routine
         testgpa.free(corpus);
     }
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = corpus });
+}
+
+test "crash corpus" {
+    for (crash_corpus) |ops| {
+        try cr_perform_ops(testgpa, ops);
+        if (testing.allocator_instance.deinit() == .leak) @panic("leak detected!");
+        testing.allocator_instance = .init;
+    }
+}
+
+test "allocation failures with crash corpus" {
+    if (!@import("build-options").run_slow_tests) return error.SkipZigTest;
+    for (crash_corpus) |ops| {
+        try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
+    }
+}
+
+test "allocation failures corpus" {
+    if (true) return error.SkipZigTest;
+    const corpus: []const []const Op = @import("fuzz-alloc-failures-corpus.zon");
+    for (corpus) |ops| {
+        try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
+    }
 }
 
 fn loadPath(io: Io, path: []const u8) ![]const u8 {
@@ -55,7 +78,7 @@ fn croaringFuzzFile(io: Io, path: []const u8) !void {
     const contents = loadPath(io, path) catch return;
     defer testgpa.free(contents);
     var smith = testing.Smith{ .in = contents };
-    try croaringOracle(&smith, testgpa);
+    try croaringOracle(testgpa, &smith);
 }
 
 test "croaring oracle crash - current" {
@@ -156,12 +179,13 @@ pub const MAX_VAL = 100_000_000;
 pub const MAX_RANGE_LEN = 500_000;
 pub const NUM_BITMAPS = 8;
 
-fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
+fn croaringOracle(allocator: mem.Allocator, smith: *testing.Smith) !void {
     var rs: [NUM_BITMAPS]Bitmap = @splat(.empty);
     defer for (&rs) |*x| x.deinit(allocator);
     var oracles: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;
     for (&oracles) |*o| o.* = c.roaring_bitmap_create().?;
     defer for (oracles) |o| c.roaring_bitmap_free(o);
+    var idxs: [NUM_BITMAPS + 1]u8 = undefined;
 
     fuzzprint("\n\n// begin croaringOracle\n", .{});
     while (!smith.eos()) {
@@ -191,7 +215,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                     } },
                 );
             },
-            .remove => break :fuzz_op .{ .remove = .{
+            .remove => .{ .remove = .{
                 .idx = idx,
                 .pick_existing = smith.value(u8),
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
@@ -201,7 +225,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .xor,
             .andnot,
             .lazy_or,
-            => |t| break :fuzz_op @unionInit(Op, @tagName(t), .{
+            => |t| @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src2 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
@@ -215,12 +239,11 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
             .andnot_cardinality,
             .jaccard_index,
             .equals,
-            => |t| break :fuzz_op @unionInit(Op, @tagName(t), .{
+            => |t| @unionInit(Op, @tagName(t), .{
                 .idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
                 .src1 = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS),
             }),
             inline .or_many => |t| {
-                var idxs: [NUM_BITMAPS + 1]u8 = undefined;
                 const len = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS + 1);
                 for (idxs[0..len]) |*x| x.* = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS);
                 break :fuzz_op @unionInit(Op, @tagName(t), .{ .idxs = idxs[0..len] });
@@ -243,6 +266,7 @@ fn croaringOracle(smith: *testing.Smith, allocator: mem.Allocator) !void {
                 .val = smith.valueRangeLessThan(u32, 0, MAX_VAL),
             }),
         };
+
         try perform_op(fuzz_op, &oracles, &rs, allocator);
     }
 }
@@ -1265,7 +1289,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
                 std.debug.print("\n", .{});
             }
             try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
-            for (r.slice(.containers, .len), 0..) |zc, i| {
+            for (r.get_containers(), 0..) |zc, i| {
                 //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
                 try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
                 const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
@@ -1273,7 +1297,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
                     zroaring.constants.BITSET_UNKNOWN_CARDINALITY
                 else
                     cr_raw;
-                try testing.expectEqual(cr_card, zc.get_cardinality(r));
+                try testing.expectEqual(cr_card, zc.get_cardinality());
             }
         }
 
@@ -1394,19 +1418,6 @@ fn cr_perform_ops(allocator: mem.Allocator, ops: []const Op) !void {
 fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
     if (!@import("build-options").fuzzprint) return;
     std.debug.print(fmt, args);
-}
-
-test "crash corpus" {
-    for (crash_corpus) |ops| {
-        try cr_perform_ops(testgpa, ops);
-    }
-}
-
-test "allocation failures with crash corpus" {
-    if (!@import("build-options").run_slow_tests) return error.SkipZigTest;
-    for (crash_corpus) |ops| {
-        try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
-    }
 }
 
 test "crash0" {
