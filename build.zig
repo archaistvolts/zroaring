@@ -53,7 +53,10 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     libcroaring.root_module.addIncludePath(b.path("src/c"));
-    libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    libcroaring.root_module.addCSourceFile(.{
+        .file = b.path("src/c/roaring.c"),
+        .flags = &.{ "-Wno-override-module", "-D_FORTIFY_SOURCE=0" },
+    });
     if (!avx512) libcroaring.root_module.addCMacro("CROARING_COMPILER_SUPPORTS_AVX512", "0");
 
     const tests = b.addTest(.{
@@ -76,36 +79,41 @@ pub fn build(b: *std.Build) !void {
 
     // AFL++ fuzzing exe
     if (b.option(bool, "fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
-        // a step for generating fuzzing tooling
+        const fuzz_mod = b.createModule(.{
+            .root_source_file = b.path("src/fuzz.zig"),
+            .target = target,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+            .stack_check = false,
+            .fuzz = true,
+            .imports = &.{
+                .{ .name = "zroaring", .module = zr_mod },
+                .{ .name = "build-options", .module = options_mod },
+                .{ .name = "croaring", .module = translate_cr_mod },
+            },
+        });
+        fuzz_mod.linkLibrary(libcroaring);
         // an object file that contains the test function
         const afl_obj = b.addObject(.{
             .name = "fuzz_obj",
             .use_llvm = use_llvm,
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/fuzz.zig"),
-                .target = target,
-                .optimize = .ReleaseSafe,
-                .link_libc = true,
-                .stack_check = false,
-                .fuzz = true,
-                .imports = &.{
-                    .{ .name = "zroaring", .module = zr_mod },
-                    .{ .name = "build-options", .module = options_mod },
-                    .{ .name = "croaring", .module = translate_cr_mod },
-                },
-            }),
+            .root_module = fuzz_mod,
         });
-        // TODO afl_obj.root_module.linkLibrary(libcroaring); // https://github.com/kristoff-it/zig-afl-kit/issues/14
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
-        // Generate an instrumented executable and install.  but only when afl-cc is present.
-        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{
-            // "-Lzig-out/lib/",
-            // "-lcroaring",
-        }).?;
+        const afl_cc = b.findProgram(&.{"afl-clang-lto"}, &.{}) catch @panic("afl-clang-lto not found; is AFL++ installed?");
+        const run_afl_cc = b.addSystemCommand(&.{ afl_cc, "-O3" });
+        run_afl_cc.addArg("-o");
+        const fuzz_exe = run_afl_cc.addOutputFileArg("fuzz-afl");
+        run_afl_cc.addFileArg(b.path("src/fuzz-afl-main.c"));
+        run_afl_cc.addFileArg(b.path("src/c/roaring.c"));
+        run_afl_cc.addArg("-I");
+        run_afl_cc.addDirectoryArg(b.path("src/c"));
+        run_afl_cc.addFileArg(afl_obj.getEmittedLlvmBc());
+        run_afl_cc.addArg("-lc");
 
-        const install_afl_fuzz = b.addInstallBinFile(afl_fuzz, "fuzz-afl");
-        b.getInstallStep().dependOn(&install_afl_fuzz.step);
+        const install_afl = b.addInstallBinFile(fuzz_exe, "fuzz-afl");
+        b.getInstallStep().dependOn(&install_afl.step);
     }
 
     const exe = b.addExecutable(.{
@@ -142,6 +150,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(gen_corpus);
     b.step("gen-afl-corpus", "Generate afl/input/ corpus files.")
         .dependOn(&b.addRunArtifact(gen_corpus).step);
+    gen_corpus.root_module.linkLibrary(libcroaring);
 
     const afl_main = b.addExecutable(.{
         .name = "afl-run",
@@ -158,6 +167,7 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(afl_main);
     b.step("afl-run", "fuzz a single afl/output/ file")
         .dependOn(&b.addRunArtifact(afl_main).step);
+    afl_main.root_module.linkLibrary(libcroaring);
 
     const bench_exe = b.addExecutable(.{
         .name = "bench",

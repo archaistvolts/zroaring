@@ -3,12 +3,7 @@
     .version = "0.0.1",
     .fingerprint = 0xd02d5a2babbace84, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{
-        .afl_kit = .{
-            .url = "git+https://github.com/kristoff-it/zig-afl-kit#395c39d5b33d999f6871a90bd731ec112d3995ca",
-            .hash = "afl_kit-0.1.0-NdJ3ch8eAABQkd1wk2W-JDCvvX5Jmnu3uJulS3lPepG7",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

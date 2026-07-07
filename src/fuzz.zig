@@ -196,7 +196,7 @@ fn croaringOracle(allocator: mem.Allocator, smith: *testing.Smith) !void {
             .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) } },
             .add_many => {
                 const len = smith.valueRangeLessThan(u8, 1, vals.len);
-                for (0..len) |i| vals[i] = smith.valueRangeLessThan(u32, 0, MAX_VAL);
+                for (&vals) |*v| v.* = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 break :fuzz_op .{ .add_many = .{ .idx = idx, .vals = vals[0..len] } };
             },
             inline .add_range_closed,
@@ -272,6 +272,19 @@ fn croaringOracle(allocator: mem.Allocator, smith: *testing.Smith) !void {
 }
 
 // -- AFL fuzzing
+fn croaringOracleAfl(allocator: mem.Allocator, smith: *AflSmith) !void {
+    var zrs: [NUM_BITMAPS]Bitmap = @splat(.empty);
+    defer for (&zrs) |*x| x.deinit(allocator);
+    var oracles: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;
+    for (&oracles) |*o| o.* = c.roaring_bitmap_create().?;
+    defer for (oracles) |o| c.roaring_bitmap_free(o);
+
+    fuzzprint("\n\n// begin croaringOracleAfl\n", .{});
+    var buf: [8]u32 = undefined;
+    while (smith.nextOp(&buf)) |op| {
+        try perform_op(op, &oracles, &zrs, allocator);
+    }
+}
 
 export fn zig_fuzz_init() void {}
 
@@ -286,7 +299,9 @@ var arena_impl: std.heap.ArenaAllocator = .{
 
 fn zig_fuzz_test1(in: []const u8) !void {
     _ = arena_impl.reset(.retain_capacity);
-    try hashMapOracle(in, arena_impl.allocator());
+    var bytes = Io.Reader.fixed(in);
+    var smith: AflSmith = .{ .bytes = &bytes };
+    try croaringOracleAfl(arena_impl.allocator(), &smith);
 }
 
 const AflSmith = struct {
@@ -394,30 +409,6 @@ const AflSmith = struct {
         };
     }
 };
-
-const HashMapOracle = std.AutoArrayHashMapUnmanaged(u32, void);
-const HashMapOracleSortCtx = struct {
-    keys: []u32,
-    pub fn lessThan(ctx: @This(), a_index: usize, b_index: usize) bool {
-        return ctx.keys[a_index] < ctx.keys[b_index];
-    }
-};
-
-fn hashMapOracle(in: []const u8, allocator: mem.Allocator) !void {
-    var rbs: [NUM_BITMAPS]Bitmap = @splat(.empty);
-    defer for (&rbs) |*rb| rb.deinit(allocator);
-    var oracles: [NUM_BITMAPS]HashMapOracle = @splat(.empty);
-    defer for (&oracles) |*o| o.deinit(allocator);
-    for (&oracles) |*o| try o.ensureTotalCapacity(allocator, 1024 * 16);
-    var fbs = Io.Reader.fixed(in);
-    var smith = AflSmith{ .bytes = &fbs };
-
-    fuzzprint("\n\n// begin hashMapOracle\n", .{});
-    var buf: [8]u32 = undefined;
-    while (smith.nextOp(&buf)) |op| {
-        try perform_op(op, &oracles, &rbs, allocator);
-    }
-}
 
 fn fuzzAflCrashFiles(io: Io, path: []const u8) !void {
     var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
@@ -628,17 +619,12 @@ pub fn readOp(r: *Io.Reader, buf: []u32) !Op {
 
 // -- end AFL fuzzing
 
-/// oracles: either `*[NUM_BITMAPS][*c]c.roaring_bitmap_t` or `*[NUM_BITMAPS]*HashMapOracle`.
 fn perform_op(
     op: Op,
-    oracles: anytype,
+    oracles: *[NUM_BITMAPS][*c]c.roaring_bitmap_t,
     rs: *[NUM_BITMAPS]Bitmap,
     allocator: mem.Allocator,
 ) !void {
-    const Os = @TypeOf(oracles);
-    const is_cr = Os == *[NUM_BITMAPS][*c]c.roaring_bitmap_t;
-    const is_hashmap = Os == *[NUM_BITMAPS]HashMapOracle;
-    comptime assert(is_cr or is_hashmap);
     switch (op) {
         .add, // only print ops which may mutate
         .remove,
@@ -685,56 +671,31 @@ fn perform_op(
     switch (op) {
         .add => |o| {
             try rs[o.idx].add(allocator, o.val);
-            if (is_cr)
-                c.roaring_bitmap_add(oracles[o.idx], o.val)
-            else
-                try oracles[o.idx].put(allocator, o.val, {});
+            c.roaring_bitmap_add(oracles[o.idx], o.val);
         },
         .add_many => |o| {
             _ = try rs[o.idx].add_many(allocator, o.vals);
-            if (is_cr)
-                c.roaring_bitmap_add_many(oracles[o.idx], o.vals.len, o.vals.ptr)
-            else {
-                try oracles[o.idx].ensureUnusedCapacity(allocator, o.vals.len);
-                for (o.vals) |x|
-                    oracles[o.idx].putAssumeCapacity(x, {});
-            }
+            c.roaring_bitmap_add_many(oracles[o.idx], o.vals.len, o.vals.ptr);
         },
         .add_range_closed => |o| {
             const val1, const val2 = o.vals;
             try rs[o.idx].add_range_closed(allocator, val1, val2);
-            if (is_cr)
-                c.roaring_bitmap_add_range_closed(oracles[o.idx], val1, val2)
-            else {
-                try oracles[o.idx].ensureUnusedCapacity(allocator, val2 + 1 - val1);
-                var x = val1;
-                while (x <= val2) : (x += 1)
-                    oracles[o.idx].putAssumeCapacity(x, {});
-            }
+            c.roaring_bitmap_add_range_closed(oracles[o.idx], val1, val2);
         },
         .remove => |o| {
-            const card = if (is_cr)
-                c.roaring_bitmap_get_cardinality(oracles[o.idx])
-            else
-                oracles[o.idx].count();
+            const card =
+                c.roaring_bitmap_get_cardinality(oracles[o.idx]);
 
-            // 90% chance to pick existing (255 * 0.10 = ~25)
-            const val = if (o.pick_existing > 25 and card > 0) val: {
+            // 75% chance to pick existing (255 * 0.25 = ~60)
+            const val = if (o.pick_existing > 60 and card > 0) val: {
                 const rank = o.val % @as(u32, @truncate(card));
                 var existing_val: u32 = undefined;
-                if (is_cr) {
-                    assert(c.roaring_bitmap_select(oracles[o.idx], rank, &existing_val));
-                } else {
-                    existing_val = oracles[o.idx].keys()[rank];
-                }
+                assert(c.roaring_bitmap_select(oracles[o.idx], rank, &existing_val));
                 break :val existing_val;
             } else o.val;
 
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_remove_checked(oracles[o.idx], val)
-                else
-                    oracles[o.idx].swapRemove(val),
+                c.roaring_bitmap_remove_checked(oracles[o.idx], val),
                 try rs[o.idx].remove_checked(allocator, val),
             );
         },
@@ -754,238 +715,66 @@ fn perform_op(
             };
             errdefer res.deinit(allocator);
 
-            if (is_cr) {
-                const cr_res = switch (op) {
-                    .@"and" => c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]),
-                    .@"or" => c.roaring_bitmap_or(oracles[o.src1], oracles[o.src2]),
-                    .xor => c.roaring_bitmap_xor(oracles[o.src1], oracles[o.src2]),
-                    .andnot => c.roaring_bitmap_andnot(oracles[o.src1], oracles[o.src2]),
-                    .lazy_or => c.roaring_bitmap_lazy_or(
-                        oracles[o.src1],
-                        oracles[o.src2],
-                        zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
-                    ),
-                    else => unreachable,
-                };
-
-                if (oracles[o.idx]) |old| c.roaring_bitmap_free(old);
-                oracles[o.idx] = cr_res;
-                if (op == .lazy_or) c.roaring_bitmap_repair_after_lazy(oracles[o.idx]);
-            } else switch (op) {
-                .@"and" => {
-                    var ret = HashMapOracle.empty;
-                    try ret.ensureTotalCapacity(allocator, @min(
-                        oracles[o.src1].count(),
-                        oracles[o.src2].count(),
-                    ));
-                    for (oracles[o.src1].keys()) |key| {
-                        if (oracles[o.src2].contains(key)) {
-                            ret.putAssumeCapacity(key, {});
-                        }
-                    }
-                    oracles[o.idx].deinit(allocator);
-                    oracles[o.idx] = ret;
-                },
-                .@"or", .lazy_or => {
-                    var ret = HashMapOracle.empty;
-                    try ret.ensureTotalCapacity(
-                        allocator,
-                        oracles[o.src1].count() + oracles[o.src2].count(),
-                    );
-                    for (oracles[o.src1].keys()) |key|
-                        ret.putAssumeCapacity(key, {});
-                    for (oracles[o.src2].keys()) |key|
-                        ret.putAssumeCapacity(key, {});
-
-                    oracles[o.idx].deinit(allocator);
-                    oracles[o.idx] = ret;
-                },
-                .xor => {
-                    var ret = HashMapOracle.empty;
-                    try ret.ensureTotalCapacity(
-                        allocator,
-                        oracles[o.src1].count() + oracles[o.src2].count(),
-                    );
-                    const s1 = &oracles[o.src1];
-                    const s2 = &oracles[o.src2];
-                    for (s1.keys()) |key|
-                        if (!s2.contains(key)) ret.putAssumeCapacity(key, {});
-                    for (s2.keys()) |key|
-                        if (!s1.contains(key)) ret.putAssumeCapacity(key, {});
-
-                    oracles[o.idx].deinit(allocator);
-                    oracles[o.idx] = ret;
-                },
-                .andnot => {
-                    var ret = HashMapOracle.empty;
-                    try ret.ensureTotalCapacity(allocator, @max(
-                        oracles[o.src1].count(),
-                        oracles[o.src2].count(),
-                    ));
-                    for (oracles[o.src1].keys()) |key| {
-                        if (!oracles[o.src2].contains(key))
-                            ret.putAssumeCapacity(key, {});
-                    }
-
-                    oracles[o.idx].deinit(allocator);
-                    oracles[o.idx] = ret;
-                },
+            const cr_res = switch (op) {
+                .@"and" => c.roaring_bitmap_and(oracles[o.src1], oracles[o.src2]),
+                .@"or" => c.roaring_bitmap_or(oracles[o.src1], oracles[o.src2]),
+                .xor => c.roaring_bitmap_xor(oracles[o.src1], oracles[o.src2]),
+                .andnot => c.roaring_bitmap_andnot(oracles[o.src1], oracles[o.src2]),
+                .lazy_or => c.roaring_bitmap_lazy_or(
+                    oracles[o.src1],
+                    oracles[o.src2],
+                    zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
+                ),
                 else => unreachable,
-            }
+            };
 
-            if (op == .lazy_or)
+            if (oracles[o.idx]) |old| c.roaring_bitmap_free(old);
+            oracles[o.idx] = cr_res;
+            if (op == .lazy_or) {
+                c.roaring_bitmap_repair_after_lazy(oracles[o.idx]);
                 try res.repair_after_lazy(allocator);
+            }
 
             rs[o.idx].deinit(allocator);
             rs[o.idx] = res;
         },
         .or_inplace => |o| {
             try rs[o.idx].or_inplace(allocator, rs[o.src1]);
-            if (is_cr) {
-                c.roaring_bitmap_or_inplace(oracles[o.idx], oracles[o.src1]);
-            } else {
-                try oracles[o.idx].ensureUnusedCapacity(
-                    allocator,
-                    oracles[o.src1].count() * 5 / 4,
-                );
-                for (oracles[o.src1].keys()) |key|
-                    oracles[o.idx].putAssumeCapacity(key, {});
-            }
+            c.roaring_bitmap_or_inplace(oracles[o.idx], oracles[o.src1]);
         },
         .and_inplace => |o| {
             try rs[o.idx].and_inplace(allocator, &rs[o.src1]);
-            if (is_cr) {
-                c.roaring_bitmap_and_inplace(oracles[o.idx], oracles[o.src1]);
-            } else {
-                var i = oracles[o.idx].count();
-                const keys = oracles[o.idx].keys();
-                while (i != 0) {
-                    i -= 1;
-                    const key = keys[i];
-                    if (!oracles[o.src1].contains(key)) {
-                        _ = oracles[o.idx].swapRemove(key);
-                    }
-                }
-            }
+            c.roaring_bitmap_and_inplace(oracles[o.idx], oracles[o.src1]);
         },
         .and_cardinality => |o| {
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_and_cardinality(oracles[o.idx], oracles[o.src1]),
-                    rs[o.idx].and_cardinality(rs[o.src1]),
-                );
-            } else {
-                var tmp = HashMapOracle.empty;
-                defer tmp.deinit(allocator);
-                try tmp.ensureTotalCapacity(allocator, @min(
-                    oracles[o.idx].count(),
-                    oracles[o.src1].count(),
-                ));
-                for (oracles[o.idx].keys()) |key| {
-                    if (oracles[o.src1].contains(key)) {
-                        tmp.putAssumeCapacity(key, {});
-                    }
-                }
-                try testing.expectEqual(tmp.count(), rs[o.idx].and_cardinality(rs[o.src1]));
-            }
+            try testing.expectEqual(
+                c.roaring_bitmap_and_cardinality(oracles[o.idx], oracles[o.src1]),
+                rs[o.idx].and_cardinality(rs[o.src1]),
+            );
         },
         .or_cardinality => |o| {
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_or_cardinality(oracles[o.idx], oracles[o.src1]),
-                    rs[o.idx].or_cardinality(rs[o.src1]),
-                );
-            } else {
-                var tmp = HashMapOracle.empty;
-                defer tmp.deinit(allocator);
-                try tmp.ensureTotalCapacity(
-                    allocator,
-                    oracles[o.idx].count() + oracles[o.src1].count(),
-                );
-                for (oracles[o.idx].keys()) |key|
-                    tmp.putAssumeCapacity(key, {});
-                for (oracles[o.src1].keys()) |key|
-                    tmp.putAssumeCapacity(key, {});
-
-                try testing.expectEqual(
-                    tmp.count(),
-                    rs[o.idx].or_cardinality(rs[o.src1]),
-                );
-            }
+            try testing.expectEqual(
+                c.roaring_bitmap_or_cardinality(oracles[o.idx], oracles[o.src1]),
+                rs[o.idx].or_cardinality(rs[o.src1]),
+            );
         },
         .xor_cardinality => |o| {
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_xor_cardinality(oracles[o.idx], oracles[o.src1]),
-                    rs[o.idx].xor_cardinality(rs[o.src1]),
-                );
-            } else {
-                var tmp = HashMapOracle.empty;
-                defer tmp.deinit(allocator);
-                try tmp.ensureTotalCapacity(
-                    allocator,
-                    oracles[o.idx].count() + oracles[o.src1].count(),
-                );
-
-                const s1 = &oracles[o.idx];
-                const s2 = &oracles[o.src1];
-                for (s1.keys()) |key|
-                    if (!s2.contains(key)) tmp.putAssumeCapacity(key, {});
-                for (s2.keys()) |key|
-                    if (!s1.contains(key)) tmp.putAssumeCapacity(key, {});
-
-                try testing.expectEqual(
-                    tmp.count(),
-                    rs[o.idx].xor_cardinality(rs[o.src1]),
-                );
-            }
+            try testing.expectEqual(
+                c.roaring_bitmap_xor_cardinality(oracles[o.idx], oracles[o.src1]),
+                rs[o.idx].xor_cardinality(rs[o.src1]),
+            );
         },
         .andnot_cardinality => |o| {
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_andnot_cardinality(oracles[o.idx], oracles[o.src1]),
-                    rs[o.idx].andnot_cardinality(rs[o.src1]),
-                );
-            } else {
-                var ret = HashMapOracle.empty;
-                defer ret.deinit(allocator);
-                try ret.ensureTotalCapacity(allocator, @max(
-                    oracles[o.idx].count(),
-                    oracles[o.src1].count(),
-                ));
-                for (oracles[o.idx].keys()) |key| {
-                    if (!oracles[o.src1].contains(key))
-                        ret.putAssumeCapacity(key, {});
-                }
-                try testing.expectEqual(
-                    ret.count(),
-                    rs[o.idx].andnot_cardinality(rs[o.src1]),
-                );
-            }
+            try testing.expectEqual(
+                c.roaring_bitmap_andnot_cardinality(oracles[o.idx], oracles[o.src1]),
+                rs[o.idx].andnot_cardinality(rs[o.src1]),
+            );
         },
         .jaccard_index => |o| {
-            if (is_cr) {
-                const expected = c.roaring_bitmap_jaccard_index(oracles[o.idx], oracles[o.src1]);
-                const actual = rs[o.idx].jaccard_index(rs[o.src1]);
-                if (!std.math.isNan(expected) or !std.math.isNan(actual))
-                    try testing.expectApproxEqAbs(expected, actual, 0.000000001);
-            } else {
-                const a = &oracles[o.idx];
-                const b = &oracles[o.src1];
-                var inter: u64 = 0;
-                const short, const long = if (a.count() < b.count()) .{ a, b } else .{ b, a };
-                for (short.keys()) |key| {
-                    if (long.contains(key)) inter += 1;
-                }
-                const union_count = a.count() + b.count() - inter;
-                const jaccard = if (union_count == 0)
-                    0.0
-                else
-                    @as(f64, @floatFromInt(inter)) / @as(f64, @floatFromInt(union_count));
-                const actual = rs[o.idx].jaccard_index(rs[o.src1]);
-                if (!std.math.isNan(actual))
-                    try testing.expectApproxEqAbs(jaccard, actual, 0.000000001);
-            }
+            const expected = c.roaring_bitmap_jaccard_index(oracles[o.idx], oracles[o.src1]);
+            const actual = rs[o.idx].jaccard_index(rs[o.src1]);
+            if (!std.math.isNan(expected) or !std.math.isNan(actual))
+                try testing.expectApproxEqAbs(expected, actual, 0.000000001);
         },
         .or_many => |o| {
             if (o.idxs.len == 0) return; // nothing to do
@@ -1001,58 +790,29 @@ fn perform_op(
             rs[o.idxs[0]].deinit(allocator);
             rs[o.idxs[0]] = result;
 
-            if (is_cr) {
-                const ret = c.roaring_bitmap_or_many(o.idxs.len, @ptrCast(&osbuf));
-                if (oracles[o.idxs[0]]) |old| c.roaring_bitmap_free(old);
-                oracles[o.idxs[0]] = ret;
-            } else {
-                var cap: usize = 0;
-                for (o.idxs) |src| cap += oracles[src].count();
-                var ret = HashMapOracle.empty;
-                try ret.ensureTotalCapacity(allocator, cap);
-                for (o.idxs) |src| {
-                    for (oracles[src].keys()) |key|
-                        ret.putAssumeCapacity(key, {});
-                }
-                oracles[o.idxs[0]].deinit(allocator);
-                oracles[o.idxs[0]] = ret;
-            }
+            const ret = c.roaring_bitmap_or_many(o.idxs.len, @ptrCast(&osbuf));
+            if (oracles[o.idxs[0]]) |old| c.roaring_bitmap_free(old);
+            oracles[o.idxs[0]] = ret;
         },
         .is_subset => |o| {
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_is_subset(oracles[o.idx], oracles[o.src1])
-                else blk: {
-                    const s1 = oracles[o.idx];
-                    const s2 = oracles[o.src1];
-                    if (s1.count() > s2.count()) break :blk false;
-                    for (s1.keys()) |key| {
-                        if (!s2.contains(key)) break :blk false;
-                    }
-                    break :blk true;
-                },
+                c.roaring_bitmap_is_subset(oracles[o.idx], oracles[o.src1]),
                 rs[o.idx].is_subset(rs[o.src1]),
             );
         },
         .clear => |idx| {
             rs[idx].clear(allocator);
-            if (is_cr)
-                c.roaring_bitmap_clear(oracles[idx])
-            else
-                oracles[idx].clearRetainingCapacity();
+            c.roaring_bitmap_clear(oracles[idx]);
         },
         .run_optimize => |idx| {
-            const res = try rs[idx].run_optimize(allocator);
-            if (is_cr)
-                try testing.expectEqual(
-                    c.roaring_bitmap_run_optimize(oracles[idx]),
-                    res,
-                );
+            try testing.expectEqual(
+                c.roaring_bitmap_run_optimize(oracles[idx]),
+                try rs[idx].run_optimize(allocator),
+            );
         },
         .shrink_to_fit => |idx| {
+            _ = c.roaring_bitmap_shrink_to_fit(oracles[idx]);
             _ = try rs[idx].shrink_to_fit(allocator);
-            if (is_cr)
-                _ = c.roaring_bitmap_shrink_to_fit(oracles[idx]);
         },
         .portable_serialize => |idx| {
             var w = Io.Writer.Allocating.init(allocator);
@@ -1063,13 +823,12 @@ fn perform_op(
             };
             const buf = try allocator.alloc(u8, size);
             defer allocator.free(buf);
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr),
-                    size,
-                );
-                try testing.expectEqualSlices(u8, buf, w.written());
-            }
+
+            try testing.expectEqual(
+                c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr),
+                size,
+            );
+            try testing.expectEqualSlices(u8, buf, w.written());
         },
         .portable_deserialize => |idx| {
             const zbuf = try allocator.alloc(u8, rs[idx].portable_size_in_bytes());
@@ -1082,158 +841,93 @@ fn perform_op(
             var z = try Bitmap.portable_deserialize(allocator, zbuf);
             defer z.deinit(allocator);
 
-            if (is_cr) {
-                const buf = try allocator.alloc(u8, z.portable_size_in_bytes());
-                defer allocator.free(buf);
-                const crsize = c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr);
-                const cr = c.roaring_bitmap_portable_deserialize(buf.ptr);
-                defer c.roaring_bitmap_free(cr);
-                try testing.expectEqual(crsize, zrsize);
-                try testing.expectEqualSlices(u8, buf, zbuf);
-            }
+            const buf = try allocator.alloc(u8, z.portable_size_in_bytes());
+            defer allocator.free(buf);
+            const crsize = c.roaring_bitmap_portable_serialize(oracles[idx], buf.ptr);
+            const cr = c.roaring_bitmap_portable_deserialize(buf.ptr);
+            defer c.roaring_bitmap_free(cr);
+            try testing.expectEqual(crsize, zrsize);
+            try testing.expectEqualSlices(u8, buf, zbuf);
         },
         .frozen_serialize => |idx| {
             const size = rs[idx].frozen_size_in_bytes();
             const buf = try allocator.alloc(u8, size);
             defer allocator.free(buf);
             try rs[idx].frozen_serialize(buf);
-            if (is_cr) {
-                try testing.expectEqual(
-                    c.roaring_bitmap_frozen_size_in_bytes(oracles[idx]),
-                    size,
-                );
-                // TODO is it documented that c.roaring_bitmap_frozen_serialize
-                // needs a non-empty bitmap.  if not make issue.
-                if (oracles[idx].*.high_low_container.size != 0) {
-                    const buf2 = try allocator.alloc(u8, size);
-                    defer allocator.free(buf2);
-                    c.roaring_bitmap_frozen_serialize(oracles[idx], buf2.ptr);
-                    try testing.expectEqualSlices(u8, buf, buf2);
-                }
+
+            try testing.expectEqual(
+                c.roaring_bitmap_frozen_size_in_bytes(oracles[idx]),
+                size,
+            );
+            // TODO is it documented that c.roaring_bitmap_frozen_serialize
+            // needs a non-empty bitmap.  if not make issue.
+            if (oracles[idx].*.high_low_container.size != 0) {
+                const buf2 = try allocator.alignedAlloc(u8, .of(u64), size);
+                defer allocator.free(buf2);
+                c.roaring_bitmap_frozen_serialize(oracles[idx], buf2.ptr);
+                try testing.expectEqualSlices(u8, buf, buf2);
             }
         },
         .equals => |o| {
-            try testing.expect(rs[o.idx].equals(rs[o.idx]));
-            try testing.expect(rs[o.src1].equals(rs[o.src1]));
+            try testing.expectEqual(
+                c.roaring_bitmap_equals(oracles[o.idx], oracles[o.src1]),
+                rs[o.idx].equals(rs[o.src1]),
+            );
+            try testing.expectEqual(
+                c.roaring_bitmap_equals(oracles[o.idx], oracles[o.idx]),
+                rs[o.idx].equals(rs[o.idx]),
+            );
         },
         .minimum => |idx| {
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_minimum(oracles[idx])
-                else if (oracles[idx].count() == 0)
-                    std.math.maxInt(u32)
-                else
-                    mem.min(u32, oracles[idx].keys()),
+                c.roaring_bitmap_minimum(oracles[idx]),
                 rs[idx].minimum(),
             );
         },
         .maximum => |idx| {
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_maximum(oracles[idx])
-                else if (oracles[idx].count() == 0)
-                    0
-                else
-                    mem.max(u32, oracles[idx].keys()),
+                c.roaring_bitmap_maximum(oracles[idx]),
                 rs[idx].maximum(),
             );
         },
         .rank => |o| {
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_rank(oracles[o.idx], o.val)
-                else blk: {
-                    oracles[o.idx].sortUnstable(HashMapOracleSortCtx{ .keys = oracles[o.idx].keys() });
-                    break :blk for (oracles[o.idx].keys(), 0..) |k, i| {
-                        if (k > o.val) break i;
-                    } else oracles[o.idx].count();
-                },
+                c.roaring_bitmap_rank(oracles[o.idx], o.val),
                 rs[o.idx].rank(o.val),
             );
         },
         .select => |o| blk: {
-            const card: u32 = @intCast(if (is_cr)
-                c.roaring_bitmap_get_cardinality(oracles[o.idx])
-            else
-                oracles[o.idx].count());
+            const card: u32 = @intCast(c.roaring_bitmap_get_cardinality(oracles[o.idx]));
+
             if (card == 0) break :blk;
             const mzr_val = rs[o.idx].select(o.val % card);
             const zr_ok = mzr_val != null;
-            if (is_cr) {
-                var cr_val: u32 = undefined;
-                const cr_ok = c.roaring_bitmap_select(
-                    oracles[o.idx],
-                    o.val % card,
-                    &cr_val,
-                );
-                try std.testing.expectEqual(cr_ok, zr_ok);
-                if (zr_ok) try std.testing.expectEqual(cr_val, mzr_val.?);
-            } else {
-                if (card == 0) {
-                    try std.testing.expect(!zr_ok);
-                } else {
-                    try std.testing.expect(zr_ok);
-                    if (zr_ok) {
-                        oracles[o.idx].sortUnstable(HashMapOracleSortCtx{ .keys = oracles[o.idx].keys() });
-                        try std.testing.expectEqual(
-                            oracles[o.idx].keys()[o.val % card],
-                            mzr_val.?,
-                        );
-                    }
-                }
-            }
+
+            var cr_val: u32 = undefined;
+            const cr_ok = c.roaring_bitmap_select(
+                oracles[o.idx],
+                o.val % card,
+                &cr_val,
+            );
+            try std.testing.expectEqual(cr_ok, zr_ok);
+            if (zr_ok) try std.testing.expectEqual(cr_val, mzr_val.?);
         },
         // don't print, not part of reproduction
         .contains => |o| {
             try std.testing.expectEqual(
-                if (is_cr)
-                    c.roaring_bitmap_contains(oracles[o.idx], o.val)
-                else
-                    oracles[o.idx].contains(o.val),
+                c.roaring_bitmap_contains(oracles[o.idx], o.val),
                 rs[o.idx].contains(o.val),
             );
         },
-        .contains_range => |o| if (is_cr) {
-            try std.testing.expectEqual(
-                c.roaring_bitmap_contains_range(oracles[o.idx], o.vals[0], o.vals[1]),
-                rs[o.idx].contains_range(o.vals[0], o.vals[1]),
-            );
-        } else {
-            try std.testing.expectEqual(
-                oracles[o.idx].contains(o.vals[0]),
-                rs[o.idx].contains(o.vals[0]),
-            );
-            if (o.vals[1] != 0) {
-                const end = o.vals[1] - 1;
-                try std.testing.expectEqual(
-                    oracles[o.idx].contains(end),
-                    rs[o.idx].contains(end),
-                );
-                const mid = (end - o.vals[0]) / 2;
-                try std.testing.expectEqual(
-                    oracles[o.idx].contains(mid),
-                    rs[o.idx].contains(mid),
-                );
-            }
-        },
-        .range_cardinality => |o| if (is_cr) {
-            try std.testing.expectEqual(
-                c.roaring_bitmap_range_cardinality(oracles[o.idx], o.vals[0], o.vals[1]),
-                rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
-            );
-        } else {
-            var startidx: u32 = 0;
-            const keys = oracles[o.idx].keys();
-            oracles[o.idx].sortUnstable(HashMapOracleSortCtx{ .keys = keys });
-            while (startidx < keys.len and keys[startidx] < o.vals[0]) : (startidx += 1) {}
-            var endidx = startidx;
-            while (endidx < keys.len and keys[endidx] < o.vals[1]) : (endidx += 1) {}
-            try std.testing.expectEqual(
-                endidx - startidx,
-                rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
-            );
-        },
-        .statistics => |idx| if (is_cr) {
+        .contains_range => |o| try std.testing.expectEqual(
+            c.roaring_bitmap_contains_range(oracles[o.idx], o.vals[0], o.vals[1]),
+            rs[o.idx].contains_range(o.vals[0], o.vals[1]),
+        ),
+        .range_cardinality => |o| try std.testing.expectEqual(
+            c.roaring_bitmap_range_cardinality(oracles[o.idx], o.vals[0], o.vals[1]),
+            rs[o.idx].range_cardinality(o.vals[0], o.vals[1]),
+        ),
+        .statistics => |idx| {
             var cs: c.roaring_statistics_t = undefined;
             c.roaring_bitmap_statistics(oracles[idx], &cs);
             const zs = rs[idx].statistics(); // zig fmt: off
@@ -1256,125 +950,109 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
             rs[o.idx].deinit(allocator);
             rs[o.idx] = result;
 
-            if (is_cr) {
-                const cr_res = c.roaring_bitmap_flip(oracles[o.idx], o.vals[0], o.vals[1]);
-                c.roaring_bitmap_free(oracles[o.idx]);
-                oracles[o.idx] = cr_res;
-            } else {
-                const start, const end = o.vals;
-                var i = start;
-                while (i < end) : (i += 1) {
-                    if (oracles[o.idx].contains(i))
-                        _ = oracles[o.idx].swapRemove(i)
-                    else
-                        try oracles[o.idx].put(allocator, i, {});
-                }
-            }
+            const cr_res = c.roaring_bitmap_flip(oracles[o.idx], o.vals[0], o.vals[1]);
+            c.roaring_bitmap_free(oracles[o.idx]);
+            oracles[o.idx] = cr_res;
         },
     }
 
     for (0..NUM_BITMAPS) |i| {
-        const oc = if (is_cr)
-            c.roaring_bitmap_get_cardinality(oracles[i])
-        else
-            oracles[i].count();
+        const oc = c.roaring_bitmap_get_cardinality(oracles[i]);
         try std.testing.expectEqual(oc, rs[i].get_cardinality());
     }
-    if (is_cr) {
-        for (rs, oracles) |r, oracle| {
-            const ra = &oracle.*.high_low_container;
-            if (false) {
-                std.debug.print("cr: #{} ", .{ra.*.size});
-                roaring_bitmap_printf_describe(oracle, std.debug.print);
-                std.debug.print("\n", .{});
-            }
-            try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
-            for (r.get_containers(), 0..) |zc, i| {
-                //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
-                try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
-                const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
-                const cr_card: u32 = if (cr_raw == std.math.maxInt(u32)) // convert -1 (u32 max) to u30 max
-                    zroaring.constants.BITSET_UNKNOWN_CARDINALITY
-                else
-                    cr_raw;
-                try testing.expectEqual(cr_card, zc.get_cardinality());
-            }
+    for (rs, oracles) |r, oracle| {
+        const ra = &oracle.*.high_low_container;
+        if (false) {
+            std.debug.print("cr: #{} ", .{ra.*.size});
+            roaring_bitmap_printf_describe(oracle, std.debug.print);
+            std.debug.print("\n", .{});
         }
+        try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
+        for (r.get_containers(), 0..) |zc, i| {
+            //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
+            try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
+            const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
+            const cr_card: u32 = if (cr_raw == std.math.maxInt(u32)) // convert -1 (u32 max) to u30 max
+                zroaring.constants.BITSET_UNKNOWN_CARDINALITY
+            else
+                cr_raw;
+            try testing.expectEqual(cr_card, zc.get_cardinality());
+        }
+    }
 
-        if (@import("build-options").run_slow_tests) { // slow check disabled
-            switch (op) {
-                inline .add,
-                .add_many,
-                .add_range_closed,
-                .flip,
-                .remove,
-                .@"and",
-                .@"or",
-                .xor,
-                .andnot,
-                .lazy_or,
-                .or_inplace,
-                .and_inplace,
-                .is_subset,
-                .clear,
-                .run_optimize,
-                .shrink_to_fit,
-                => |x| blk: {
-                    const i = if (@TypeOf(x) == u8) x else x.idx;
-                    var zrit = rs[i].iterator();
-                    const crit = c.roaring_iterator_create(oracles[i]);
-                    defer c.roaring_uint32_iterator_free(crit);
+    if (@import("build-options").run_slow_tests) { // slow check disabled
+        switch (op) {
+            inline .add,
+            .add_many,
+            .add_range_closed,
+            .flip,
+            .remove,
+            .@"and",
+            .@"or",
+            .xor,
+            .andnot,
+            .lazy_or,
+            .or_inplace,
+            .and_inplace,
+            .is_subset,
+            .clear,
+            .run_optimize,
+            .shrink_to_fit,
+            => |x| blk: {
+                const i = if (@TypeOf(x) == u8) x else x.idx;
+                var zrit = rs[i].iterator();
+                const crit = c.roaring_iterator_create(oracles[i]);
+                defer c.roaring_uint32_iterator_free(crit);
 
-                    const max_card = @min(
-                        rs[i].get_cardinality(),
-                        c.roaring_bitmap_get_cardinality(oracles[i]),
-                    );
-                    if (max_card == 0)
-                        break :blk;
+                const max_card = @min(
+                    rs[i].get_cardinality(),
+                    c.roaring_bitmap_get_cardinality(oracles[i]),
+                );
+                if (max_card == 0)
+                    break :blk;
 
-                    var zrbuf: [8192]u32 = undefined;
-                    var crbuf: [zrbuf.len]u32 = undefined;
+                var zrbuf: [8192]u32 = undefined;
+                var crbuf: [zrbuf.len]u32 = undefined;
 
-                    var total_matched: u32 = 0;
-                    while (total_matched < max_card) {
-                        const chunk = @min(max_card - total_matched, zrbuf.len);
-                        const zrn = zrit.read(zrbuf[0..chunk]);
-                        const crn = c.roaring_uint32_iterator_read(crit, &crbuf[0], chunk);
-                        testing.expectEqual(crn, zrn) catch |e| {
-                            std.debug.print("OP {t} bitmap {}: length mismatch at offset {}\n", .{ op, i, total_matched });
-                            std.debug.print("{f}\n", .{rs[i].fmtLong()});
+                var total_matched: u32 = 0;
+                while (total_matched < max_card) {
+                    const chunk = @min(max_card - total_matched, zrbuf.len);
+                    const zrn = zrit.read(zrbuf[0..chunk]);
+                    const crn = c.roaring_uint32_iterator_read(crit, &crbuf[0], chunk);
+                    testing.expectEqual(crn, zrn) catch |e| {
+                        std.debug.print("OP {t} bitmap {}: length mismatch at offset {}\n", .{ op, i, total_matched });
+                        std.debug.print("{f}\n", .{rs[i].fmtLong()});
+                        return e;
+                    };
+                    for (0..zrn) |j| {
+                        // std.debug.print("{},{}\n", .{ crbuf[j], zrbuf[j] });
+                        testing.expectEqual(crbuf[j], zrbuf[j]) catch |e| {
+                            std.debug.print("OP {t} bitmap {}: first mismatch at element {}\n", .{ op, i, total_matched + j });
                             return e;
                         };
-                        for (0..zrn) |j| {
-                            // std.debug.print("{},{}\n", .{ crbuf[j], zrbuf[j] });
-                            testing.expectEqual(crbuf[j], zrbuf[j]) catch |e| {
-                                std.debug.print("OP {t} bitmap {}: first mismatch at element {}\n", .{ op, i, total_matched + j });
-                                return e;
-                            };
-                        }
-                        total_matched += zrn;
                     }
-                },
-                .or_many, // excluded - not slow
-                .portable_serialize,
-                .portable_deserialize,
-                .frozen_serialize,
-                .equals,
-                .minimum,
-                .maximum,
-                .statistics,
-                .rank,
-                .select,
-                .contains,
-                .contains_range,
-                .and_cardinality,
-                .or_cardinality,
-                .xor_cardinality,
-                .andnot_cardinality,
-                .jaccard_index,
-                .range_cardinality,
-                => {},
-            }
+                    total_matched += zrn;
+                }
+            },
+            .or_many, // excluded - not slow
+            .portable_serialize,
+            .portable_deserialize,
+            .frozen_serialize,
+            .equals,
+            .minimum,
+            .maximum,
+            .statistics,
+            .rank,
+            .select,
+            .contains,
+            .contains_range,
+            .and_cardinality,
+            .or_cardinality,
+            .xor_cardinality,
+            .andnot_cardinality,
+            .jaccard_index,
+            .range_cardinality,
+            => {},
         }
     }
 }
@@ -1421,10 +1099,10 @@ fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
 }
 
 test "crash0" {
-    // const corpustmp: []const []const Op = @import("fuzz-crash-corpus-tmp.zon");
-    // for (corpustmp) |ops| {
-    //     try cr_perform_ops(testgpa, ops);
-    // }
+    const corpustmp: []const []const Op = @import("fuzz-crash-corpus-tmp.zon");
+    for (corpustmp) |ops| {
+        try cr_perform_ops(testgpa, ops);
+    }
 }
 
 const std = @import("std");
