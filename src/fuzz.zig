@@ -740,14 +740,14 @@ fn perform_op(
         },
         .@"and", .@"or", .xor, .andnot, .lazy_or => |o| {
             var res = switch (op) {
-                .@"and" => try Bitmap.intersect(&rs[o.src1], allocator, &rs[o.src2]),
-                .@"or" => try Bitmap.merge(&rs[o.src1], allocator, &rs[o.src2]),
-                .xor => try Bitmap.xor(&rs[o.src1], allocator, &rs[o.src2]),
-                .andnot => try Bitmap.andnot(&rs[o.src1], allocator, &rs[o.src2]),
+                .@"and" => try Bitmap.intersect(rs[o.src1], allocator, rs[o.src2]),
+                .@"or" => try Bitmap.merge(rs[o.src1], allocator, rs[o.src2]),
+                .xor => try Bitmap.xor(rs[o.src1], allocator, rs[o.src2]),
+                .andnot => try Bitmap.andnot(rs[o.src1], allocator, rs[o.src2]),
                 .lazy_or => try Bitmap.lazy_or(
                     &rs[o.src1],
                     allocator,
-                    &rs[o.src2],
+                    rs[o.src2],
                     zroaring.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
                 ),
                 else => unreachable,
@@ -840,7 +840,7 @@ fn perform_op(
             rs[o.idx] = res;
         },
         .or_inplace => |o| {
-            try rs[o.idx].or_inplace(allocator, &rs[o.src1]);
+            try rs[o.idx].or_inplace(allocator, rs[o.src1]);
             if (is_cr) {
                 c.roaring_bitmap_or_inplace(oracles[o.idx], oracles[o.src1]);
             } else {

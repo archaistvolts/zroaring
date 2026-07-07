@@ -1,10 +1,8 @@
-/// A generic container stored as blocks.
-///
-/// Describes storage of an array, bitset or run container.
+/// An array, bitset or run container stored as simd blocks.
 pub const Container = struct {
+    typecode: root.Typecode,
     /// cached container cardinality or nruns.
     cardinality: Cardinality,
-    typecode: root.Typecode,
     blocks_cap: u16,
     blocks: [*]Block,
 
@@ -136,18 +134,15 @@ pub const Container = struct {
             }
         }
 
-        const blockslen = ac.blocks_cap;
-        const newblocks = try allocator.alloc(Block, blockslen + moreblocks);
+        const newblocks = try allocator.alloc(Block, ac.blocks_cap + moreblocks);
         if (preserve)
-            @memcpy(newblocks[0..blockslen], ac.blocks[0..blockslen]);
+            @memcpy(newblocks[0..ac.blocks_cap], ac.blocks[0..ac.blocks_cap]);
         allocator.free(ac.get_blocks_tagged(.array));
         ac.blocks_cap = @intCast(newblocks.len);
         ac.blocks = newblocks.ptr;
     }
 
-    // min: (n_runs) is clamped from [0,C.BITSET_BLOCKS).
-    //
-    // if copy realloc.  else alloc + free.
+    // if `copy` realloc.  else alloc + free.
     pub fn run_container_grow(
         rc: *Container,
         allocator: Allocator,
@@ -165,19 +160,18 @@ pub const Container = struct {
         else
             runcap * 5 / 4);
         const morecap = newcap - runcap;
-        const moreblocks = @min(
-            C.BITSET_BLOCKS - rc.blocks_cap,
-            misc.numGroupsOfSize(morecap, C.BLOCK_LEN32),
-        );
+        const moreblocks = misc.numGroupsOfSize(morecap, C.BLOCK_LEN32);
         assert(rc != uninit);
         if (moreblocks != 0) { // moreblocks might be 0 if already at capacity.
             if (copy) {
-                const blocks = try allocator.realloc(rc.blocks[0..rc.blocks_cap], rc.blocks_cap + moreblocks);
+                const blocks = try allocator.realloc(
+                    rc.blocks[0..rc.blocks_cap],
+                    rc.blocks_cap + moreblocks,
+                );
                 rc.blocks = blocks.ptr;
                 rc.blocks_cap = @intCast(blocks.len);
             } else {
-                const blockslen = rc.blocks_cap;
-                const blocks = try allocator.alloc(Block, blockslen + moreblocks);
+                const blocks = try allocator.alloc(Block, rc.blocks_cap + moreblocks);
                 allocator.free(rc.get_blocks_tagged(.run));
                 rc.blocks_cap = @intCast(blocks.len);
                 rc.blocks = blocks.ptr;
@@ -310,11 +304,17 @@ pub const Container = struct {
         }
     }
 
+    /// Effectively deletes the value at index index, repacking data.
+    fn recoverRoomAtIndex(run: *Container, index: u16) void {
+        const runs = run.blocks_as(.run)[0..run.cardinality].ptr;
+        @memmove(runs + index, (runs + (1 + index))[0 .. run.cardinality - index - 1]);
+        run.cardinality -= 1;
+    }
+
     pub fn run_container_add(
         run: *Container,
         allocator: Allocator,
         pos: u16,
-        r: *Bitmap,
     ) !bool {
         var runs = run.blocks_as(.run)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
@@ -333,7 +333,7 @@ pub const Container = struct {
                         runs[index].length = runs[index + 1].value +
                             runs[index + 1].length -
                             runs[index].value;
-                        r.recoverRoomAtIndex(run, @intCast(index + 1));
+                        run.recoverRoomAtIndex(@intCast(index + 1));
                         return true;
                     }
                 }
@@ -426,7 +426,7 @@ pub const Container = struct {
                 return bitset;
             },
             .run => {
-                _ = try c.run_container_add(allocator, value, r);
+                _ = try c.run_container_add(allocator, value);
                 return c;
             },
             .shared => unreachable,
@@ -958,10 +958,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         allocator: Allocator,
         nruns_capacity: u32,
     ) !*Container {
-        const numblocks = @min(
-            C.BITSET_BLOCKS,
-            misc.numGroupsOfSize(nruns_capacity * @sizeOf(root.Rle16), C.BLOCK_SIZE),
-        );
+        const numblocks =
+            misc.numGroupsOfSize(nruns_capacity * @sizeOf(root.Rle16), C.BLOCK_SIZE);
         const blocks = try allocator.alloc(Block, numblocks);
         errdefer allocator.free(blocks);
         const c = try allocator.create(Container);
@@ -1045,13 +1043,13 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     }
 
     /// Remove `pos' from `run'. Returns true if `pos' was present.
-    fn run_container_remove(run: *Container, allocator: Allocator, pos: u16, r: *Bitmap) !bool {
+    fn run_container_remove(run: *Container, allocator: Allocator, pos: u16) !bool {
         const runs = run.blocks_as(.run)[0..run.cardinality];
         var mindex = misc.interleavedBinarySearch(runs, pos);
         if (mindex >= 0) {
             const indexu: u32 = @bitCast(mindex);
             if (runs[indexu].length == 0) {
-                r.recoverRoomAtIndex(run, @intCast(indexu));
+                run.recoverRoomAtIndex(@intCast(indexu));
             } else {
                 runs[indexu].value += 1;
                 runs[indexu].length -= 1;
@@ -1255,8 +1253,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     /// memory deallocation
     ///
     /// Returned container may not be valid.  caller must ensure bitmap is valid.
-    pub fn remove(c: *Container, allocator: Allocator, val: u16, r: *Bitmap) !*Container {
-        c.assert_valid(r.*);
+    pub fn remove(c: *Container, allocator: Allocator, val: u16) !*Container {
         trace(@src(), "{}", .{val});
         // TODO // c = get_writable_copy_if_shared(c, &typecode);
         switch (c.typecode) {
@@ -1272,7 +1269,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             },
             .run => {
                 // per Java, no container type adjustments are done (revisit?)
-                _ = try c.run_container_remove(allocator, val, r);
+                _ = try c.run_container_remove(allocator, val);
             },
             else => unreachable,
         }
@@ -2762,7 +2759,6 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         if (run_container_is_full(src2)) return;
         const maxoutput = src1.cardinality + src2.cardinality;
         const neededcapacity = maxoutput + src2.cardinality;
-        assert(neededcapacity < C.MAX_RUN_SIZE);
         if (src2.calc_capacity() < neededcapacity)
             try run_container_grow(src2, allocator, neededcapacity, true);
         const src2runs = src2.blocks_as(.run);
@@ -2805,21 +2801,6 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 rlepos += 1;
             }
         }
-    }
-
-    /// create bitset, union with run/array containers c1 and c2, then run
-    /// optimize. this is a workaround from croaring due to nblocks_minus1 limit
-    /// [0, C.BITSET_BLOCKS).
-    fn run_array_container_inplace_union(
-        c1: *Container,
-        allocator: Allocator,
-        c2: *const Container,
-    ) !*Container {
-        var result = try bitset_container_create(allocator);
-        errdefer deinit(&result, allocator);
-        array_bitset_container_union(c2, result, result);
-        run_bitset_container_union(c1, result, result);
-        return try convert_run_optimize(&result, allocator);
     }
 
     fn array_array_container_inplace_union(
@@ -2885,8 +2866,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     }
 
     /// In-place union. Modifies c1 when possible, otherwise allocates new
-    /// container in x1. Returns the resulting container. Caller must free c1's
-    /// old blocks when blockoffset differs from original.
+    /// container in x1. Returns the resulting container. Caller owns returned
+    /// allocation.
     pub fn ior(
         c1: *Container,
         allocator: Allocator,
@@ -2950,12 +2931,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 return try convert_run_to_efficient_container_and_free(&result, allocator);
             },
             misc.pair(.run, .array) => {
-                // limit blocks to [0, C.BITSET_BLOCKS). in croaring this branch isn't needed.
-                if (c1.cardinality + 2 * c2.cardinality <= C.MAX_RUN_SIZE) {
-                    try array_run_container_inplace_union(c2, allocator, c1);
-                    return try c1.convert_run_to_efficient_container(allocator);
-                }
-                return try run_array_container_inplace_union(c1, allocator, c2);
+                try array_run_container_inplace_union(c2, allocator, c1);
+                return try c1.convert_run_to_efficient_container(allocator);
             },
             else => unreachable,
         }

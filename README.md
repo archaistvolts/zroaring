@@ -1,5 +1,5 @@
 # About
-A Roaring Bitmap with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring).  All Bitmap data is allocated in 3 allocations with container data in simd sized blocks.
+A Roaring Bitmap with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring) with container data stored in simd sized blocks.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -110,6 +110,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 
 # Ideas / TODOs - contributions welcome
 * [x] in memory layout - 3 allocations: array, bitset_blocks and run/array blocks.
+  * [x] - switch to Container managed blocks to improve overall performance by around 7%.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [x] checkAllAllocationFailures - why so slow? - added -Dskip-slow-tests
 * [x] allocation failures test with crash corpus.

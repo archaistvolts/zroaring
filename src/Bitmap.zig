@@ -139,7 +139,7 @@ fn zero_init(m: *align(C.BLOCK_ALIGN) Array) void {
     @memset(m.get_containers(), Container.uninit);
 }
 
-/// Allocates room for container_count containers and blocks, with minimum of 16.
+/// Allocates room for container_count containers with minimum of 16.
 pub fn create_with_capacity(allocator: Allocator, container_count: u32) !Bitmap {
     const capacity = @max(16, container_count); // subject to tuning.  TODO bench
     const m = try Array.create(allocator, capacity);
@@ -147,11 +147,11 @@ pub fn create_with_capacity(allocator: Allocator, container_count: u32) !Bitmap 
     return .{ .array = m };
 }
 
-pub fn get_keys(r: *const Bitmap) []align(C.BLOCK_ALIGN) u16 {
+pub fn get_keys(r: Bitmap) []align(C.BLOCK_ALIGN) u16 {
     return r.array.keys[0..r.array.len];
 }
 
-pub fn get_containers(r: *const Bitmap) []align(C.BLOCK_ALIGN) *Container {
+pub fn get_containers(r: Bitmap) []align(C.BLOCK_ALIGN) *Container {
     return r.array.containers[0..r.array.len];
 }
 
@@ -787,7 +787,7 @@ pub fn portable_size_in_bytes(ra: Bitmap) usize {
 
 /// Writes the container to `w`, returns how many bytes were written.
 /// The number of bytes written should be equal to `portable_size_in_bytes()`.
-pub fn write(_: Bitmap, c: *Container, w: *Io.Writer) !usize {
+pub fn write_container(c: *Container, w: *Io.Writer) !usize {
     switch (c.typecode) {
         .array => {
             // std.debug.print("array card {}\n", .{ card });
@@ -872,7 +872,7 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags
     }
 
     for (cs) |c| {
-        written_count += try r.write(c, w);
+        written_count += try write_container(c, w);
     }
 
     return written_count;
@@ -1028,7 +1028,7 @@ pub fn assert_valid(r: Bitmap) void {
 }
 
 /// copy r to newarray maintaining new capacity, keys and containers
-pub fn copy_to(r: *const Bitmap, newarray: *align(C.BLOCK_ALIGN) Array) void {
+pub fn copy_to(r: Bitmap, newarray: *align(C.BLOCK_ALIGN) Array) void {
     newarray.* = .{
         .capacity = newarray.capacity,
         .containers = newarray.containers,
@@ -1277,23 +1277,18 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
     );
 }
 
-/// call shrink_to_fit() on all containers which may reduce their required blocks.
+/// call shrink_to_fit() on all containers which may shrink their blocks allocation.
 /// shrink array if len < cap.
-/// shrink blocks if block savings percent above 20.
 pub fn shrink_to_fit(r: *Bitmap, allocator: Allocator) !usize {
     const capacity = r.array.capacity;
     const len = r.array.len;
-    // possibly shrink containers before calculating new blockslen
+    // possibly shrink containers
     var containersavings: usize = 0;
-    var newblockscap: u32 = 0;
-    var newblockscap_bs: u32 = 0;
     for (0..len) |i| {
         const cp = &r.array.containers[i];
         const c = cp.*;
         assert(!c.is_uninit());
         containersavings += try Container.shrink_to_fit(cp, allocator);
-        newblockscap += c.blocks_cap * @intFromBool(c.typecode != .bitset); // exclude bitsets
-        newblockscap_bs += c.blocks_cap * @intFromBool(c.typecode == .bitset); // exclude non-bitsets
     }
 
     if (containersavings == 0 and capacity == len)
@@ -1318,29 +1313,6 @@ pub fn remove_at_index(r: *Bitmap, i: usize, allocator: mem.Allocator) void {
     r.array.len -= 1;
 }
 
-/// Effectively deletes the value at index index, repacking data.
-pub fn recoverRoomAtIndex(_: Bitmap, run: *Container, index: u16) void {
-    const runs = run.blocks_as(.run)[0..run.cardinality].ptr;
-    @memmove(runs + index, (runs + (1 + index))[0 .. run.cardinality - index - 1]);
-    run.cardinality -= 1;
-}
-
-fn clear_containers(r: Bitmap) void {
-    for (r.get_containers()) |*c| {
-        c.deinit(r);
-    }
-}
-
-/// set lengths to 0.  retains allocated memory.
-pub fn clear_retaining_capacity(r: *Bitmap) void {
-    if (r.is_empty()) return;
-    @memset(r.array.get_containers(), undefined);
-    @memset(r.array.get_keys(), undefined);
-    r.array.len = 0;
-    r.blocks.len = 0;
-    r.bitset_blocks.len = 0;
-}
-
 /// Same as `deinit` because we don't free a Bitmap pointer like CRoaring.
 pub const clear = deinit;
 
@@ -1359,7 +1331,7 @@ pub fn remove_checked(r: *Bitmap, allocator: Allocator, val: u32) !bool {
         const cp = &r.array.containers[iu];
         const c = cp.*;
         const oldcard = c.get_cardinality();
-        const c2 = try c.remove(allocator, @truncate(val), r);
+        const c2 = try c.remove(allocator, @truncate(val));
         if (c2 != c) {
             Container.deinit(cp, allocator);
             r.array.containers[iu] = c2;
@@ -1447,7 +1419,7 @@ pub const @"and" = intersect;
 /// bitmaps, two-by-two, it is best to start with the smallest bitmap.
 /// You may also rely on and_inplace to avoid creating many temporary bitmaps.
 // there should be some SIMD optimizations possible here
-pub fn intersect(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
+pub fn intersect(x1: Bitmap, allocator: Allocator, x2: Bitmap) !Bitmap {
     const length1 = x1.array.len;
     const length2 = x2.array.len;
     var answer = try create_with_capacity(allocator, @max(length1, length2));
@@ -1489,17 +1461,13 @@ pub fn intersect(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bi
 fn append_copy_range(
     ra: *Bitmap,
     allocator: Allocator,
-    sa: *const Bitmap,
+    sa: Bitmap,
     start_index: u32,
     end_index: u32,
     copy_on_write: bool,
 ) !void {
     const sakeys = sa.array.keys;
     const sacontainers = sa.array.containers;
-    var cnblocks: u32 = 0;
-    for (sacontainers[start_index..end_index]) |c| {
-        cnblocks += c.blocks_cap;
-    }
     const more_len = end_index - start_index;
     if (more_len > 0)
         try ra.ensure_unused_capacity(allocator, more_len);
@@ -1520,7 +1488,7 @@ fn append_copy_range(
 /// responsible for memory management.
 pub const @"or" = merge;
 
-pub fn merge(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
+pub fn merge(x1: Bitmap, allocator: Allocator, x2: Bitmap) !Bitmap {
     trace(@src(), "x1={f}", .{x1.fmtLong()});
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.len;
@@ -1569,7 +1537,7 @@ pub fn merge(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap
 }
 
 /// Inplace version of `or`, modifies r1.
-pub fn or_inplace(x1: *Bitmap, allocator: Allocator, x2: *const Bitmap) !void {
+pub fn or_inplace(x1: *Bitmap, allocator: Allocator, x2: Bitmap) !void {
     trace(@src(), "x1: {f}", .{x1.fmtLong()});
     trace(@src(), "x2: {f}", .{x2.fmtLong()});
     const length2 = x2.array.len;
@@ -1577,7 +1545,7 @@ pub fn or_inplace(x1: *Bitmap, allocator: Allocator, x2: *const Bitmap) !void {
 
     var length1 = x1.array.len;
     if (length1 == 0) {
-        try x1.overwrite(allocator, x2.*);
+        try x1.overwrite(allocator, x2);
         return;
     }
 
@@ -1630,7 +1598,7 @@ pub fn or_inplace(x1: *Bitmap, allocator: Allocator, x2: *const Bitmap) !void {
 }
 
 /// Returned Bitamp contains values present in one but not both inputs.
-pub fn xor(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
+pub fn xor(x1: Bitmap, allocator: Allocator, x2: Bitmap) !Bitmap {
     trace(@src(), "x1={f}", .{x1.fmtLong()});
     trace(@src(), "x2={f}", .{x2.fmtLong()});
     const length1 = x1.array.len;
@@ -1684,7 +1652,7 @@ pub fn xor(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
 
 /// Computes the difference (andnot) between two bitmaps and returns new bitmap.
 /// Caller is responsible for freeing the result.
-pub fn andnot(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitmap {
+pub fn andnot(x1: Bitmap, allocator: Allocator, x2: Bitmap) !Bitmap {
     const length1 = x1.array.len;
     const length2 = x2.array.len;
     if (length1 == 0) {
@@ -1694,7 +1662,6 @@ pub fn andnot(x1: *const Bitmap, allocator: Allocator, x2: *const Bitmap) !Bitma
     }
     if (length2 == 0) return try x1.copy(allocator);
 
-    // skip count_blocks which doesn't seem to help benchmark
     var answer = try create_with_capacity(allocator, length1);
     errdefer answer.deinit(allocator);
     answer.set_copy_on_write(x1.is_cow() or x2.is_cow());
@@ -1808,7 +1775,7 @@ pub fn select(bm: Bitmap, target_rank: u32) ?u32 {
 pub fn lazy_or(
     x1: *Bitmap,
     allocator: Allocator,
-    x2: *const Bitmap,
+    x2: Bitmap,
     bitsetconversion: bool,
 ) !Bitmap {
     const length1 = x1.array.len;
@@ -1888,7 +1855,7 @@ pub fn lazy_or(
     if (pos1 == length1) {
         try answer.append_copy_range(allocator, x2, pos2, length2, x2.is_cow());
     } else if (pos2 == length2) {
-        try answer.append_copy_range(allocator, x1, pos1, length1, x1.is_cow());
+        try answer.append_copy_range(allocator, x1.*, pos1, length1, x1.is_cow());
     }
     return answer;
 }
@@ -1923,7 +1890,7 @@ pub fn repair_after_lazy(r: *Bitmap, allocator: Allocator) !void {
 pub fn lazy_or_inplace(
     x1: *Bitmap,
     allocator: Allocator,
-    x2: *const Bitmap,
+    x2: Bitmap,
     bitsetconversion: bool,
 ) !void {
     var length1 = x1.array.len;
@@ -1931,7 +1898,7 @@ pub fn lazy_or_inplace(
 
     if (length2 == 0) return;
     if (length1 == 0) {
-        try x1.overwrite(allocator, x2.*);
+        try x1.overwrite(allocator, x2);
         return;
     }
 
@@ -2008,10 +1975,10 @@ pub fn or_many(allocator: Allocator, xs: []Bitmap) !Bitmap {
     if (number == 1)
         return try xs[0].copy(allocator);
 
-    var answer = try lazy_or(&xs[0], allocator, &xs[1], C.LAZY_OR_BITSET_CONVERSION);
+    var answer = try lazy_or(&xs[0], allocator, xs[1], C.LAZY_OR_BITSET_CONVERSION);
     errdefer answer.deinit(allocator);
     for (2..number) |i| {
-        try answer.lazy_or_inplace(allocator, &xs[i], C.LAZY_OR_BITSET_CONVERSION);
+        try answer.lazy_or_inplace(allocator, xs[i], C.LAZY_OR_BITSET_CONVERSION);
     }
     try answer.repair_after_lazy(allocator);
     return answer;
@@ -2314,7 +2281,7 @@ pub fn statistics(bm: Bitmap) Statistics {
 /// Compute the negation of the bitmap in the interval [range_start, range_end).
 /// The number of negated values is range_end - range_start.
 /// Areas outside the range are passed through unchanged.
-pub fn flip(x1: *const Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !Bitmap {
+pub fn flip(x1: Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !Bitmap {
     if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1) {
         return x1.copy(allocator);
     }
@@ -2324,7 +2291,7 @@ pub fn flip(x1: *const Bitmap, allocator: Allocator, range_start: u64, range_end
 fn append_copy(
     ra: *Bitmap,
     allocator: mem.Allocator,
-    sa: *const Bitmap,
+    sa: Bitmap,
     index: u16,
     copy_on_write: bool,
 ) !void {
@@ -2351,7 +2318,7 @@ fn append_copy(
 fn append_copies_until(
     ra: *Bitmap,
     allocator: mem.Allocator,
-    sa: *const Bitmap,
+    sa: Bitmap,
     stopping_key: u16,
     copy_on_write: bool,
 ) !void {
@@ -2361,8 +2328,8 @@ fn append_copies_until(
     }
 }
 
-fn append_copies_after(ra: *Bitmap, allocator: mem.Allocator, sa: *const Bitmap, before_start: u16, copy_on_write: bool) !void {
-    var start_location = get_key_index(sa.*, before_start);
+fn append_copies_after(ra: *Bitmap, allocator: mem.Allocator, sa: Bitmap, before_start: u16, copy_on_write: bool) !void {
+    var start_location = get_key_index(sa, before_start);
     if (start_location >= 0)
         start_location += 1
     else
@@ -2379,7 +2346,7 @@ fn append_copies_after(ra: *Bitmap, allocator: mem.Allocator, sa: *const Bitmap,
 /// Compute the negation of the bitmap in the interval [range_start, range_end].
 /// The number of negated values is range_end - range_start + 1.
 /// Areas outside the range are passed through unchanged.
-pub fn flip_closed(x1: *const Bitmap, allocator: Allocator, range_start: u32, range_end: u32) !Bitmap {
+pub fn flip_closed(x1: Bitmap, allocator: Allocator, range_start: u32, range_end: u32) !Bitmap {
     trace(@src(), "{f} {} {}", .{ x1.fmtLong(), range_start, range_end });
     if (range_start > range_end)
         return x1.copy(allocator);
@@ -2432,7 +2399,7 @@ pub fn flip_closed(x1: *const Bitmap, allocator: Allocator, range_start: u32, ra
 fn insert_flipped_container(
     ans: *Bitmap,
     allocator: Allocator,
-    x1: *const Bitmap,
+    x1: Bitmap,
     hb: u16,
     lb_start: u16,
     lb_end: u16,
@@ -2457,7 +2424,7 @@ fn insert_flipped_container(
 fn insert_fully_flipped_container(
     ans: *Bitmap,
     allocator: Allocator,
-    x1: *const Bitmap,
+    x1: Bitmap,
     hb: u16,
 ) !void {
     const i = x1.get_key_index(hb);

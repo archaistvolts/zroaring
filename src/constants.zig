@@ -6,8 +6,6 @@ pub const DEFAULT_MAX_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(u16));
 pub const MAX_KEY_CARDINALITY = MAX_CONTAINER_SIZE * 8;
 pub const MAX_CONTAINERS = MAX_KEY_CARDINALITY;
 pub const MAX_VALUE_CARDINALITY = MAX_KEY_CARDINALITY * MAX_KEY_CARDINALITY;
-// 2048 = 8192/4
-pub const MAX_RUN_SIZE = @divExact(MAX_CONTAINER_SIZE, @sizeOf(root.Rle16));
 
 /// Length in bytes of a Block. Same as `@sizeOf(root.Block)`.
 /// 32 with avx2.
@@ -24,8 +22,6 @@ pub const BLOCK_LEN32 = @divExact(BLOCK_SIZE, @sizeOf(u32));
 /// length of a block of u64s, 4 with avx2.
 pub const BLOCK_LEN64 = @divExact(BLOCK_SIZE, @sizeOf(u64));
 pub const MAX_CONTAINER_BLOCKS = BITSET_BLOCKS;
-/// Bitmap.blocks should never actually get this big.
-pub const MAX_BLOCKS = MAX_CONTAINERS * MAX_CONTAINER_BLOCKS; // 1<<16 * 1<<8 = 1<<24
 
 pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;

@@ -15,7 +15,7 @@ pub fn zr_benchmark_op(
         .xor,
         .andnot,
         => |o, t| {
-            const res = try @field(Bitmap, @tagName(t))(&rs[o.src1], allocator, &rs[o.src2]);
+            const res = try @field(Bitmap, @tagName(t))(rs[o.src1], allocator, rs[o.src2]);
             rs[o.idx].deinit(allocator);
             rs[o.idx] = res;
         },
@@ -23,7 +23,7 @@ pub fn zr_benchmark_op(
             var res = try @field(Bitmap, @tagName(t))(
                 &rs[o.src1],
                 allocator,
-                &rs[o.src2],
+                rs[o.src2],
                 root.constants.LAZY_OR_BITSET_CONVERSION_TO_FULL,
             );
             try res.repair_after_lazy(allocator);
@@ -38,9 +38,10 @@ pub fn zr_benchmark_op(
         .jaccard_index,
         .equals,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], rs[o.src1])),
-        inline .or_inplace,
-        .and_inplace,
+        inline .and_inplace,
         => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, &rs[o.src1]),
+        inline .or_inplace,
+        => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, rs[o.src1]),
         inline .or_many => |o, t| {
             if (o.idxs.len == 0) return; // nothing to do
 
