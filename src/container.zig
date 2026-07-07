@@ -2193,17 +2193,16 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             ca.* = answer;
             return ca;
         }
-        unreachable; // TODO
-        // // else to bitset
-        // var answer = try BitsetContainer.create(allocator);
-
-        // for (0..c.cardinality) |rlepos| {
-        //     const start = c.runs[rlepos].value;
-        //     const end = start + c.runs[rlepos].length;
-        //     BitsetContainer.set_range(answer.words, start, end + 1);
-        // }
-        // answer.cardinality = card;
-        // return .create(allocator, answer);
+        // else to bitset
+        var answer = try bitset_container_create(allocator);
+        const runs = c.blocks_as(.run)[0..c.cardinality];
+        for (runs) |r| {
+            const start: u32 = r.value;
+            const end = start + r.length;
+            misc.bitset_set_range(answer.blocks_as(.bitset).ptr, start, end + 1);
+        }
+        answer.cardinality = card;
+        return answer;
     }
 
     // like convert_run_to_efficient_container but frees the old result if needed

@@ -686,8 +686,6 @@ pub fn contains(r: Bitmap, val: u32) bool {
 pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     const h1 = r1.array;
     const h2 = r2.array;
-    if (h1 == empty.array)
-        return h2 == empty.array;
     if (h1 == h2)
         return true;
     const len = h1.len;
@@ -1119,13 +1117,13 @@ pub fn format(r: Bitmap, w: *Io.Writer) !void {
         r.array.len,
         r.array.capacity,
         Array.calcSize(r.array.capacity),
-        blocks_cap * @sizeOf(Block) + @sizeOf(*Container) * r.array.capacity,
+        blocks_cap * @sizeOf(Block) + r.array.capacity * @sizeOf(Container),
     });
 
     try w.writeByte('{');
     for (r.get_containers(), r.array.keys, 0..) |c, key, i| {
         if (i != 0) try w.writeByte(',');
-        try w.print("{}: {B: <6.1} {f}", .{ key, c.blocks_cap * @sizeOf(Block), c.fmt(key) });
+        try w.print("{}: {B: <6.1} {f}", .{ key, @sizeOf(Container) + c.blocks_cap * @sizeOf(Block), c.fmt(key) });
     }
     try w.writeByte('}');
 }
@@ -1148,11 +1146,11 @@ pub const FmtLong = struct {
             r.array.len,
             r.array.capacity,
             Array.calcSize(r.array.capacity),
-            blocks_cap * @sizeOf(Block) + @sizeOf(*Container) * r.array.capacity,
+            blocks_cap * @sizeOf(Block) + r.array.capacity * @sizeOf(Container),
         });
 
         for (r.get_containers(), r.array.keys, 0..) |c, key, i| {
-            try w.print("\n{: <5} {: <5} {B: <6.1} {f}", .{ i, key, c.blocks_cap * @sizeOf(Block), c.fmtLong(key) });
+            try w.print("\n{: <5} {: <5} {B: <6.1} {f}", .{ i, key, @sizeOf(Container) + c.blocks_cap * @sizeOf(Block), c.fmtLong(key) });
         }
     }
 };

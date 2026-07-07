@@ -1130,6 +1130,24 @@ pub fn bitset_set_lenrange(
         temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
 }
 
+/// Set all bits in indexes [begin,end) to true.
+pub fn bitset_set_range(words: [*]align(C.BLOCK_ALIGN) u64, start: u32, end: u32) void {
+    if (start == end) return;
+    const firstword = start / 64;
+    const endword = (end - 1) / 64;
+    if (firstword == endword) {
+        words[firstword] |=
+            ~@as(u64, 0) << @truncate(start % 64) &
+            ~@as(u64, 0) >> @truncate((~end + 1) % 64);
+        return;
+    }
+    words[firstword] |= ~@as(u64, 0) << @truncate(start % 64);
+    for (firstword + 1..endword) |i| {
+        words[i] = ~@as(u64, 0);
+    }
+    words[endword] |= ~@as(u64, 0) >> @truncate((~end + 1) % 64);
+}
+
 /// Flip bits in range [start, end).
 pub fn bitset_flip_range(
     words: [*]align(C.BLOCK_ALIGN) u64,
