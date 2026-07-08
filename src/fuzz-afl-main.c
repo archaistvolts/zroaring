@@ -1,80 +1,167 @@
-#include <unistd.h>
-#include <stdint.h>
+// 
+// copied directly from https://github.com/kristoff-it/zig-afl-kit/blob/e9b5dfc14c06133786a09214709316dc9fb54bd9/afl.c
+// 
+
 #include <limits.h>
-#include <stddef.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
+#endif
+/* Main entry point. */
 
-void zig_fuzz_init(void);
-void zig_fuzz_test(const unsigned char*, size_t);
+/* To ensure checks are not optimized out it is recommended to disable
+   code optimization for the fuzzer harness main() */
+#pragma clang optimize off
+#pragma GCC optimize("O0")
 
-// Coverage guard section (from .fuzz=true compiled code)
+// Zig integration
+void zig_fuzz_init();
+void zig_fuzz_test(unsigned char *, ssize_t);
+
+#ifndef __APPLE__
+// ELF (Linux): linker auto-generates __start_*/__stop_* section boundary
+// symbols.
 extern uint32_t __start___sancov_guards;
 extern uint32_t __stop___sancov_guards;
-void __sanitizer_cov_trace_pc_guard_init(uint32_t*, uint32_t*);
+#endif
 
-// Missing symbols that afl-compiler-rt defines
-__attribute__((visibility("default")))
-__attribute__((tls_model("initial-exec")))
-_Thread_local uintptr_t __sancov_lowest_stack;
-void __sanitizer_cov_trace_pc_indir(void) {}
-void __sanitizer_cov_8bit_counters_init(void) {}
-void __sanitizer_cov_pcs_init(void) {}
+void __sanitizer_cov_trace_pc_guard_init(uint32_t *, uint32_t *);
 
-// AFL shared memory (__AFL_FUZZ_INIT expansion)
+// Symbols not defined by afl-compiler-rt
+__attribute__((visibility("default"))) __attribute__((
+    tls_model("initial-exec"))) _Thread_local uintptr_t __sancov_lowest_stack;
+
+void __sanitizer_cov_trace_pc_indir() {}
+void __sanitizer_cov_8bit_counters_init() {}
+void __sanitizer_cov_pcs_init() {}
+
+//__AFL_FUZZ_INIT()
 int __afl_sharedmem_fuzzing = 1;
-extern unsigned int *__afl_fuzz_len;
-extern unsigned char *__afl_fuzz_ptr;
+extern __attribute__((visibility("default"))) unsigned int *__afl_fuzz_len;
+extern __attribute__((visibility("default"))) unsigned char *__afl_fuzz_ptr;
 unsigned char __afl_fuzz_alt[1048576];
 unsigned char *__afl_fuzz_alt_ptr = __afl_fuzz_alt;
 
-int main(void) {
-    __sanitizer_cov_trace_pc_guard_init(&__start___sancov_guards, &__stop___sancov_guards);
+int main(int argc, char **argv) {
+#ifdef __APPLE__
+  // On macOS (Mach-O), use getsectiondata to find the __sancov_guards section
+  // at runtime. The guards land in __DATA,__sancov_guards.
+  unsigned long sancov_size = 0;
+  uint32_t *sancov_start = (uint32_t *)getsectiondata(
+      &_mh_execute_header, "__DATA", "__sancov_guards", &sancov_size);
+  uint32_t *sancov_stop = sancov_start + sancov_size / sizeof(uint32_t);
+  __sanitizer_cov_trace_pc_guard_init(sancov_start, sancov_stop);
+#else
+  __sanitizer_cov_trace_pc_guard_init(&__start___sancov_guards,
+                                      &__stop___sancov_guards);
+#endif
 
-    // __AFL_INIT expansion
-    static volatile const char *_A __attribute__((used,unused));
-    _A = (const char*)"##SIG_AFL_DEFER_FORKSRV##";
-    void _I(void) __asm__("__afl_manual_init");
-    _I();
+  // __AFL_INIT();
+  static volatile const char *_A __attribute__((used, unused));
+  _A = (const char *)"##SIG_AFL_DEFER_FORKSRV##";
+#ifdef __APPLE__
+  __attribute__((visibility("default"))) void _I(void) __asm__(
+      "___afl_manual_init");
+#else
+  __attribute__((visibility("default"))) void _I(void) __asm__(
+      "__afl_manual_init");
+#endif
+  _I();
 
-    zig_fuzz_init();
+  zig_fuzz_init();
 
-    // __AFL_LOOP(UINT_MAX) expansion
-    while (({
-        static volatile const char *_B __attribute__((used,unused));
-        _B = (const char*)"##SIG_AFL_PERSISTENT##";
-        extern int __afl_connected;
-        int _L(unsigned int) __asm__("__afl_persistent_loop");
-        _L(__afl_connected ? UINT_MAX : 1);
-    })) {
-        unsigned char *buf = __afl_fuzz_ptr ? __afl_fuzz_ptr : __afl_fuzz_alt_ptr;
-        int len = __afl_fuzz_ptr
-            ? *__afl_fuzz_len
-            : (*__afl_fuzz_len = read(0, __afl_fuzz_alt_ptr, 1048576)) == 0xffffffff
-                ? 0
-                : *__afl_fuzz_len;
-        zig_fuzz_test(buf, len);
-    }
+  // unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
+  unsigned char *buf = __afl_fuzz_ptr ? __afl_fuzz_ptr : __afl_fuzz_alt_ptr;
 
-    return 0;
+  // while (__AFL_LOOP(UINT_MAX)) {
+  while (({
+    static volatile const char *_B __attribute__((used, unused));
+    _B = (const char *)"##SIG_AFL_PERSISTENT##";
+    extern __attribute__((visibility("default"))) int __afl_connected;
+#ifdef __APPLE__
+    __attribute__((visibility("default"))) int _L(unsigned int) __asm__(
+        "___afl_persistent_loop");
+#else 
+      __attribute__((visibility("default"))) int _L(unsigned int) __asm__("__afl_persistent_loop");
+#endif
+    _L(__afl_connected ? UINT_MAX : 1);
+  })) {
+
+    // int len = __AFL_FUZZ_TESTCASE_LEN;
+    int len =
+        __afl_fuzz_ptr ? *__afl_fuzz_len
+        : (*__afl_fuzz_len = read(0, __afl_fuzz_alt_ptr, 1048576)) == 0xffffffff
+            ? 0
+            : *__afl_fuzz_len;
+
+    zig_fuzz_test(buf, len);
+  }
+
+  return 0;
 }
+
 
 // #include <unistd.h>
 // #include <stdint.h>
+// #include <limits.h>
 // #include <stddef.h>
 
 // void zig_fuzz_init(void);
 // void zig_fuzz_test(const unsigned char*, size_t);
 
+// // Coverage guard section (from .fuzz=true compiled code)
 // extern uint32_t __start___sancov_guards;
 // extern uint32_t __stop___sancov_guards;
 // void __sanitizer_cov_trace_pc_guard_init(uint32_t*, uint32_t*);
 
-// // AFL fork-mode: single read per invocation (AFL++ forks for each input)
-// int main() {
-//     unsigned char buf[1 << 20];
-//     ssize_t n;
+// // Missing symbols that afl-compiler-rt defines
+// __attribute__((visibility("default")))
+// __attribute__((tls_model("initial-exec")))
+// _Thread_local uintptr_t __sancov_lowest_stack;
+// void __sanitizer_cov_trace_pc_indir(void) {}
+// void __sanitizer_cov_8bit_counters_init(void) {}
+// void __sanitizer_cov_pcs_init(void) {}
+
+// // AFL shared memory (__AFL_FUZZ_INIT expansion)
+// int __afl_sharedmem_fuzzing = 1;
+// extern unsigned int *__afl_fuzz_len;
+// extern unsigned char *__afl_fuzz_ptr;
+// unsigned char __afl_fuzz_alt[1048576];
+// unsigned char *__afl_fuzz_alt_ptr = __afl_fuzz_alt;
+
+// int main(void) {
 //     __sanitizer_cov_trace_pc_guard_init(&__start___sancov_guards, &__stop___sancov_guards);
+
+//     // __AFL_INIT expansion
+//     static volatile const char *_A __attribute__((used,unused));
+//     _A = (const char*)"##SIG_AFL_DEFER_FORKSRV##";
+//     void _I(void) __asm__("__afl_manual_init");
+//     _I();
+
 //     zig_fuzz_init();
-//     n = read(STDIN_FILENO, buf, sizeof(buf));
-//     if (n > 0) zig_fuzz_test(buf, (size_t)n);
+
+//     // __AFL_LOOP(UINT_MAX) expansion
+//     while (({
+//         static volatile const char *_B __attribute__((used,unused));
+//         _B = (const char*)"##SIG_AFL_PERSISTENT##";
+//         extern int __afl_connected;
+//         int _L(unsigned int) __asm__("__afl_persistent_loop");
+//         _L(__afl_connected ? UINT_MAX : 1);
+//     })) {
+//         unsigned char *buf = __afl_fuzz_ptr ? __afl_fuzz_ptr : __afl_fuzz_alt_ptr;
+//         int len = __afl_fuzz_ptr
+//             ? *__afl_fuzz_len
+//             : (*__afl_fuzz_len = read(0, __afl_fuzz_alt_ptr, 1048576)) == 0xffffffff
+//                 ? 0
+//                 : *__afl_fuzz_len;
+//         zig_fuzz_test(buf, len);
+//     }
+
 //     return 0;
 // }

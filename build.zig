@@ -1,5 +1,4 @@
 const std = @import("std");
-const afl = @import("afl_kit");
 const BenchTarget = @import("src/bench2.zig").BenchTarget;
 
 pub fn build(b: *std.Build) !void {
@@ -55,7 +54,6 @@ pub fn build(b: *std.Build) !void {
     libcroaring.root_module.addIncludePath(b.path("src/c"));
     libcroaring.root_module.addCSourceFile(.{
         .file = b.path("src/c/roaring.c"),
-        .flags = &.{ "-Wno-override-module", "-D_FORTIFY_SOURCE=0" },
     });
     if (!avx512) libcroaring.root_module.addCMacro("CROARING_COMPILER_SUPPORTS_AVX512", "0");
 
@@ -102,7 +100,12 @@ pub fn build(b: *std.Build) !void {
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
         const afl_cc = b.findProgram(&.{"afl-clang-lto"}, &.{}) catch @panic("afl-clang-lto not found; is AFL++ installed?");
-        const run_afl_cc = b.addSystemCommand(&.{ afl_cc, "-O3" });
+        const run_afl_cc = b.addSystemCommand(&.{
+            afl_cc,
+            "-O3",
+            "-Wno-override-module",
+            "-Wno-static-in-inline",
+        });
         run_afl_cc.addArg("-o");
         const fuzz_exe = run_afl_cc.addOutputFileArg("fuzz-afl");
         run_afl_cc.addFileArg(b.path("src/fuzz-afl-main.c"));
