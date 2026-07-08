@@ -2168,6 +2168,11 @@ pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
     var pos2: u32 = 0;
     var intersection_size: u32 = 0;
     defer r1.array.len = intersection_size;
+    errdefer {
+        while (pos1 < length1) : (pos1 += 1)
+            Container.deinit(&r1.array.containers[pos1], allocator);
+    }
+
     while (pos1 < length1 and pos2 < length2) {
         const key1 = r1.array.keys[pos1];
         const key2 = r2.array.keys[pos2];
