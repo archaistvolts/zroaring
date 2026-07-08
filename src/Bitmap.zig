@@ -236,7 +236,7 @@ pub fn portable_deserialize_reader(allocator: Allocator, r: *Io.Reader) !Bitmap 
     var cs_blocks_allocated: usize = 0;
     errdefer {
         for (containers[0..cs_blocks_allocated]) |c|
-            allocator.free(c.get_blocks());
+            allocator.free(c.blocks[0..c.blocks_cap]);
     }
     for (0..ret.array.len) |k| { // read container data
         const c = containers[k];
@@ -367,11 +367,11 @@ pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
     }
 
     const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
-    const mcontaineridx = misc.binarySearch(r.get_keys(), key);
+    const mcontaineridx = r.get_key_index(key);
     if (mcontaineridx >= 0) { // key found
         const cid: u32 = @bitCast(mcontaineridx);
         const c = r.array.containers[cid];
-        const c2 = try c.add(allocator, r, valuelow);
+        const c2 = try c.add(allocator, valuelow);
         if (c != c2) {
             Container.deinit(&r.array.containers[cid], allocator);
             r.array.containers[cid] = c2;
@@ -390,7 +390,7 @@ pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
             .typecode = .array,
         };
         try r.insert_new_key_value_at(allocator, cid, key, newac);
-        _ = newac.add(allocator, r, valuelow) catch unreachable; // never fails. always an array with cardinality 1
+        _ = newac.add(allocator, valuelow) catch unreachable; // never fails. always an array with cardinality 1
         return true;
     }
 
@@ -409,7 +409,7 @@ fn containerptr_add(r: *Bitmap, allocator: Allocator, val: u32, index: *u32) !*C
         const iu: u32 = @bitCast(i);
         const cp = &r.array.containers[iu];
         const c = cp.*;
-        const c2 = try c.add(allocator, r, @truncate(val));
+        const c2 = try c.add(allocator, @truncate(val));
         index.* = iu;
         if (c2 != c) {
             Container.deinit(cp, allocator);
@@ -431,7 +431,7 @@ fn containerptr_add(r: *Bitmap, allocator: Allocator, val: u32, index: *u32) !*C
             .typecode = .array,
         };
         try r.insert_new_key_value_at(allocator, index.*, key, newac);
-        _ = newac.add(allocator, r, @truncate(val)) catch unreachable; // never fails. always an array with cardinality 1
+        _ = newac.add(allocator, @truncate(val)) catch unreachable; // never fails. always an array with cardinality 1
         return newac;
     }
 }
@@ -458,7 +458,7 @@ pub fn add_checked_bulk(
         // because we already have the container at hand, we can do the
         // insertion directly, bypassing `add`
         const card = context.container.cardinality;
-        const c2 = try context.container.add(allocator, r, @truncate(val));
+        const c2 = try context.container.add(allocator, @truncate(val));
         context.container = r.array.containers[context.idx];
         if (c2 != context.container) {
             @branchHint(.unlikely);
@@ -481,82 +481,6 @@ fn append(r: *Bitmap, allocator: Allocator, key: u16, c: *Container) !void {
     r.array.keys[pos] = key;
     r.array.containers[pos] = c;
     r.array.len += 1;
-}
-
-/// The new container contains the range [start,stop).
-/// It is required that stop>start, the caller is responsible for this check.
-/// It is required that stop <= (1<<16), the caller is responsibe for this
-/// check. The cardinality of the created container is stop - start.
-pub fn create_range(
-    r: *Bitmap,
-    allocator: Allocator,
-    tc: Typecode,
-    start: u32,
-    stop: u32,
-) !*Container {
-    switch (tc) {
-        .run => {
-            try r.ensure_unused_capacity(allocator, 1);
-            const c = try Container.run_container_create_given_capacity(allocator, 1);
-            c.append_first(Rle16{
-                .value = @truncate(start),
-                .length = @truncate(stop - start - 1),
-            });
-            return c;
-        },
-        .array => {
-            var c = try Container.array_container_create_given_capacity(allocator, stop - start);
-            const array = c.blocks_as(.array);
-            var k: u32 = @intCast(start);
-            while (k < stop) : (k += 1) {
-                array[c.cardinality] = @intCast(k);
-                c.cardinality += 1;
-            }
-            return c;
-        },
-        .bitset => unreachable,
-        .shared => unreachable,
-    }
-}
-
-/// make a container with a run of ones
-///
-/// initially always use a run container, even if an array might be marginally
-/// smaller
-pub fn range_of_ones(
-    r: *Bitmap,
-    allocator: Allocator,
-    range_start: u32,
-    range_end: u32,
-) !*Container {
-    assert(range_end >= range_start);
-    const card = range_end - range_start + 1;
-    return if (card <= 2)
-        try r.create_range(allocator, .array, range_start, range_end)
-    else
-        try r.create_range(allocator, .run, range_start, range_end);
-}
-
-/// Create a container with all the values between in [min,max) at a
-/// distance k*step from min.
-pub fn from_range(
-    r: *Bitmap,
-    allocator: Allocator,
-    min: u32,
-    max: u32,
-    step: u16,
-) !*Container {
-    // trace(@src(), "{}-{} step {}", .{ min, max, step });
-    if (step == 0) return Container.uninit; // being paranoid
-    if (step == 1) {
-        return try r.range_of_ones(allocator, min, max);
-    }
-    const size = (max - min + step - 1) / step;
-    if (size <= C.DEFAULT_MAX_SIZE) { // array container
-        unreachable;
-    } else { // bitset container
-        unreachable;
-    }
 }
 
 fn replace_key_and_container_at_index(r: Bitmap, i: u32, key: u16, c: *Container) void {
@@ -652,7 +576,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: Allocator, min: u32, max: u32) !v
             } else r.array.containers[srcu] = Container.uninit;
             src -= 1;
         } else {
-            newc = try r.from_range(allocator, container_min, container_max + 1, 1);
+            newc = try Container.from_range(allocator, container_min, container_max + 1, 1);
         }
         // trace(@src(), "dst {}, newc {f}", .{ dst, newc.fmtLong(@intCast(key)) });
         assert(newc != Container.uninit);
@@ -799,7 +723,7 @@ pub fn write_container(c: *Container, w: *Io.Writer) !usize {
         },
         .bitset => {
             assert(c.blocks_cap == C.BITSET_BLOCKS);
-            try w.writeSliceEndian(u64, c.blocks_as(.bitset), .little);
+            try w.writeSliceEndian(u64, c.blocks_as(.bitset)[0..C.BITSET_CONTAINER_SIZE_IN_WORDS], .little);
             return @sizeOf(root.Bitset);
         },
         .shared => unreachable,
@@ -1240,7 +1164,7 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
         count.* = @intCast(switch (c.typecode) {
             .bitset => blk: {
                 var w = fixedw(mem.sliceAsBytes(bitset_zone[0..C.BITSET_CONTAINER_SIZE_IN_WORDS]));
-                try w.writeSliceEndian(root.Word, c.blocks_as(.bitset), .little);
+                try w.writeSliceEndian(root.Word, c.blocks_as(.bitset)[0..C.BITSET_CONTAINER_SIZE_IN_WORDS], .little);
                 assert(w.unusedCapacityLen() == 0);
                 bitset_zone += C.BITSET_CONTAINER_SIZE_IN_WORDS;
                 break :blk if (c.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
@@ -2418,7 +2342,7 @@ fn insert_flipped_container(
             Container.deinit(&flipped_container, allocator);
         }
     } else {
-        const result = try ans.range_of_ones(allocator, lb_start, @as(u32, lb_end) + 1);
+        const result = try Container.range_of_ones(allocator, lb_start, @as(u32, lb_end) + 1);
         try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, result);
     }
 }
@@ -2442,7 +2366,7 @@ fn insert_fully_flipped_container(
             Container.deinit(&flipped_container, allocator);
         }
     } else {
-        const result = try ans.range_of_ones(allocator, 0, C.MAX_KEY_CARDINALITY);
+        const result = try Container.range_of_ones(allocator, 0, C.MAX_KEY_CARDINALITY);
         try ans.insert_new_key_value_at(allocator, @intCast(-j - 1), hb, result);
     }
 }

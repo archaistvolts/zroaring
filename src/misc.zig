@@ -1121,11 +1121,8 @@ pub fn bitset_set_lenrange(
     }
     const temp = words[endword];
     words[firstword] |= (~@as(u64, 0)) << @truncate(start % 64);
-    var i: u32 = firstword + 1;
-    while (i < endword) : (i += 2) {
-        words[i] = ~@as(u64, 0);
-        words[i + 1] = ~@as(u64, 0);
-    }
+    // diverge from croaring which uses loop with += 2.
+    @memset(words[firstword + 1 .. endword], ~@as(u64, 0));
     words[endword] =
         temp | (~@as(u64, 0)) >> @truncate(((~start +% 1) -% lenminusone -% 1) % 64);
 }

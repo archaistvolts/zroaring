@@ -13,15 +13,15 @@ pub const Container = struct {
     pub const ICardinality = i32;
     const Element = union(root.Typecode) {
         shared: void,
-        bitset: []align(C.BLOCK_ALIGN) u64,
-        array: []align(C.BLOCK_ALIGN) u16,
-        run: []align(C.BLOCK_ALIGN) root.Rle16,
+        bitset: [*]align(C.BLOCK_ALIGN) u64,
+        array: [*]align(C.BLOCK_ALIGN) u16,
+        run: [*]align(C.BLOCK_ALIGN) root.Rle16,
     };
 
     pub fn deinit(cp: **Container, allocator: mem.Allocator) void {
         const c = cp.*;
         if (c == uninit) return;
-        allocator.free(c.get_blocks());
+        allocator.free(c.blocks[0..c.blocks_cap]);
         allocator.destroy(c);
         cp.* = uninit;
     }
@@ -38,44 +38,19 @@ pub const Container = struct {
         };
     }
 
-    fn BlocksSlice(Ctr: type) type {
-        return if (@typeInfo(Ctr).pointer.is_const)
-            []const Block
-        else
-            []Block;
-    }
-
-    // TODO bench with comptime typecode param
-    pub fn get_blocks(c: anytype) BlocksSlice(@TypeOf(c)) {
-        return switch (c.typecode) {
-            .bitset => c.blocks[0..C.BITSET_BLOCKS],
-            .array, .run => c.blocks[0..c.blocks_cap],
-            .shared => unreachable,
-        };
-    }
-
-    pub inline fn get_blocks_tagged(c: anytype, comptime typecode: Typecode) BlocksSlice(@TypeOf(c)) {
-        assert(c.typecode == typecode);
-        return switch (typecode) {
-            .bitset => c.blocks[0..C.BITSET_BLOCKS],
-            .array, .run => c.blocks[0..c.blocks_cap],
-            .shared => unreachable,
-        };
-    }
-
     /// return container blocks as aligned slice of u16 when typecode == .array etc.
     /// slices by capacity.
     pub inline fn blocks_as(
         c: *const Container,
         comptime typecode: root.Typecode,
     ) @FieldType(Element, @tagName(typecode)) {
-        return @ptrCast(@constCast(c.get_blocks_tagged(typecode)));
+        return @ptrCast(@constCast(c.blocks));
     }
 
     pub fn get_cardinality(c: *const Container) Cardinality {
         return switch (c.typecode) {
             .bitset, .array => c.cardinality,
-            .run => run_container_cardinality(c, c.blocks_as(.run).ptr),
+            .run => run_container_cardinality(c, c.blocks_as(.run)),
             .shared => unreachable,
         };
     }
@@ -91,15 +66,11 @@ pub const Container = struct {
             capacity * 5 / 4;
     }
 
-    pub fn assert_valid(c: *Container, r: Bitmap) void {
+    pub fn assert_valid(c: *Container) void {
         if (!(builtin.is_test or builtin.mode == .Debug)) return;
         var reason: ?[]const u8 = null;
         if (!c.internal_validate(&reason)) {
             trace(@src(), "{s}", .{reason.?});
-            const cid = for (r.get_containers(), 0..) |cx, i| {
-                if (cx == c) break i;
-            } else unreachable;
-            trace(@src(), "{f}", .{c.fmtLong(r.array.keys[cid])});
             unreachable;
         }
     }
@@ -137,7 +108,7 @@ pub const Container = struct {
         const newblocks = try allocator.alloc(Block, ac.blocks_cap + moreblocks);
         if (preserve)
             @memcpy(newblocks[0..ac.blocks_cap], ac.blocks[0..ac.blocks_cap]);
-        allocator.free(ac.get_blocks_tagged(.array));
+        allocator.free(ac.blocks[0..ac.blocks_cap]);
         ac.blocks_cap = @intCast(newblocks.len);
         ac.blocks = newblocks.ptr;
     }
@@ -172,7 +143,7 @@ pub const Container = struct {
                 rc.blocks_cap = @intCast(blocks.len);
             } else {
                 const blocks = try allocator.alloc(Block, rc.blocks_cap + moreblocks);
-                allocator.free(rc.get_blocks_tagged(.run));
+                allocator.free(rc.blocks[0..rc.blocks_cap]);
                 rc.blocks_cap = @intCast(blocks.len);
                 rc.blocks = blocks.ptr;
             }
@@ -204,30 +175,29 @@ pub const Container = struct {
     pub fn array_container_try_add(
         ac: *Container,
         allocator: Allocator,
-        r: *Bitmap,
         value: u16,
         maxcard: u32,
     ) !i32 {
-        var array = ac.blocks_as(.array)[0..ac.cardinality];
+        const cardinality = ac.cardinality;
+        var array = ac.blocks_as(.array);
         // best case, we can append.
-        if ((ac.cardinality == 0 or value > array[ac.cardinality - 1]) and ac.cardinality < maxcard) {
+        if ((cardinality == 0 or value > array[cardinality - 1]) and cardinality < maxcard) {
             try ac.append(allocator, value);
             return 1;
         }
-        const loc = misc.binarySearch(array, value);
+        const loc = misc.binarySearch(array[0..cardinality], value);
         if (loc >= 0) {
             return 0;
-        } else if (ac.cardinality < maxcard) {
+        } else if (cardinality < maxcard) {
             if (ac.is_at_capacity()) {
-                try ac.array_container_grow(allocator, ac.cardinality + 1, true);
+                try ac.array_container_grow(allocator, cardinality + 1, true);
             }
-            array = ac.blocks_as(.array)[0..ac.cardinality];
+            array = ac.blocks_as(.array);
             const insertidx: u32 = @intCast(-loc - 1);
             // trace(@src(), "inserting value={} at index {} array={any}", .{ value, insertidx, array });
-            @memmove(array.ptr + insertidx + 1, array[insertidx..]);
+            @memmove(array + insertidx + 1, array[insertidx..cardinality]);
             array[insertidx] = value;
             ac.cardinality += 1;
-            ac.assert_valid(r.*);
             return 1;
         }
         return -1;
@@ -263,7 +233,7 @@ pub const Container = struct {
         if (run.cardinality + 1 > run.*.calc_capacity())
             try run.run_container_grow(allocator, run.cardinality + 1, true);
 
-        const runs = run.blocks_as(.run).ptr;
+        const runs = run.blocks_as(.run);
         @memmove(runs + 1 + index, (runs + index)[0 .. run.*.cardinality - index]);
         run.*.cardinality += 1;
     }
@@ -316,8 +286,8 @@ pub const Container = struct {
         allocator: Allocator,
         pos: u16,
     ) !bool {
-        var runs = run.blocks_as(.run)[0..run.cardinality];
-        var mindex = misc.interleavedBinarySearch(runs, pos);
+        var runs = run.blocks_as(.run);
+        var mindex = misc.interleavedBinarySearch(runs[0..run.cardinality], pos);
         if (mindex >= 0) return false; // already there
         mindex = -mindex - 2; // points to preceding value, possibly -1
         const index: u32 = @bitCast(mindex);
@@ -409,7 +379,7 @@ pub const Container = struct {
     }
 
     /// Note: when an array container becomes full, it is converted to a bitset in place.
-    pub fn add(c: *Container, allocator: Allocator, r: *Bitmap, value: u16) !*Container {
+    pub fn add(c: *Container, allocator: Allocator, value: u16) !*Container {
         // TODO // c = c.get_writable_copy_if_shared();
         switch (c.typecode) {
             .bitset => {
@@ -417,7 +387,7 @@ pub const Container = struct {
                 return c;
             },
             .array => {
-                const add_res = try c.array_container_try_add(allocator, r, value, C.DEFAULT_MAX_SIZE);
+                const add_res = try c.array_container_try_add(allocator, value, C.DEFAULT_MAX_SIZE);
                 if (add_res != -1)
                     return c;
 
@@ -448,7 +418,7 @@ pub const Container = struct {
     pub const size_in_bytes = serialized_size_in_bytes;
 
     inline fn _avx2_bitset_container_equals(c1: *const Container, c2: *const Container) bool {
-        for (c1.get_blocks_tagged(.bitset), c2.get_blocks_tagged(.bitset)) |b1, b2| {
+        for (c1.blocks[0..C.BITSET_BLOCKS], c2.blocks) |b1, b2| {
             const mask: root.BlockMask = @bitCast(b1 == b2);
             if (mask != math.maxInt(root.BlockMask))
                 return false;
@@ -468,18 +438,18 @@ pub const Container = struct {
             _avx2_bitset_container_equals(c1, c2)
         else
             misc.memequals(
-                @ptrCast(c1.get_blocks_tagged(.bitset).ptr),
-                @ptrCast(c2.get_blocks_tagged(.bitset).ptr),
+                @ptrCast(c1.blocks_as(.bitset)),
+                @ptrCast(c2.blocks_as(.bitset)),
                 C.BITSET_CONTAINER_SIZE_IN_WORDS * @sizeOf(u64),
             );
     }
 
     fn run_container_equals_bitset(c1: *const Container, c2: *const Container) bool {
-        const run_card = run_container_cardinality(c1, c1.blocks_as(.run).ptr);
+        const run_card = run_container_cardinality(c1, c1.blocks_as(.run));
         const bitset_card = if (c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
             c2.cardinality
         else
-            bitset_container_compute_cardinality(c2.blocks_as(.bitset).ptr);
+            bitset_container_compute_cardinality(c2.blocks_as(.bitset));
         if (bitset_card != run_card)
             return false;
 
@@ -504,7 +474,7 @@ pub const Container = struct {
             return false;
 
         const array = c1.blocks_as(.array)[0..c1.cardinality];
-        const words = c2.blocks_as(.bitset);
+        const words = c2.blocks_as(.bitset)[0..C.BITSET_CONTAINER_SIZE_IN_WORDS];
         var pos: u32 = 0;
         for (words, 0..) |word, i| {
             var w = word;
@@ -522,7 +492,7 @@ pub const Container = struct {
 
     fn run_container_equals_array(c1: *const Container, c2: *const Container) bool {
         const runs = c1.blocks_as(.run);
-        if (run_container_cardinality(c1, runs.ptr) != c2.cardinality)
+        if (run_container_cardinality(c1, runs) != c2.cardinality)
             return false;
         const array = c2.blocks_as(.array)[0..c2.cardinality];
         var pos: u32 = 0;
@@ -540,8 +510,8 @@ pub const Container = struct {
         if (c1.cardinality != c2.cardinality)
             return false;
         return misc.memequals(
-            @ptrCast(c1.get_blocks_tagged(.array).ptr),
-            @ptrCast(c2.get_blocks_tagged(.array).ptr),
+            @ptrCast(c1.blocks),
+            @ptrCast(c2.blocks),
             c1.cardinality * @sizeOf(u16),
         );
     }
@@ -550,8 +520,8 @@ pub const Container = struct {
         if (c1.cardinality != c2.cardinality)
             return false;
         return misc.memequals(
-            @ptrCast(c1.get_blocks_tagged(.run).ptr),
-            @ptrCast(c2.get_blocks_tagged(.run).ptr),
+            @ptrCast(c1.blocks),
+            @ptrCast(c2.blocks),
             c1.cardinality * @sizeOf(Rle16),
         );
     }
@@ -574,9 +544,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     pub fn compute_cardinality(v: *const Container) Cardinality {
         if (v == uninit) return 0;
         return switch (v.typecode) {
-            .bitset => bitset_container_compute_cardinality(v.blocks_as(.bitset).ptr),
+            .bitset => bitset_container_compute_cardinality(v.blocks_as(.bitset)),
             .array => v.cardinality,
-            .run => run_container_cardinality(v, v.blocks_as(.run).ptr),
+            .run => run_container_cardinality(v, v.blocks_as(.run)),
             .shared => unreachable,
         };
     }
@@ -723,7 +693,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     /// Returns the index of x , if not exsist return -1
     pub fn bitset_container_get_index(container: *const Container, x: u16) i32 {
         const words = container.blocks_as(.bitset);
-        if (bitset_container_get(words.ptr, x)) {
+        if (bitset_container_get(words, x)) {
             // credit: aqrit
             var sum: i32 = 0;
             var i: u32 = 0;
@@ -795,7 +765,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     }
 
     fn bitset_container_contains(c: *const Container, val: u16) bool {
-        return bitset_container_get(c.blocks_as(.bitset).ptr, val);
+        return bitset_container_get(c.blocks_as(.bitset), val);
     }
 
     /// Check whether a value is in a container
@@ -840,7 +810,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             switch (c.typecode) {
                 .array => {
                     try w.print("{t: <6} #:{: <7} {s: <7}: ", .{ c.typecode, c.get_cardinality(), "" });
-                    const vals0 = c.blocks_as(.array);
+                    const vals0 = c.blocks_as(.array)[0..c.cardinality];
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
                         .short => try w.print("[{?}..{?}]", .{
@@ -872,7 +842,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 },
                 .run => {
                     try w.print("{t: <6} #:{: <7} n:{: <5}: ", .{ c.typecode, c.get_cardinality(), c.cardinality });
-                    const vals0 = c.blocks_as(.run);
+                    const vals0 = c.blocks_as(.run)[0..c.cardinality];
                     const vals = if (c.cardinality <= vals0.len) vals0[0..c.cardinality] else &.{};
                     switch (f.mode) {
                         .short => try w.print("{f}..{f}", .{
@@ -923,7 +893,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             deinit(cp, allocator);
             return cblocks * C.BLOCK_SIZE;
         } else if (blocksneeded < c.blocks_cap) {
-            const newblocks = try allocator.realloc(c.get_blocks(), blocksneeded);
+            const newblocks = try allocator.realloc(c.blocks[0..c.blocks_cap], blocksneeded);
             c.blocks = newblocks.ptr;
             c.blocks_cap = @intCast(newblocks.len);
         }
@@ -933,16 +903,13 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     /// total number of elements an array or run container can hold given its
     /// allocated number of blocks.
     pub fn calc_capacity(c: *const Container) u32 {
-        return if (c == uninit)
-            0
-        else
-            @as(u32, c.blocks_cap) *
-                @as(u32, switch (c.typecode) {
-                    .array => C.BLOCK_LEN16,
-                    .run => C.BLOCK_LEN32,
-                    .bitset => unreachable,
-                    .shared => unreachable,
-                });
+        return @as(u32, c.blocks_cap) *
+            @as(u32, switch (c.typecode) {
+                .array => C.BLOCK_LEN16,
+                .run => C.BLOCK_LEN32,
+                .bitset => unreachable,
+                .shared => unreachable,
+            });
     }
 
     pub fn array_container_create_given_capacity(allocator: Allocator, capacity: u32) !*Container {
@@ -973,7 +940,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     }
 
     pub fn bitset_container_clear(bc: *Container) void {
-        @memset(bc.get_blocks_tagged(.bitset), @splat(0));
+        @memset(bc.blocks[0..C.BITSET_BLOCKS], @splat(0));
     }
 
     pub fn bitset_container_create_noinit(allocator: Allocator) !*Container {
@@ -998,7 +965,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     /// Check whether this bitset is empty,
     pub fn bitset_container_empty(bitset: *const Container) bool {
         return if (bitset.cardinality == C.BITSET_UNKNOWN_CARDINALITY)
-            for (bitset.blocks_as(.bitset)) |word| {
+            for (bitset.blocks_as(.bitset)[0..C.BITSET_CONTAINER_SIZE_IN_WORDS]) |word| {
                 if (word != 0) break false;
             } else true
         else
@@ -1068,7 +1035,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 try run.makeRoomAtIndex(allocator, @intCast(mindex + 1));
                 const runs2 = run.blocks_as(.run);
                 runs2[index].length = @intCast(offset - 1);
-                runs2.ptr[index + 1] = .{
+                runs2[index + 1] = .{
                     .value = newvalue,
                     .length = @intCast(newlength),
                 };
@@ -1194,7 +1161,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             return ret;
         } else if (c.typecode == .bitset) { // run conversions on bitset
             // does bitset need conversion to run?
-            const nruns = bitset_container_number_of_runs(c.blocks_as(.bitset).ptr);
+            const nruns = bitset_container_number_of_runs(c.blocks_as(.bitset));
             const size_as_run_container = run_container_serialized_size_in_bytes(nruns);
             if (size_as_run_container >= @sizeOf(root.Bitset)) // no conversion needed.
                 return c;
@@ -1683,16 +1650,16 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dstr: *Bitmap,
     ) !void {
         const newCardinality = bitset_container_and_justcard(
-            src1.blocks_as(.bitset).ptr,
-            src2.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
+            src2.blocks_as(.bitset),
         );
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
             dst.* = try bitset_container_create_noinit(allocator);
             _ = bitset_container_and_nocard(
-                src1.blocks_as(.bitset).ptr,
-                src2.blocks_as(.bitset).ptr,
+                src1.blocks_as(.bitset),
+                src2.blocks_as(.bitset),
                 dst.*,
-                dst.*.blocks_as(.bitset).ptr,
+                dst.*.blocks_as(.bitset),
             );
             dst.*.cardinality = newCardinality;
             return;
@@ -1703,9 +1670,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst.* = try array_container_create_given_capacity(allocator, newCardinality);
         dst.*.cardinality = newCardinality;
         _ = bitset_extract_intersection_setbits_uint16(
-            src1.blocks_as(.bitset).ptr,
-            src2.blocks_as(.bitset).ptr,
-            dst.*.blocks_as(.array),
+            src1.blocks_as(.bitset),
+            src2.blocks_as(.bitset),
+            dst.*.blocks_as(.array)[0..dst.*.cardinality],
             0,
         );
     }
@@ -1719,8 +1686,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         allocator: Allocator,
         src2: *const Container,
     ) !*Container {
-        const src1words = src1.blocks_as(.bitset).ptr;
-        const src2words = src2.blocks_as(.bitset).ptr;
+        const src1words = src1.blocks_as(.bitset);
+        const src2words = src2.blocks_as(.bitset);
         const newCardinality = bitset_container_and_justcard(src1words, src2words);
         if (newCardinality > C.DEFAULT_MAX_SIZE) {
             _ = bitset_container_and_nocard(src1words, src2words, src1, src1words);
@@ -1731,9 +1698,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var ac = try array_container_create_given_capacity(allocator, newCardinality);
         ac.cardinality = newCardinality;
         _ = bitset_extract_intersection_setbits_uint16(
-            src1.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
             src2words,
-            ac.blocks_as(.array),
+            ac.blocks_as(.array)[0..ac.cardinality],
             0,
         );
         return ac;
@@ -1745,7 +1712,6 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         allocator: Allocator,
         ac2: *const Container,
         dst: *Container,
-        dstr: *Bitmap,
     ) !void {
         const card1 = ac1.cardinality;
         const card2 = ac2.cardinality;
@@ -1753,35 +1719,36 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const threshold = 64; // subject to tuning
         if (dst.calc_capacity() < min_card)
             try array_container_grow(dst, allocator, min_card, false);
+
         if (card1 * threshold < card2) {
             dst.cardinality = @intCast(misc.intersect_skewed_uint16(
                 ac1.blocks_as(.array)[0..card1],
                 ac2.blocks_as(.array)[0..card2],
-                dst.blocks_as(.array),
+                dst.blocks_as(.array)[0 .. dst.blocks_cap * C.BLOCK_LEN16],
             ));
         } else if (card2 * threshold < card1) {
             dst.cardinality = @intCast(misc.intersect_skewed_uint16(
                 ac2.blocks_as(.array)[0..card2],
                 ac1.blocks_as(.array)[0..card1],
-                dst.blocks_as(.array),
+                dst.blocks_as(.array)[0 .. dst.blocks_cap * C.BLOCK_LEN16],
             ));
         } else {
             dst.cardinality = @intCast(if (C.HAS_AVX2)
                 misc.intersect_vector16(
                     ac1.blocks_as(.array)[0..card1],
                     ac2.blocks_as(.array)[0..card2],
-                    dst.blocks_as(.array),
+                    dst.blocks_as(.array)[0 .. dst.blocks_cap * C.BLOCK_LEN16],
                 )
             else
                 misc.intersect_uint16(
                     ac1.blocks_as(.array)[0..card1],
                     ac2.blocks_as(.array)[0..card2],
-                    dst.blocks_as(.array),
+                    dst.blocks_as(.array)[0 .. dst.blocks_cap * C.BLOCK_LEN16],
                 ));
         }
 
         if (dst.cardinality != 0)
-            dst.assert_valid(dstr.*);
+            dst.assert_valid();
     }
 
     /// Copy one container into another. We assume that they are distinct.
@@ -1810,11 +1777,11 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const if2 = run_container_is_full(src2);
         if (if1 or if2) {
             if (if1) {
-                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run).ptr);
+                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run));
                 return;
             }
             if (if2) {
-                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run).ptr);
+                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run));
                 return;
             }
         }
@@ -1915,7 +1882,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             // this branchless approach is much faster...
             dstarray[newcard] = key;
 
-            newcard += @intFromBool(bitset_container_get(src2.blocks_as(.bitset).ptr, key));
+            newcard += @intFromBool(bitset_container_get(src2.blocks_as(.bitset), key));
             // we could do it this way instead...
             // if (bitset_container_contains(src2, key)) {
             //     dst.array[newcard++] = key;
@@ -2060,7 +2027,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 const endofrun = @as(u32, rle.value) + rle.length;
                 for (rle.value..endofrun + 1) |runValue| {
                     dstarray[dst.*.cardinality] = @truncate(runValue);
-                    dst.*.cardinality += @intFromBool(bitset_container_get(src2words.ptr, @truncate(runValue)));
+                    dst.*.cardinality += @intFromBool(bitset_container_get(src2words, @truncate(runValue)));
                 }
             }
             return;
@@ -2070,11 +2037,11 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             for (0..src1.cardinality) |rlepos| {
                 const rle = src1runs[rlepos];
                 const end: u32 = rle.value;
-                bitset_reset_range(src2words.ptr, start, end);
+                bitset_reset_range(src2words, start, end);
                 start = end + rle.length + 1;
             }
-            bitset_reset_range(src2words.ptr, start, C.MAX_KEY_CARDINALITY);
-            dst.*.cardinality = bitset_container_compute_cardinality(dst.*.blocks_as(.bitset).ptr);
+            bitset_reset_range(src2words, start, C.MAX_KEY_CARDINALITY);
+            dst.*.cardinality = bitset_container_compute_cardinality(dst.*.blocks_as(.bitset));
             if (src2.cardinality <= C.DEFAULT_MAX_SIZE) {
                 dst.* = try array_container_from_bitset(src2, allocator);
             }
@@ -2082,7 +2049,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         } else { // no inplace
             // we expect the answer to be a bitmap (if we are lucky)
             dst.* = try bitset_container_clone(src2, allocator);
-            const dstwords = dst.*.blocks_as(.bitset).ptr;
+            const dstwords = dst.*.blocks_as(.bitset);
             src1runs = src1.blocks_as(.run)[0..src1.cardinality];
             var start: u32 = 0;
             for (0..src1.cardinality) |rlepos| {
@@ -2115,7 +2082,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         assert(src1.cardinality > 0 and src2.cardinality > 0);
         if (run_container_is_full(src2)) {
             if (dst != src1)
-                try src1.array_container_copy(allocator, dst, src1.blocks_as(.array).ptr);
+                try src1.array_container_copy(allocator, dst, src1.blocks_as(.array));
             return;
         }
         if (dst.calc_capacity() < src1.cardinality)
@@ -2199,7 +2166,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         for (runs) |r| {
             const start: u32 = r.value;
             const end = start + r.length;
-            misc.bitset_set_range(answer.blocks_as(.bitset).ptr, start, end + 1);
+            misc.bitset_set_range(answer.blocks_as(.bitset), start, end + 1);
         }
         answer.cardinality = card;
         return answer;
@@ -2234,7 +2201,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.array, .array) => {
                 try dstr.ensure_unused_capacity(allocator, 1);
                 result = try array_container_create_given_capacity(allocator, @min(c1.cardinality, c2.cardinality));
-                try array_container_intersection(c1, allocator, c2, result, dstr);
+                try array_container_intersection(c1, allocator, c2, result);
             },
             misc.pair(.run, .run) => {
                 try dstr.ensure_unused_capacity(allocator, 1);
@@ -2293,10 +2260,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst: *Container,
     ) void {
         _ = op_methods(.Or).bitset_container_op(
-            src1.blocks_as(.bitset).ptr,
-            src2.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
+            src2.blocks_as(.bitset),
             dst,
-            dst.blocks_as(.bitset).ptr,
+            dst.blocks_as(.bitset),
         );
     }
 
@@ -2316,7 +2283,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst.*.cardinality = @intCast(misc.fast_union_uint16(
             src1.blocks_as(.array)[0..card1],
             src2.blocks_as(.array)[0..card2],
-            dst.*.blocks_as(.array).ptr,
+            dst.*.blocks_as(.array),
         ));
     }
 
@@ -2404,11 +2371,11 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const if2 = run_container_is_full(src2);
         if (if1 or if2) {
             if (if1) {
-                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run).ptr);
+                try src1.run_container_copy(allocator, dst, src1.blocks_as(.run));
                 return;
             }
             if (if2) {
-                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run).ptr);
+                try src2.run_container_copy(allocator, dst, src2.blocks_as(.run));
                 return;
             }
         }
@@ -2426,10 +2393,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
         var previousrle: root.Rle16 = .{ .value = 0, .length = 0 };
         if (src1runs[rlepos].value <= src2runs[xrlepos].value) {
-            previousrle = run_container_append_first(dst, dstruns.ptr, src1runs[rlepos]);
+            previousrle = run_container_append_first(dst, dstruns, src1runs[rlepos]);
             rlepos += 1;
         } else {
-            previousrle = run_container_append_first(dst, dstruns.ptr, src2runs[xrlepos]);
+            previousrle = run_container_append_first(dst, dstruns, src2runs[xrlepos]);
             xrlepos += 1;
         }
 
@@ -2441,14 +2408,14 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 defer xrlepos += 1;
                 break :rl src2runs[xrlepos];
             };
-            run_container_append(dst, dstruns.ptr, newrl, &previousrle);
+            run_container_append(dst, dstruns, newrl, &previousrle);
         }
         while (xrlepos < src2.cardinality) {
-            run_container_append(dst, dstruns.ptr, src2runs[xrlepos], &previousrle);
+            run_container_append(dst, dstruns, src2runs[xrlepos], &previousrle);
             xrlepos += 1;
         }
         while (rlepos < src1.cardinality) {
-            run_container_append(dst, dstruns.ptr, src1runs[rlepos], &previousrle);
+            run_container_append(dst, dstruns, src1runs[rlepos], &previousrle);
             rlepos += 1;
         }
     }
@@ -2459,7 +2426,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     /// Note: memmove is necessary to avoid panics due to aliasing.
     fn bitset_container_copy(dst: *Container, src: *const Container) void {
         dst.cardinality = src.cardinality;
-        @memmove(dst.blocks_as(.bitset), src.blocks_as(.bitset));
+        @memmove(dst.blocks[0..C.BITSET_BLOCKS], src.blocks);
     }
 
     fn bitset_set_list_withcard(
@@ -2490,7 +2457,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     ) void {
         bitset_container_copy(dst, src2);
         dst.cardinality = @intCast(bitset_set_list_withcard(
-            dst.blocks_as(.bitset),
+            dst.blocks_as(.bitset)[0..C.BITSET_CONTAINER_SIZE_IN_WORDS],
             dst.cardinality,
             src1.blocks_as(.array)[0..src1.cardinality],
         ));
@@ -2532,7 +2499,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst: *Container,
     ) !void {
         if (run_container_is_full(src2)) {
-            try run_container_copy(src2, allocator, dst, src2.blocks_as(.run).ptr);
+            try run_container_copy(src2, allocator, dst, src2.blocks_as(.run));
             return;
         }
 
@@ -2548,27 +2515,27 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var prev: root.Rle16 = undefined;
 
         if (srcruns[rp].value <= arr[ap]) {
-            prev = run_container_append_first(dst, dstruns.ptr, srcruns[rp]);
+            prev = run_container_append_first(dst, dstruns, srcruns[rp]);
             rp += 1;
         } else {
-            prev = run_container_append_value_first(dst, dstruns.ptr, arr[ap]);
+            prev = run_container_append_value_first(dst, dstruns, arr[ap]);
             ap += 1;
         }
         while (rp < card2 and ap < card1) {
             if (srcruns[rp].value <= arr[ap]) {
-                run_container_append(dst, dstruns.ptr, srcruns[rp], &prev);
+                run_container_append(dst, dstruns, srcruns[rp], &prev);
                 rp += 1;
             } else {
-                run_container_append_value(dst, dstruns.ptr, arr[ap], &prev);
+                run_container_append_value(dst, dstruns, arr[ap], &prev);
                 ap += 1;
             }
         }
         while (ap < card1) {
-            run_container_append_value(dst, dstruns.ptr, arr[ap], &prev);
+            run_container_append_value(dst, dstruns, arr[ap], &prev);
             ap += 1;
         }
         while (rp < card2) {
-            run_container_append(dst, dstruns.ptr, srcruns[rp], &prev);
+            run_container_append(dst, dstruns, srcruns[rp], &prev);
             rp += 1;
         }
     }
@@ -2648,7 +2615,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const runs = src1.blocks_as(.run);
         const dwords = dst.blocks_as(.bitset);
         for (runs[0..src1.cardinality]) |rle| {
-            misc.bitset_set_lenrange(dwords.ptr, rle.value, rle.length);
+            misc.bitset_set_lenrange(dwords, rle.value, rle.length);
         }
         dst.cardinality = @intCast(dst.compute_cardinality());
     }
@@ -2702,7 +2669,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         if (if1 or if2) {
             if (if1) return;
             if (if2) {
-                try run_container_copy(src2, allocator, src1, src2.blocks_as(.run).ptr);
+                try run_container_copy(src2, allocator, src1, src2.blocks_as(.run));
                 return;
             }
         }
@@ -2712,7 +2679,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         if (src1.calc_capacity() < neededcapacity)
             try run_container_grow(src1, allocator, neededcapacity, true);
         const src1runs = src1.blocks_as(.run);
-        const inputsrc1 = src1runs.ptr + maxoutput;
+        const inputsrc1 = src1runs + maxoutput;
         @memmove(inputsrc1, src1runs[0..src1.cardinality]);
         const input1nruns = src1.cardinality;
         src1.cardinality = 0;
@@ -2722,10 +2689,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var previousrle: Rle16 = undefined;
         const src2runs = src2.blocks_as(.run);
         if (inputsrc1[rlepos].value <= src2runs[xrlepos].value) {
-            previousrle = run_container_append_first(src1, src1runs.ptr, inputsrc1[rlepos]);
+            previousrle = run_container_append_first(src1, src1runs, inputsrc1[rlepos]);
             rlepos += 1;
         } else {
-            previousrle = run_container_append_first(src1, src1runs.ptr, src2runs[xrlepos]);
+            previousrle = run_container_append_first(src1, src1runs, src2runs[xrlepos]);
             xrlepos += 1;
         }
         while ((xrlepos < src2.cardinality) and (rlepos < input1nruns)) {
@@ -2737,14 +2704,14 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 newrl = src2runs[xrlepos];
                 xrlepos += 1;
             }
-            run_container_append(src1, src1runs.ptr, newrl, &previousrle);
+            run_container_append(src1, src1runs, newrl, &previousrle);
         }
         while (xrlepos < src2.cardinality) {
-            run_container_append(src1, src1runs.ptr, src2runs[xrlepos], &previousrle);
+            run_container_append(src1, src1runs, src2runs[xrlepos], &previousrle);
             xrlepos += 1;
         }
         while (rlepos < input1nruns) {
-            run_container_append(src1, src1runs.ptr, inputsrc1[rlepos], &previousrle);
+            run_container_append(src1, src1runs, inputsrc1[rlepos], &previousrle);
             rlepos += 1;
         }
     }
@@ -2763,7 +2730,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const src2runs = src2.blocks_as(.run);
         const src1arr = src1.blocks_as(.array);
 
-        const inputsrc2 = src2runs.ptr + maxoutput;
+        const inputsrc2 = src2runs + maxoutput;
         @memmove(inputsrc2, src2runs[0..src2.cardinality]);
 
         var rlepos: u32 = 0;
@@ -2773,30 +2740,30 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
         var previousrle: root.Rle16 = undefined;
         if (inputsrc2[rlepos].value <= src1arr[arraypos]) {
-            previousrle = run_container_append_first(src2, src2runs.ptr, inputsrc2[rlepos]);
+            previousrle = run_container_append_first(src2, src2runs, inputsrc2[rlepos]);
             rlepos += 1;
         } else {
-            previousrle = run_container_append_value_first(src2, src2runs.ptr, src1arr[arraypos]);
+            previousrle = run_container_append_value_first(src2, src2runs, src1arr[arraypos]);
             arraypos += 1;
         }
 
         while (rlepos < src2nruns and arraypos < src1.cardinality) {
             if (inputsrc2[rlepos].value <= src1arr[arraypos]) {
-                run_container_append(src2, src2runs.ptr, inputsrc2[rlepos], &previousrle);
+                run_container_append(src2, src2runs, inputsrc2[rlepos], &previousrle);
                 rlepos += 1;
             } else {
-                run_container_append_value(src2, src2runs.ptr, src1arr[arraypos], &previousrle);
+                run_container_append_value(src2, src2runs, src1arr[arraypos], &previousrle);
                 arraypos += 1;
             }
         }
         if (arraypos < src1.cardinality) {
             while (arraypos < src1.cardinality) {
-                run_container_append_value(src2, src2runs.ptr, src1arr[arraypos], &previousrle);
+                run_container_append_value(src2, src2runs, src1arr[arraypos], &previousrle);
                 arraypos += 1;
             }
         } else {
             while (rlepos < src2nruns) {
-                run_container_append(src2, src2runs.ptr, inputsrc2[rlepos], &previousrle);
+                run_container_append(src2, src2runs, inputsrc2[rlepos], &previousrle);
                 rlepos += 1;
             }
         }
@@ -2842,9 +2809,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         {
             const dstcopywords = dstc.blocks_as(.bitset);
             src2array = src2.blocks_as(.array)[0..src2.cardinality];
-            misc.bitset_set_list(dstcopywords.ptr, src1.blocks_as(.array)[0..src1.cardinality]);
+            misc.bitset_set_list(dstcopywords, src1.blocks_as(.array)[0..src1.cardinality]);
             dstc.cardinality = @intCast(bitset_set_list_withcard(
-                dstcopywords,
+                dstcopywords[0..C.BITSET_CONTAINER_SIZE_IN_WORDS],
                 src1.cardinality,
                 src2array,
             ));
@@ -2855,9 +2822,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             if (src1.calc_capacity() < dstc.cardinality) {
                 try src1.array_container_grow(allocator, dstc.cardinality, false);
             }
-            src1array = src1.blocks_as(.array);
+            src1array = src1.blocks_as(.array)[0 .. src1.blocks_cap * C.BLOCK_LEN16];
             const dstcopywords = dstc.blocks_as(.bitset);
-            _ = bitset_extract_setbits_uint16(dstcopywords.ptr, src1array, 0);
+            _ = bitset_extract_setbits_uint16(dstcopywords, src1array, 0);
             src1.cardinality = dstc.cardinality;
             deinit(dst, allocator);
             dst.* = src1;
@@ -2912,7 +2879,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 if (run_container_is_full(c2)) {
                     try x1.ensure_unused_capacity(allocator, 1);
                     result = try run_container_create_given_capacity(allocator, 1);
-                    try c2.run_container_copy(allocator, result, c2.blocks_as(.run).ptr);
+                    try c2.run_container_copy(allocator, result, c2.blocks_as(.run));
                     return result;
                 }
                 run_bitset_container_union(c2, c1, c1);
@@ -2971,7 +2938,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.bitset, .run) => {
                 if (run_container_is_full(c2)) {
                     result = try run_container_create_given_capacity(allocator, 1);
-                    try run_container_copy(c2, allocator, result, c2.blocks_as(.run).ptr);
+                    try run_container_copy(c2, allocator, result, c2.blocks_as(.run));
                 } else {
                     result = try bitset_container_create_noinit(allocator);
                     run_bitset_container_union(c2, c1, result);
@@ -2980,7 +2947,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.run, .bitset) => {
                 if (run_container_is_full(c1)) {
                     result = try run_container_create_given_capacity(allocator, 1);
-                    try c1.run_container_copy(allocator, result, c1.blocks_as(.run).ptr);
+                    try c1.run_container_copy(allocator, result, c1.blocks_as(.run));
                 } else {
                     result = try bitset_container_create_noinit(allocator);
                     run_bitset_container_union(c1, c2, result);
@@ -3009,10 +2976,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst: *Container,
     ) void {
         _ = op_methods(.Xor).bitset_container_op(
-            src1.blocks_as(.bitset).ptr,
-            src2.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
+            src2.blocks_as(.bitset),
             dst,
-            dst.blocks_as(.bitset).ptr,
+            dst.blocks_as(.bitset),
         );
     }
 
@@ -3047,13 +3014,13 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             @intCast(misc.xor_vector16(
                 src1.blocks_as(.array)[0..card1],
                 src2.blocks_as(.array)[0..card2],
-                dst.blocks_as(.array).ptr,
+                dst.blocks_as(.array),
             ))
         else
             @intCast(misc.xor_uint16(
                 src1.blocks_as(.array)[0..card1],
                 src2.blocks_as(.array)[0..card2],
-                dst.blocks_as(.array).ptr,
+                dst.blocks_as(.array),
             ));
     }
 
@@ -3070,7 +3037,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const d = dst.*;
         d.bitset_container_copy(src2);
         d.cardinality = @intCast(misc.bitset_flip_list_withcard(
-            d.blocks_as(.bitset).ptr,
+            d.blocks_as(.bitset),
             d.cardinality,
             src1.blocks_as(.array)[0..src1.cardinality],
         ));
@@ -3100,7 +3067,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst.* = try bitset_container_from_array_dst(src1, allocator);
         const dstwords = dst.*.blocks_as(.bitset);
         dst.*.cardinality = @intCast(misc.bitset_flip_list_withcard(
-            dstwords.ptr,
+            dstwords,
             dst.*.cardinality,
             src2.blocks_as(.array)[0..card2],
         ));
@@ -3128,7 +3095,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const runs = src1.blocks_as(.run);
         const dwords = d.blocks_as(.bitset);
         for (runs[0..src1.cardinality]) |rle| {
-            misc.bitset_flip_range(dwords.ptr, rle.value, @as(u32, rle.value) + rle.length + 1);
+            misc.bitset_flip_range(dwords, rle.value, @as(u32, rle.value) + rle.length + 1);
         }
         d.cardinality = d.compute_cardinality();
         if (d.cardinality <= C.DEFAULT_MAX_SIZE) {
@@ -3173,19 +3140,19 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var pos2: u32 = 0;
         while (pos1 < nruns1 and pos2 < nruns2) {
             if (src1runs[pos1].value <= src2runs[pos2].value) {
-                run_container_smart_append_exclusive(dst, dstruns.ptr, src1runs[pos1].value, src1runs[pos1].length);
+                run_container_smart_append_exclusive(dst, dstruns, src1runs[pos1].value, src1runs[pos1].length);
                 pos1 += 1;
             } else {
-                run_container_smart_append_exclusive(dst, dstruns.ptr, src2runs[pos2].value, src2runs[pos2].length);
+                run_container_smart_append_exclusive(dst, dstruns, src2runs[pos2].value, src2runs[pos2].length);
                 pos2 += 1;
             }
         }
         while (pos1 < nruns1) {
-            run_container_smart_append_exclusive(dst, dstruns.ptr, src1runs[pos1].value, src1runs[pos1].length);
+            run_container_smart_append_exclusive(dst, dstruns, src1runs[pos1].value, src1runs[pos1].length);
             pos1 += 1;
         }
         while (pos2 < nruns2) {
-            run_container_smart_append_exclusive(dst, dstruns.ptr, src2runs[pos2].value, src2runs[pos2].length);
+            run_container_smart_append_exclusive(dst, dstruns, src2runs[pos2].value, src2runs[pos2].length);
             pos2 += 1;
         }
     }
@@ -3209,24 +3176,24 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             if (src2runs[rlepos].value <= src1array[arraypos]) {
                 run_container_smart_append_exclusive(
                     dst,
-                    dstruns.ptr,
+                    dstruns,
                     src2runs[rlepos].value,
                     src2runs[rlepos].length,
                 );
                 rlepos += 1;
             } else {
-                run_container_smart_append_exclusive(dst, dstruns.ptr, src1array[arraypos], 0);
+                run_container_smart_append_exclusive(dst, dstruns, src1array[arraypos], 0);
                 arraypos += 1;
             }
         }
         while (arraypos < src1.cardinality) {
-            run_container_smart_append_exclusive(dst, dstruns.ptr, src1array[arraypos], 0);
+            run_container_smart_append_exclusive(dst, dstruns, src1array[arraypos], 0);
             arraypos += 1;
         }
         while (rlepos < src2.cardinality) {
             run_container_smart_append_exclusive(
                 dst,
-                dstruns.ptr,
+                dstruns,
                 src2runs[rlepos].value,
                 src2runs[rlepos].length,
             );
@@ -3238,7 +3205,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         run: *const Container,
         allocator: Allocator,
     ) !*Container {
-        const runcard = run_container_cardinality(run, run.blocks_as(.run).ptr);
+        const runcard = run_container_cardinality(run, run.blocks_as(.run));
         const answer = try array_container_create_given_capacity(allocator, runcard);
         answer.cardinality = 0;
         const runs = run.blocks_as(.run);
@@ -3256,11 +3223,11 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
     fn bitset_container_from_run(run: *const Container, allocator: Allocator) !*Container {
         const runs = run.blocks_as(.run);
-        const card = run.run_container_cardinality(runs.ptr);
+        const card = run.run_container_cardinality(runs);
         var answer = try bitset_container_create(allocator);
         const words = answer.blocks_as(.bitset);
         for (run.blocks_as(.run)[0..run.cardinality]) |rle| {
-            misc.bitset_set_lenrange(words.ptr, rle.value, rle.length);
+            misc.bitset_set_lenrange(words, rle.value, rle.length);
         }
         answer.cardinality = card;
         return answer;
@@ -3281,7 +3248,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const src2array = src2.blocks_as(.array);
         const d = dst.*;
         d.cardinality = @intCast(misc.bitset_flip_list_withcard(
-            d.blocks_as(.bitset).ptr,
+            d.blocks_as(.bitset),
             src1.cardinality,
             src2array[0..src2.cardinality],
         ));
@@ -3316,7 +3283,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             return;
         }
 
-        const card = run_container_cardinality(src2, src2.blocks_as(.run).ptr);
+        const card = run_container_cardinality(src2, src2.blocks_as(.run));
         if (card <= C.DEFAULT_MAX_SIZE) {
             // Java implementation works with the array, xoring the run elements via
             // iterator
@@ -3337,10 +3304,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst: *Container,
     ) u32 {
         return op_methods(.AndNot).bitset_container_op(
-            src1.blocks_as(.bitset).ptr,
-            src2.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
+            src2.blocks_as(.bitset),
             dst,
-            dst.blocks_as(.bitset).ptr,
+            dst.blocks_as(.bitset),
         );
     }
 
@@ -3379,7 +3346,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst.cardinality = @intCast(misc.difference_uint16(
             src1.blocks_as(.array)[0..card1],
             src2.blocks_as(.array)[0..card2],
-            dst.blocks_as(.array),
+            dst.blocks_as(.array)[0..dst.cardinality],
         ));
     }
 
@@ -3407,7 +3374,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const d = dst.*;
         bitset_container_copy(d, src1);
         d.cardinality = @truncate(misc.bitset_clear_list(
-            d.blocks_as(.bitset).ptr,
+            d.blocks_as(.bitset),
             d.cardinality,
             src2.blocks_as(.array)[0..src2.cardinality],
         ));
@@ -3436,7 +3403,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var newcard: Cardinality = 0;
         for (src1array[0..card1]) |key| {
             dstarray[newcard] = key;
-            newcard += 1 - @intFromBool(bitset_container_get(src2bitset.ptr, key));
+            newcard += 1 - @intFromBool(bitset_container_get(src2bitset, key));
         }
         d.cardinality = newcard;
     }
@@ -3456,7 +3423,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const src2runs = src2.blocks_as(.run);
         const dstwords = d.blocks_as(.bitset);
         for (src2runs[0..src2.cardinality]) |rle| {
-            bitset_reset_range(dstwords.ptr, rle.value, @as(u32, rle.value) + rle.length + 1);
+            bitset_reset_range(dstwords, rle.value, @as(u32, rle.value) + rle.length + 1);
         }
         d.cardinality = d.compute_cardinality();
         if (d.cardinality <= C.DEFAULT_MAX_SIZE) {
@@ -3475,7 +3442,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
         // follows the Java implementation as of June 2016
         assert(dst.* == uninit);
-        const srccard = run_container_cardinality(src1, src1.blocks_as(.run).ptr);
+        const srccard = run_container_cardinality(src1, src1.blocks_as(.run));
         if (srccard <= C.DEFAULT_MAX_SIZE) { // must be an array
             dst.* = try array_container_create_given_capacity(allocator, srccard);
             const d = dst.*;
@@ -3503,12 +3470,12 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             for (src1runs[0..src1.cardinality]) |rle| {
                 const start: u32 = rle.value;
                 const end = start + rle.length + 1;
-                bitset_reset_range(answords.ptr, last_pos, start);
-                misc.bitset_flip_range(answords.ptr, start, end);
+                bitset_reset_range(answords, last_pos, start);
+                misc.bitset_flip_range(answords, start, end);
                 last_pos = end;
             }
-            bitset_reset_range(answords.ptr, last_pos, C.MAX_KEY_CARDINALITY);
-            answer.cardinality = bitset_container_compute_cardinality(answords.ptr);
+            bitset_reset_range(answords, last_pos, C.MAX_KEY_CARDINALITY);
+            answer.cardinality = bitset_container_compute_cardinality(answords);
 
             if (answer.cardinality <= C.DEFAULT_MAX_SIZE) {
                 dst.* = try answer.array_container_from_bitset(allocator);
@@ -3545,8 +3512,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var run_end: u32 = run_start + src2runs[0].length;
         var which_run: u32 = 0;
         var dest_card: Cardinality = 0;
-        var valp: [*]const u16 = src1array.ptr;
-        const end = @intFromPtr(src1array.ptr + card1);
+        var valp: [*]const u16 = src1array;
+        const end = @intFromPtr(src1array + card1);
         while (@intFromPtr(valp) < end) : (valp += 1) {
             const val = valp[0];
             if (val < run_start) {
@@ -3637,7 +3604,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst: **Container,
     ) !void {
         src1.cardinality = @truncate(misc.bitset_clear_list(
-            src1.blocks_as(.bitset).ptr,
+            src1.blocks_as(.bitset),
             src1.cardinality,
             src2.blocks_as(.array)[0..src2.cardinality],
         ));
@@ -3661,7 +3628,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dstr: *Bitmap,
     ) !void {
         assert(dst.* == uninit);
-        const card = run_container_cardinality(src1, src1.blocks_as(.run).ptr);
+        const card = run_container_cardinality(src1, src1.blocks_as(.run));
         const arbitrary_threshold = 32;
 
         if (card <= arbitrary_threshold) {
@@ -3728,7 +3695,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 rlepos += 1;
                 if (rlepos < src1.cardinality) {
                     const remaining = src1runs[rlepos..src1.cardinality];
-                    @memcpy(ansruns[ans.cardinality..].ptr, remaining);
+                    @memcpy(ansruns[ans.cardinality..], remaining);
                     ans.cardinality += @intCast(remaining.len);
                 }
             }
@@ -3977,7 +3944,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             .blocks = blocks.ptr,
         };
         assert(c1old.typecode == .bitset);
-        @memcpy(bc.get_blocks_tagged(.bitset), c1old.get_blocks_tagged(.bitset));
+        @memcpy(bc.blocks[0..C.BITSET_BLOCKS], c1old.blocks);
         const c = try allocator.create(Container);
         c.* = bc;
         return c;
@@ -4088,9 +4055,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     pub fn minimum(c: *const Container) u16 {
         // TODO // c = container_unwrap_shared(c);
         return switch (c.typecode) {
-            .bitset => bitset_container_minimum(c.blocks_as(.bitset).ptr),
-            .array => return c.array_container_minimum(c.blocks_as(.array).ptr),
-            .run => return c.run_container_minimum(c.blocks_as(.run).ptr),
+            .bitset => bitset_container_minimum(c.blocks_as(.bitset)),
+            .array => return c.array_container_minimum(c.blocks_as(.array)),
+            .run => return c.run_container_minimum(c.blocks_as(.run)),
             else => unreachable,
         };
     }
@@ -4098,9 +4065,9 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     pub fn maximum(c: *const Container) u16 {
         // TODO // c = container_unwrap_shared(c);
         return switch (c.typecode) {
-            .bitset => bitset_container_maximum(c.blocks_as(.bitset).ptr),
-            .array => return c.array_container_maximum(c.blocks_as(.array).ptr),
-            .run => return c.run_container_maximum(c.blocks_as(.run).ptr),
+            .bitset => bitset_container_maximum(c.blocks_as(.bitset)),
+            .array => return c.array_container_maximum(c.blocks_as(.array)),
+            .run => return c.run_container_maximum(c.blocks_as(.run)),
             else => unreachable,
         };
     }
@@ -4286,19 +4253,19 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const array1 = c1.blocks_as(.array)[0..c1.cardinality];
         const words2 = c2.blocks_as(.bitset);
         for (array1) |val| {
-            if (!bitset_container_get(words2.ptr, val)) return false;
+            if (!bitset_container_get(words2, val)) return false;
         }
         return true;
     }
 
     fn array_container_is_subset_run(c1: *const Container, c2: *const Container) bool {
-        const runs2 = c2.blocks_as(.run)[0..c2.cardinality];
-        if (c1.cardinality > c2.run_container_cardinality(runs2.ptr))
+        const runs2 = c2.blocks_as(.run);
+        if (c1.cardinality > c2.run_container_cardinality(runs2))
             return false;
         const array1 = c1.blocks_as(.array)[0..c1.cardinality];
         var iarray: u32 = 0;
         var irun: u32 = 0;
-        while (iarray < array1.len and irun < runs2.len) {
+        while (iarray < array1.len and irun < c2.cardinality) {
             const start: u32 = runs2[irun].value;
             const stop: u32 = start + runs2[irun].length;
             if (array1[iarray] < start) {
@@ -4314,7 +4281,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
     fn run_container_is_subset_array(c1: *const Container, c2: *const Container) bool {
         const runs1 = c1.blocks_as(.run);
-        if (c1.run_container_cardinality(runs1.ptr) > c2.cardinality)
+        if (c1.run_container_cardinality(runs1) > c2.cardinality)
             return false;
         const array2 = c2.blocks_as(.array)[0..c2.cardinality];
         var start_pos: u32 = math.maxInt(u32);
@@ -4339,11 +4306,11 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const runs1 = c1.blocks_as(.run);
         const words2 = c2.blocks_as(.bitset);
         if (c2.cardinality != C.BITSET_UNKNOWN_CARDINALITY) {
-            if (c2.cardinality < c1.run_container_cardinality(runs1.ptr))
+            if (c2.cardinality < c1.run_container_cardinality(runs1))
                 return false;
         } else {
-            const card = bitset_container_compute_cardinality(words2.ptr); // modify container2?
-            if (card < c1.run_container_cardinality(runs1.ptr)) {
+            const card = bitset_container_compute_cardinality(words2); // modify container2?
+            if (card < c1.run_container_cardinality(runs1)) {
                 return false;
             }
         }
@@ -4352,7 +4319,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             const end = start + run.length;
             var j = start;
             while (j <= end) : (j += 1) {
-                if (!bitset_container_get(words2.ptr, @intCast(j)))
+                if (!bitset_container_get(words2, @intCast(j)))
                     return false;
             }
         }
@@ -4362,16 +4329,16 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     fn bitset_container_is_subset_run(c1: *const Container, c2: *const Container) bool {
         // todo: this code could be much faster
         const words1 = c1.blocks_as(.bitset);
-        const runs2 = c2.blocks_as(.run)[0..c2.cardinality];
+        const runs2 = c2.blocks_as(.run);
         if (c1.cardinality != C.BITSET_UNKNOWN_CARDINALITY) {
-            if (c1.cardinality > c2.run_container_cardinality(runs2.ptr))
+            if (c1.cardinality > c2.run_container_cardinality(runs2))
                 return false;
         }
         var ibitset: u32 = 0;
         var irun: u32 = 0;
-        while (ibitset < C.BITSET_CONTAINER_SIZE_IN_WORDS and irun < runs2.len) {
+        while (ibitset < C.BITSET_CONTAINER_SIZE_IN_WORDS and irun < c2.cardinality) {
             var w = words1[ibitset];
-            while (w != 0 and irun < runs2.len) {
+            while (w != 0 and irun < c2.cardinality) {
                 const start: u32 = runs2[irun].value;
                 const stop: u32 = start + runs2[irun].length;
                 const t = w & (~w + 1);
@@ -4460,8 +4427,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                         return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY);
                     }
                 } else {
-                    const c1words = c1.blocks_as(.bitset).ptr;
-                    const c2words = c2.blocks_as(.bitset).ptr;
+                    const c1words = c1.blocks_as(.bitset);
+                    const c2words = c2.blocks_as(.bitset);
                     _ = bitset_container_or_nocard(c1words, c2words, c1, c1words);
                 }
                 return c1;
@@ -4489,7 +4456,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.bitset, .run) => {
                 if (run_container_is_full(c2)) {
                     result = try run_container_create_given_capacity(allocator, c2.cardinality);
-                    try run_container_copy(c2, allocator, result, c2.blocks_as(.run).ptr);
+                    try run_container_copy(c2, allocator, result, c2.blocks_as(.run));
                     return result;
                 }
                 run_bitset_container_lazy_union(c2, c1, c1); // allowed //  lazy
@@ -4536,19 +4503,19 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             } else {
                 const arr1 = src1.blocks_as(.array);
                 const arr2 = src2.blocks_as(.array)[0..src2.cardinality];
-                @memmove(arr1.ptr + src2.cardinality, arr1[0..src1.cardinality]);
+                @memmove(arr1 + src2.cardinality, arr1[0..src1.cardinality]);
                 src1.cardinality = @intCast(misc.fast_union_uint16(
                     arr1[src2.cardinality..][0..src1.cardinality],
                     arr2,
-                    arr1[0..src1.cardinality].ptr,
+                    arr1,
                 ));
                 return;
             }
         }
         dst.* = try bitset_container_create(allocator);
         const dstwords = dst.*.blocks_as(.bitset);
-        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array)[0..src1.cardinality]);
-        misc.bitset_set_list(dstwords.ptr, src2.blocks_as(.array)[0..src2.cardinality]);
+        misc.bitset_set_list(dstwords, src1.blocks_as(.array)[0..src1.cardinality]);
+        misc.bitset_set_list(dstwords, src2.blocks_as(.array)[0..src2.cardinality]);
         dst.*.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
     }
 
@@ -4579,8 +4546,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
         dst.* = try bitset_container_create(allocator);
         const dstwords = dst.*.blocks_as(.bitset);
-        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array)[0..src1.cardinality]);
-        misc.bitset_set_list(dstwords.ptr, src2.blocks_as(.array)[0..src2.cardinality]);
+        misc.bitset_set_list(dstwords, src1.blocks_as(.array)[0..src1.cardinality]);
+        misc.bitset_set_list(dstwords, src2.blocks_as(.array)[0..src2.cardinality]);
         dst.*.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
     }
 
@@ -4594,7 +4561,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     ) void {
         if (src2 != dst) bitset_container_copy(dst, src2);
         const dstwords = dst.blocks_as(.bitset);
-        misc.bitset_set_list(dstwords.ptr, src1.blocks_as(.array)[0..src1.cardinality]);
+        misc.bitset_set_list(dstwords, src1.blocks_as(.array)[0..src1.cardinality]);
         dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
     }
 
@@ -4607,7 +4574,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const runs = src1.blocks_as(.run)[0..src1.cardinality];
         const dstwords = dst.blocks_as(.bitset);
         for (runs) |rle| {
-            misc.bitset_set_lenrange(dstwords.ptr, rle.value, rle.length);
+            misc.bitset_set_lenrange(dstwords, rle.value, rle.length);
         }
         dst.cardinality = C.BITSET_UNKNOWN_CARDINALITY;
     }
@@ -4631,10 +4598,10 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.bitset, .bitset) => {
                 result = try bitset_container_create_noinit(allocator);
                 _ = bitset_container_or_nocard(
-                    c1.blocks_as(.bitset).ptr,
-                    c2.blocks_as(.bitset).ptr,
+                    c1.blocks_as(.bitset),
+                    c2.blocks_as(.bitset),
                     result,
-                    result.blocks_as(.bitset).ptr,
+                    result.blocks_as(.bitset),
                 );
                 return result;
             },
@@ -4666,7 +4633,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.bitset, .run) => {
                 if (run_container_is_full(c2)) {
                     result = try run_container_create_given_capacity(allocator, c2.cardinality);
-                    const c2runs = c2.blocks_as(.run).ptr;
+                    const c2runs = c2.blocks_as(.run);
                     try run_container_copy(c2, allocator, result, c2runs);
                     return result;
                 }
@@ -4677,7 +4644,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.pair(.run, .bitset) => {
                 if (run_container_is_full(c1)) {
                     result = try run_container_create_given_capacity(allocator, c1.cardinality);
-                    const c1runs = c1.blocks_as(.run).ptr;
+                    const c1runs = c1.blocks_as(.run);
                     try run_container_copy(c1, allocator, result, c1runs);
                     return result;
                 }
@@ -4706,7 +4673,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const c = cp.*;
         switch (c.typecode) {
             .bitset => {
-                c.cardinality = bitset_container_compute_cardinality(c.blocks_as(.bitset).ptr);
+                c.cardinality = bitset_container_compute_cardinality(c.blocks_as(.bitset));
                 if (c.cardinality <= C.DEFAULT_MAX_SIZE) {
                     const bc = try c.array_container_from_bitset(allocator);
                     deinit(cp, allocator);
@@ -4869,7 +4836,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 rle = src2runs[rlepos];
             }
             if (rle.value > arrayval) {
-                arraypos = misc.advanceUntil(src1array.ptr[0..src1.cardinality], arraypos, rle.value);
+                arraypos = misc.advanceUntil(src1array[0..src1.cardinality], arraypos, rle.value);
             } else {
                 newcard += 1;
                 arraypos += 1;
@@ -4882,14 +4849,14 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     fn run_container_intersection_cardinality(src1: *const Container, src2: *const Container) u32 {
         const if1 = src1.run_container_is_full();
         const if2 = src2.run_container_is_full();
-        const src1runs = src1.blocks_as(.run)[0..src1.cardinality];
-        const src2runs = src2.blocks_as(.run)[0..src2.cardinality];
+        const src1runs = src1.blocks_as(.run);
+        const src2runs = src2.blocks_as(.run);
         if (if1 or if2) {
             if (if1)
-                return src2.run_container_cardinality(src2runs.ptr);
+                return src2.run_container_cardinality(src2runs);
 
             if (if2)
-                return run_container_cardinality(src1, src1runs.ptr);
+                return src1.run_container_cardinality(src1runs);
         }
         var answer: u32 = 0;
         var xrlepos: u32 = 0;
@@ -4970,7 +4937,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const src2words = src2.blocks_as(.bitset);
         for (0..src1.cardinality) |rlepos| {
             const rle = src1runs[rlepos];
-            answer += misc.bitset_lenrange_cardinality(src2words.ptr, rle.value, rle.length);
+            answer += misc.bitset_lenrange_cardinality(src2words, rle.value, rle.length);
         }
         return answer;
     }
@@ -4981,8 +4948,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         // TODO // c2 = container_unwrap_shared(c2, &type2);
         return switch (misc.pair(c1.typecode, c2.typecode)) {
             misc.pair(.bitset, .bitset) => bitset_container_and_justcard(
-                c1.blocks_as(.bitset).ptr,
-                c2.blocks_as(.bitset).ptr,
+                c1.blocks_as(.bitset),
+                c2.blocks_as(.bitset),
             ),
             misc.pair(.array, .array),
             => array_container_intersection_cardinality(c1, c2),
@@ -5156,7 +5123,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         switch (c.typecode) {
             .bitset => {
                 const words = c.blocks_as(.bitset);
-                const idx = bitset_container_index_equalorlarger(words.ptr, val);
+                const idx = bitset_container_index_equalorlarger(words, val);
                 if (idx < 0) return false;
                 it.index = @bitCast(idx);
                 value_out.* = @intCast(it.index);
@@ -5164,7 +5131,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             },
             .array => {
                 const array = c.blocks_as(.array);
-                const idx = array_container_index_equalorlarger(array.ptr, c.cardinality, val);
+                const idx = array_container_index_equalorlarger(array, c.cardinality, val);
                 if (idx < 0) return false;
                 it.index = @bitCast(idx);
                 value_out.* = array[it.index];
@@ -5172,7 +5139,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             },
             .run => {
                 const runs = c.blocks_as(.run);
-                const idx = run_container_index_equalorlarger(runs.ptr, c.cardinality, val);
+                const idx = run_container_index_equalorlarger(runs, c.cardinality, val);
                 if (idx < 0) return false;
                 it.index = @bitCast(idx);
                 value_out.* = if (runs[it.index].value <= val) val else runs[it.index].value;
@@ -5358,7 +5325,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         // TODO // c = container_unwrap_shared(c);
         return switch (c.typecode) {
             .bitset => bitset_container_to_uint32_array(
-                c.blocks_as(.bitset).ptr,
+                c.blocks_as(.bitset),
                 c.cardinality,
                 output,
                 base,
@@ -5387,13 +5354,13 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.intersect_skewed_uint16(
                 c1.blocks_as(.array)[0..card1],
                 c2.blocks_as(.array)[0..card2],
-                c1.blocks_as(.array),
+                c1.blocks_as(.array)[0..card1],
             )
         else if (card2 * threshold < card1)
             misc.intersect_skewed_uint16(
                 c2.blocks_as(.array)[0..card2],
                 c1.blocks_as(.array)[0..card1],
-                c1.blocks_as(.array),
+                c1.blocks_as(.array)[0..card1],
             )
         else if (C.HAS_AVX2)
             misc.intersect_vector16_inplace(
@@ -5404,7 +5371,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             misc.intersect_uint16(
                 c1.blocks_as(.array)[0..card1],
                 c2.blocks_as(.array)[0..card2],
-                c1.blocks_as(.array),
+                c1.blocks_as(.array)[0..card1],
             ));
     }
 
@@ -5486,7 +5453,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
 
         if (new_cardinality > C.DEFAULT_MAX_SIZE) {
             var temp = try src.bitset_container_from_array_dst(allocator);
-            misc.bitset_flip_range(temp.blocks_as(.bitset).ptr, range_start, range_end);
+            misc.bitset_flip_range(temp.blocks_as(.bitset), range_start, range_end);
             temp.cardinality = @intCast(new_cardinality);
             return temp;
         }
@@ -5497,7 +5464,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const arrarray = arr.blocks_as(.array);
         srcarray = src.blocks_as(.array);
         // copy stuff before the active area
-        @memcpy(arrarray[0..@intCast(start_index)], srcarray.ptr);
+        @memcpy(arrarray[0..@intCast(start_index)], srcarray);
 
         // work on the range
         var out_pos: u32 = @intCast(start_index);
@@ -5520,7 +5487,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         const last_index_u: u32 = @intCast(last_index + 1);
         @memcpy(
             arrarray[out_pos..][0 .. src.cardinality - last_index_u],
-            srcarray.ptr + last_index_u,
+            srcarray + last_index_u,
         );
         arr.cardinality = @intCast(new_cardinality);
         return arr;
@@ -5544,7 +5511,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         assert(src.typecode == .bitset);
         var t = try src.bitset_container_clone(allocator);
         errdefer deinit(&t, allocator);
-        const words = t.blocks_as(.bitset).ptr;
+        const words = t.blocks_as(.bitset);
         misc.bitset_flip_range(words, range_start, range_end);
         t.cardinality = bitset_container_compute_cardinality(words);
 
@@ -5584,14 +5551,14 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         }
 
         ans.run_container_smart_append_exclusive(
-            ansruns.ptr,
+            ansruns,
             @intCast(range_start),
             @intCast(range_end - range_start - 1),
         );
 
         while (k < nruns) : (k += 1) {
             ans.run_container_smart_append_exclusive(
-                ans.blocks_as(.run).ptr,
+                ans.blocks_as(.run),
                 srcruns[k].value,
                 srcruns[k].length,
             );
@@ -5648,14 +5615,14 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         for (0..run.cardinality) |i| {
             const rle_min: u32 = runs[i].value;
             const rle_max: u32 = rle_min + runs[i].length;
-            misc.bitset_set_lenrange(words.ptr, rle_min, rle_max - rle_min);
+            misc.bitset_set_lenrange(words, rle_min, rle_max - rle_min);
             union_cardinality += runs[i].length + 1;
         }
         union_cardinality += @intCast(max - min + 1);
         union_cardinality -=
-            misc.bitset_lenrange_cardinality(words.ptr, min, max - min);
+            misc.bitset_lenrange_cardinality(words, min, max - min);
         assert(union_cardinality > 0);
-        misc.bitset_set_lenrange(words.ptr, min, max - min);
+        misc.bitset_set_lenrange(words, min, max - min);
         bitset.cardinality = @intCast(union_cardinality);
         if (union_cardinality <= C.DEFAULT_MAX_SIZE) {
             // convert to an array container
@@ -5686,12 +5653,12 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                 union_cardinality += c.cardinality;
                 union_cardinality += max - min + 1;
                 union_cardinality -=
-                    misc.bitset_lenrange_cardinality(words.ptr, min, max - min);
+                    misc.bitset_lenrange_cardinality(words, min, max - min);
 
                 if (union_cardinality == C.MAX_KEY_CARDINALITY) {
                     return try run_container_create_range(allocator, 0, C.MAX_KEY_CARDINALITY);
                 } else {
-                    misc.bitset_set_lenrange(words.ptr, min, max - min);
+                    misc.bitset_set_lenrange(words, min, max - min);
                     c.cardinality = @intCast(union_cardinality);
                     return c;
                 }
@@ -5711,7 +5678,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
                     return c;
                 } else {
                     var bitset = try c.bitset_container_from_array(allocator);
-                    misc.bitset_set_lenrange(bitset.blocks_as(.bitset).ptr, min, max - min);
+                    misc.bitset_set_lenrange(bitset.blocks_as(.bitset), min, max - min);
                     bitset.cardinality = @intCast(union_cardinality);
                     return bitset;
                 }
@@ -5761,6 +5728,78 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             array[nvals_less + i] = @intCast(min + i);
         }
         ac.cardinality = @intCast(union_cardinality);
+    }
+
+    /// The new container contains the range [start,stop).
+    /// It is required that stop>start, the caller is responsible for this check.
+    /// It is required that stop <= (1<<16), the caller is responsibe for this
+    /// check. The cardinality of the created container is stop - start.
+    pub fn create_range(
+        allocator: Allocator,
+        tc: Typecode,
+        start: u32,
+        stop: u32,
+    ) !*Container {
+        switch (tc) {
+            .run => {
+                const c = try run_container_create_given_capacity(allocator, 1);
+                c.append_first(Rle16{
+                    .value = @truncate(start),
+                    .length = @truncate(stop - start - 1),
+                });
+                return c;
+            },
+            .array => {
+                var c = try array_container_create_given_capacity(allocator, stop - start);
+                const array = c.blocks_as(.array);
+                var k: u32 = @intCast(start);
+                while (k < stop) : (k += 1) {
+                    array[c.cardinality] = @intCast(k);
+                    c.cardinality += 1;
+                }
+                return c;
+            },
+            .bitset => unreachable,
+            .shared => unreachable,
+        }
+    }
+
+    /// make a container with a run of ones
+    ///
+    /// initially always use a run container, even if an array might be marginally
+    /// smaller
+    pub fn range_of_ones(
+        allocator: Allocator,
+        range_start: u32,
+        range_end: u32,
+    ) !*Container {
+        assert(range_end >= range_start);
+        const card = range_end - range_start + 1;
+        return if (card <= 2)
+            try create_range(allocator, .array, range_start, range_end)
+        else
+            try create_range(allocator, .run, range_start, range_end);
+    }
+
+    /// Create a container with all the values between in [min,max) at a
+    /// distance k*step from min.
+    pub fn from_range(
+        allocator: Allocator,
+        min: u32,
+        max: u32,
+        step: u16,
+    ) !*Container {
+        // trace(@src(), "{}-{} step {}", .{ min, max, step });
+        if (step == 0) return uninit; // being paranoid
+        if (step == 1) {
+            return try range_of_ones(allocator, min, max);
+        }
+        const size = (max - min + step - 1) / step;
+        if (size <= C.DEFAULT_MAX_SIZE) { // array container
+            unreachable;
+        } else { // bitset container
+            unreachable;
+        }
     }
 };
 
