@@ -121,15 +121,16 @@ pub const free = deinit;
 pub fn deinit(r: *Bitmap, allocator: Allocator) void {
     if (r.is_empty()) return;
     if (r.get_flag(.frozen)) {
+        var blocks_cap: u32 = 0;
         for (r.get_containers()) |c| {
             switch (c.typecode) {
-                .array, .run => {
-                    allocator.free(c.blocks[0..c.blocks_cap]);
-                },
+                .array, .run => blocks_cap += c.blocks_cap,
                 else => {},
             }
         }
-        const size = Array.calcSize(r.array.capacity) + r.array.capacity * @sizeOf(Container);
+        const size = Array.calcSize(r.array.capacity) +
+            C.BLOCK_ALIGNMENT.forward(r.array.capacity * @sizeOf(Container)) +
+            @sizeOf(Block) * blocks_cap;
         allocator.free(r.array.asBytes()[0..size]);
     } else {
         for (r.get_containers()) |*c| {
@@ -1258,6 +1259,7 @@ pub fn frozen_view(
     var bitset_zone_size: usize = 0;
     var run_zone_size: usize = 0;
     var array_zone_size: usize = 0;
+    var num_blocks: u32 = 0;
 
     for (0..num_containers) |i| {
         switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
@@ -1267,10 +1269,12 @@ pub fn frozen_view(
             },
             .run => {
                 num_run_containers += 1;
+                num_blocks += misc.numGroupsOfSize(counts[i], C.BLOCK_LEN32);
                 run_zone_size += counts[i] * @sizeOf(Rle16);
             },
             .array => {
                 num_array_containers += 1;
+                num_blocks += misc.numGroupsOfSize(counts[i] + @as(u32, 1), C.BLOCK_LEN16);
                 array_zone_size += (counts[i] + @as(u32, 1)) * @sizeOf(u16);
             },
             else => return error.Typecode,
@@ -1284,9 +1288,10 @@ pub fn frozen_view(
     var array_zone: [*]const u16 = @ptrCast(@alignCast(buf.ptr + bitset_zone_size + run_zone_size));
 
     var alloc_size: usize = Array.calcSize(num_containers);
-    alloc_size += (num_bitset_containers + num_run_containers + num_array_containers) *
-        @sizeOf(Container);
-
+    alloc_size += C.BLOCK_ALIGNMENT.forward(
+        (num_bitset_containers + num_run_containers + num_array_containers) * @sizeOf(Container),
+    );
+    alloc_size += num_blocks * @sizeOf(Block);
     const arena_mem = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, alloc_size);
     errdefer allocator.free(arena_mem);
     const array: *Array = @ptrCast(arena_mem.ptr);
@@ -1303,6 +1308,7 @@ pub fn frozen_view(
     arena += mem.alignPointerOffset(arena, C.BLOCK_ALIGN).?;
     array.containers = @ptrCast(@alignCast(arena_alloc(*Container, @ptrCast(&arena), num_containers).ptr));
     arena += mem.alignPointerOffset(arena, C.BLOCK_ALIGN).?;
+    var blocks: [*]Block = @ptrCast(@alignCast(&arena_mem.ptr[arena_mem.len]));
 
     for (0..num_containers) |i| {
         switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
@@ -1319,15 +1325,15 @@ pub fn frozen_view(
                 bitset_zone += C.BITSET_CONTAINER_SIZE_IN_WORDS;
             },
             .run => { // use counts[i] here while bitsets and arrays use counts[i]+1
-                const blocks_cap = misc.numGroupsOfSize(counts[i], C.BLOCK_LEN32);
-                const blocks = try allocator.alloc(Block, blocks_cap);
-                const rleblocks: [*]align(C.BLOCK_ALIGN) Rle16 = @ptrCast(blocks.ptr);
-                @memcpy(rleblocks, run_zone[0..counts[i]]);
                 const run = arena_alloc(Container, @ptrCast(&arena), 1);
+                const blocks_cap = misc.numGroupsOfSize(counts[i], C.BLOCK_LEN32);
+                blocks -= blocks_cap;
+                const rleblocks: [*]align(C.BLOCK_ALIGN) Rle16 = @ptrCast(blocks);
+                @memcpy(rleblocks, run_zone[0..counts[i]]);
                 run[0] = .{
                     .cardinality = counts[i],
                     .blocks_cap = blocks_cap,
-                    .blocks = blocks.ptr,
+                    .blocks = blocks,
                     .typecode = .run,
                 };
                 array.containers[i] = @alignCast(&run[0]);
@@ -1337,13 +1343,13 @@ pub fn frozen_view(
                 const cardinality = counts[i] + @as(u32, 1);
                 const arr = arena_alloc(Container, @ptrCast(&arena), 1);
                 const blocks_cap: u16 = @intCast(misc.numGroupsOfSize(cardinality, C.BLOCK_LEN16));
-                const blocks = try allocator.alloc(Block, blocks_cap);
-                const arrblocks: [*]align(C.BLOCK_ALIGN) u16 = @ptrCast(blocks.ptr);
+                blocks -= blocks_cap;
+                const arrblocks: [*]align(C.BLOCK_ALIGN) u16 = @ptrCast(@alignCast(blocks));
                 @memcpy(arrblocks, array_zone[0..cardinality]);
                 arr[0] = .{
                     .blocks_cap = blocks_cap,
                     .cardinality = cardinality,
-                    .blocks = blocks.ptr,
+                    .blocks = blocks,
                     .typecode = .array,
                 };
                 array.containers[i] = @alignCast(&arr[0]);

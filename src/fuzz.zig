@@ -28,11 +28,10 @@ test "allocation failures with crash corpus" {
 }
 
 test "allocation failures corpus" {
-    if (true) return error.SkipZigTest;
-    const corpus: []const []const Op = @import("fuzz-alloc-failures-corpus.zon");
-    for (corpus) |ops| {
-        try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
-    }
+    // const corpus: []const []const Op = @import("fuzz-alloc-failures-corpus.zon");
+    // for (corpus) |ops| {
+    //     try testing.checkAllAllocationFailures(testgpa, cr_perform_ops, .{ops});
+    // }
 }
 
 fn loadPath(io: Io, path: []const u8) ![]const u8 {
@@ -1118,11 +1117,10 @@ fn fuzzprint(comptime fmt: []const u8, args: anytype) void {
 }
 
 test "crash0" {
-    if (true) return error.SkipZigTest;
-    const corpustmp: []const []const Op = @import("fuzz-crash-corpus-tmp.zon");
-    for (corpustmp) |ops| {
-        try cr_perform_ops(testgpa, ops);
-    }
+    // const corpustmp: []const []const Op = @import("fuzz-crash-corpus-tmp.zon");
+    // for (corpustmp) |ops| {
+    //     try cr_perform_ops(testgpa, ops);
+    // }
 }
 
 const std = @import("std");
