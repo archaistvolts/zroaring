@@ -6,8 +6,8 @@ array: *align(C.BLOCK_ALIGN) Array,
 pub const Array = extern struct {
     /// container count. [0, 1<<16].
     ///
-    /// align is needed on 32 bit platforms such as wasm32. it aligns Array size
-    /// and makes create() keys and containers pointer aligned.
+    /// align is needed on 32 bit platforms such as wasm32 to align Array size
+    /// and make keys and containers aligned in create().
     len: u32 align(C.BLOCK_ALIGN),
     /// container capacity. [0, 1<<16].
     capacity: u32,
@@ -120,11 +120,24 @@ pub const free = deinit;
 // free all allocated memory and enter empty state
 pub fn deinit(r: *Bitmap, allocator: Allocator) void {
     if (r.is_empty()) return;
-    for (r.get_containers()) |*c| {
-        Container.deinit(c, allocator);
+    if (r.get_flag(.frozen)) {
+        for (r.get_containers()) |c| {
+            switch (c.typecode) {
+                .array, .run => {
+                    allocator.free(c.blocks[0..c.blocks_cap]);
+                },
+                else => {},
+            }
+        }
+        const size = Array.calcSize(r.array.capacity) + r.array.capacity * @sizeOf(Container);
+        allocator.free(r.array.asBytes()[0..size]);
+    } else {
+        for (r.get_containers()) |*c| {
+            Container.deinit(c, allocator);
+        }
+        if (r.array != empty.array)
+            r.array.destroy(allocator);
     }
-    if (r.array != empty.array)
-        r.array.destroy(allocator);
     r.* = empty;
 }
 
@@ -1105,7 +1118,7 @@ pub const FmtLong = struct {
 /// during deserilization. This may reduce IO in case of large mmaped bitmaps.
 /// All members have their native alignments during deserilization except
 /// <header>, which is not guaranteed to be aligned by 4 bytes.
-pub fn frozen_size_in_bytes(rb: *Bitmap) usize {
+pub fn frozen_size_in_bytes(rb: Bitmap) usize {
     var num_bytes: usize = 0;
     const len = rb.array.len;
     const cs = rb.array.containers;
@@ -1197,6 +1210,150 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
         (@as(u32, @intCast(len)) << 15) | @intFromEnum(root.Magic.FROZEN_COOKIE),
         .little,
     );
+}
+
+/// Creates constant bitmap that is a view of a given buffer.
+/// Buffer data should have been written by `roaring_bitmap_frozen_serialize()`
+/// Its beginning must also be aligned by 32 bytes.
+/// Length must be equal exactly to `roaring_bitmap_frozen_size_in_bytes()`.
+/// In case of failure, NULL is returned.
+///
+/// Bitmap returned by this function can be used in all readonly contexts.
+/// Bitmap must be freed as usual, by calling roaring_bitmap_free().
+/// Underlying buffer must not be freed or modified while it backs any bitmaps.
+///
+/// This function is endian-sensitive. If you have a big-endian system (e.g., a
+/// mainframe IBM s390x), the data format is going to be big-endian and not
+/// compatible with little-endian systems.
+///
+/// Note: differs from CRoaring in that `Array.keys` are also allocated and
+/// copied because zroaring requires block aligned keys.
+pub fn frozen_view(
+    allocator: std.mem.Allocator,
+    /// frozen serialized bytes
+    buf: []align(C.BLOCK_ALIGN) const u8,
+) !Bitmap {
+    const length = buf.len;
+    // cookie and num_containers
+    if (length < 4)
+        return error.BufferSize;
+
+    const header = mem.readInt(u32, buf[buf.len - 4 ..][0..4], .little);
+
+    const num_containers = (header >> 15);
+    if (header & 0x7FFF != @intFromEnum(root.Magic.FROZEN_COOKIE))
+        return error.Magic;
+
+    if (length < 4 + num_containers * (1 + 2 + 2)) // typecodes + counts + keys
+        return error.BufferSize;
+
+    const keys: [*]const u16 = @ptrCast(@alignCast(buf.ptr + length - 4 - num_containers * 5));
+    const counts: [*]const u16 = @ptrCast(@alignCast(buf.ptr + length - 4 - num_containers * 3));
+    const typecodes = buf.ptr + length - 4 - num_containers * 1;
+
+    // {bitset,array,run}_zone
+    var num_bitset_containers: u32 = 0;
+    var num_run_containers: u32 = 0;
+    var num_array_containers: u32 = 0;
+    var bitset_zone_size: usize = 0;
+    var run_zone_size: usize = 0;
+    var array_zone_size: usize = 0;
+
+    for (0..num_containers) |i| {
+        switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
+            .bitset => {
+                num_bitset_containers += 1;
+                bitset_zone_size += @sizeOf(root.Bitset);
+            },
+            .run => {
+                num_run_containers += 1;
+                run_zone_size += counts[i] * @sizeOf(Rle16);
+            },
+            .array => {
+                num_array_containers += 1;
+                array_zone_size += (counts[i] + @as(u32, 1)) * @sizeOf(u16);
+            },
+            else => return error.Typecode,
+        }
+    }
+    if (length != bitset_zone_size + run_zone_size + array_zone_size + 5 * num_containers + 4)
+        return error.BufferSize;
+
+    var bitset_zone: [*]const u64 = @ptrCast(@alignCast(buf.ptr));
+    var run_zone: [*]const Rle16 = @ptrCast(@alignCast(buf.ptr + bitset_zone_size));
+    var array_zone: [*]const u16 = @ptrCast(@alignCast(buf.ptr + bitset_zone_size + run_zone_size));
+
+    var alloc_size: usize = Array.calcSize(num_containers);
+    alloc_size += (num_bitset_containers + num_run_containers + num_array_containers) *
+        @sizeOf(Container);
+
+    const arena_mem = try allocator.alignedAlloc(u8, C.BLOCK_ALIGNMENT, alloc_size);
+    errdefer allocator.free(arena_mem);
+    const array: *Array = @ptrCast(arena_mem.ptr);
+    var arena: [*]u8 = arena_mem.ptr + @sizeOf(Array);
+    array.* = .{
+        .flags = 1 << @intFromEnum(Flag.frozen),
+        .magic = .FROZEN_COOKIE,
+        .len = num_containers,
+        .capacity = num_containers,
+        .keys = @ptrCast(@alignCast(arena_alloc(u16, @ptrCast(&arena), num_containers).ptr)),
+        .containers = undefined,
+    };
+    @memcpy(array.keys[0..array.len], keys);
+    arena += mem.alignPointerOffset(arena, C.BLOCK_ALIGN).?;
+    array.containers = @ptrCast(@alignCast(arena_alloc(*Container, @ptrCast(&arena), num_containers).ptr));
+    arena += mem.alignPointerOffset(arena, C.BLOCK_ALIGN).?;
+
+    for (0..num_containers) |i| {
+        switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
+            .bitset => {
+                const cardinality = counts[i] + @as(u32, 1);
+                const bitset = arena_alloc(Container, @ptrCast(&arena), 1);
+                bitset[0] = .{
+                    .blocks = @ptrCast(@alignCast(@constCast(bitset_zone))),
+                    .blocks_cap = C.BITSET_BLOCKS,
+                    .cardinality = cardinality,
+                    .typecode = .bitset,
+                };
+                array.containers[i] = @alignCast(&bitset[0]);
+                bitset_zone += C.BITSET_CONTAINER_SIZE_IN_WORDS;
+            },
+            .run => { // use counts[i] here while bitsets and arrays use counts[i]+1
+                const blocks_cap = misc.numGroupsOfSize(counts[i], C.BLOCK_LEN32);
+                const blocks = try allocator.alloc(Block, blocks_cap);
+                const rleblocks: [*]align(C.BLOCK_ALIGN) Rle16 = @ptrCast(blocks.ptr);
+                @memcpy(rleblocks, run_zone[0..counts[i]]);
+                const run = arena_alloc(Container, @ptrCast(&arena), 1);
+                run[0] = .{
+                    .cardinality = counts[i],
+                    .blocks_cap = blocks_cap,
+                    .blocks = blocks.ptr,
+                    .typecode = .run,
+                };
+                array.containers[i] = @alignCast(&run[0]);
+                run_zone += counts[i];
+            },
+            .array => {
+                const cardinality = counts[i] + @as(u32, 1);
+                const arr = arena_alloc(Container, @ptrCast(&arena), 1);
+                const blocks_cap: u16 = @intCast(misc.numGroupsOfSize(cardinality, C.BLOCK_LEN16));
+                const blocks = try allocator.alloc(Block, blocks_cap);
+                const arrblocks: [*]align(C.BLOCK_ALIGN) u16 = @ptrCast(blocks.ptr);
+                @memcpy(arrblocks, array_zone[0..cardinality]);
+                arr[0] = .{
+                    .blocks_cap = blocks_cap,
+                    .cardinality = cardinality,
+                    .blocks = blocks.ptr,
+                    .typecode = .array,
+                };
+                array.containers[i] = @alignCast(&arr[0]);
+                array_zone += cardinality;
+            },
+            else => return error.Typecode,
+        }
+    }
+
+    return .{ .array = array };
 }
 
 /// call shrink_to_fit() on all containers which may shrink their blocks allocation.

@@ -69,6 +69,13 @@ pub fn zr_benchmark_op(
             try rs[o].frozen_serialize(ser_buf[0..rs[o].frozen_size_in_bytes()]);
             std.mem.doNotOptimizeAway(ser_buf[0]);
         },
+        .frozen_view => |o| {
+            const frozen_buf = ser_buf[0..rs[o].frozen_size_in_bytes()];
+            try rs[o].frozen_serialize(frozen_buf);
+            var zr = try Bitmap.frozen_view(allocator, @alignCast(frozen_buf));
+            std.mem.doNotOptimizeAway(zr);
+            zr.deinit(allocator);
+        },
         .portable_serialize => |o| {
             var w = Io.Writer.fixed(ser_buf);
             var runflags: root.RunFlags = undefined;
@@ -170,6 +177,11 @@ pub fn cr_benchmark_op(
         .frozen_serialize => |o| if (rs[o].*.high_low_container.allocation_size != 0) {
             c.roaring_bitmap_frozen_serialize(rs[o], ser_buf.ptr);
         },
+        .frozen_view => |o| if (rs[o].*.high_low_container.allocation_size != 0) {
+            c.roaring_bitmap_frozen_serialize(rs[o], ser_buf.ptr);
+            const cr = c.roaring_bitmap_frozen_view(ser_buf.ptr, c.roaring_bitmap_frozen_size_in_bytes(rs[o]));
+            c.roaring_bitmap_free(cr);
+        },
         .portable_serialize => |o| std.mem.doNotOptimizeAway(
             c.roaring_bitmap_portable_serialize(rs[o], ser_buf.ptr),
         ),
@@ -203,7 +215,7 @@ fn runBenchmarkGeneric(
     io: Io,
     bitmaps: anytype,
     allocator: std.mem.Allocator,
-    ser_buf: []align(@alignOf(u64)) u8,
+    ser_buf: []align(root.constants.BLOCK_ALIGN) u8,
     op_stats: *OpStats,
     ops_len: *usize,
     total_ns: *i96,
@@ -263,7 +275,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
     var crs: [NUM_BITMAPS][*c]c.roaring_bitmap_t = undefined;
     for (&crs) |*o| o.* = c.roaring_bitmap_create().?;
     defer for (crs) |x| c.roaring_bitmap_free(x);
-    var ser_buf: [1024 * 1024]u8 align(@alignOf(u64)) = undefined;
+    var ser_buf: [1024 * 1024]u8 align(root.constants.BLOCK_ALIGN) = undefined;
 
     // generate a list of extra ops which are missing from fuzz-crash-corpus.zon
     var prng = std.Random.DefaultPrng.init(0);
@@ -345,6 +357,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
             .minimum,
             .maximum,
             .statistics,
+            .frozen_view,
             => |t| @unionInit(fuzz.Op, @tagName(t), idx),
             inline .rank,
             .select,

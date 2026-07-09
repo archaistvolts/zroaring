@@ -161,17 +161,15 @@ fn validateFrozenContains(allocator: mem.Allocator, name: @EnumLiteral(), values
     defer zr.deinit(allocator);
     _ = try zr.add_many(allocator, values);
     if (run_optimize) _ = try zr.run_optimize(allocator);
-    const zr_frozen_buf = try allocator.alloc(u8, zr.frozen_size_in_bytes());
+    const zr_frozen_buf = try allocator.alignedAlloc(u8, zroaring.constants.BLOCK_ALIGNMENT, zr.frozen_size_in_bytes());
     defer allocator.free(zr_frozen_buf);
     try zr.frozen_serialize(zr_frozen_buf);
-
     try testing.expectEqualSlices(u8, cr_frozen_buf, zr_frozen_buf);
 
-    // TODO
-    // var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
-    // defer zr_frozen.deinit(allocator);
-    // for (values) |v| try testing.expect(zr_frozen.contains(v));
-    // try testing.expect(zr.equals(zr_frozen));
+    var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
+    defer zr_frozen.deinit(allocator);
+    for (values) |v| try testing.expect(zr_frozen.contains(v));
+    try testing.expect(zr.equals(zr_frozen));
 }
 
 fn validateMisc(allocator: mem.Allocator, zr: Bitmap, cr: [*c]c.roaring_bitmap_t) !void {
