@@ -3346,7 +3346,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         dst.cardinality = @intCast(misc.difference_uint16(
             src1.blocks_as(.array)[0..card1],
             src2.blocks_as(.array)[0..card2],
-            dst.blocks_as(.array)[0..dst.cardinality],
+            dst.blocks_as(.array)[0 .. dst.blocks_cap * C.BLOCK_LEN16],
         ));
     }
 
