@@ -9,7 +9,10 @@ pub const MAX_VALUE_CARDINALITY = MAX_KEY_CARDINALITY * MAX_KEY_CARDINALITY;
 
 /// Length in bytes of a Block. Same as `@sizeOf(root.Block)`.
 /// 32 with avx2.
-pub const BLOCK_SIZE = @max(std.simd.suggestVectorLength(u8) orelse @sizeOf(usize), @sizeOf(root.Word));
+pub const BLOCK_SIZE = @min(@max(
+    std.simd.suggestVectorLength(u8) orelse @sizeOf(usize),
+    @sizeOf(root.Word),
+), 32);
 pub const BLOCK_ALIGN = @alignOf(root.Block);
 pub const BLOCK_ALIGNMENT: std.mem.Alignment = .fromByteUnits(BLOCK_ALIGN);
 /// 256 with avx2.
