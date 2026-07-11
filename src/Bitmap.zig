@@ -2200,8 +2200,8 @@ pub fn to_uint32_array(r: Bitmap, ans: []u32) void {
 /// Computes the intersection between two bitmaps and modifies x1 in place.
 /// You may also rely on and_inplace to avoid creating many temporary bitmaps.
 // there should be some SIMD optimizations possible here
-pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: *const Bitmap) !void {
-    if (r1 == r2 or r1.is_empty()) return;
+pub fn and_inplace(r1: *Bitmap, allocator: Allocator, r2: Bitmap) !void {
+    if (r1.array == r2.array or r1.is_empty()) return;
     const length1 = r1.array.len;
     const length2 = r2.array.len;
     trace(@src(), "x1={f}", .{r1.fmtLong()});

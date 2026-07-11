@@ -747,7 +747,7 @@ fn perform_op(
             c.roaring_bitmap_or_inplace(oracles[o.idx], oracles[o.src1]);
         },
         .and_inplace => |o| {
-            try rs[o.idx].and_inplace(allocator, &rs[o.src1]);
+            try rs[o.idx].and_inplace(allocator, rs[o.src1]);
             c.roaring_bitmap_and_inplace(oracles[o.idx], oracles[o.src1]);
         },
         .and_cardinality => |o| {

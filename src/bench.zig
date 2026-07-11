@@ -39,8 +39,7 @@ pub fn zr_benchmark_op(
         .equals,
         => |o, t| std.mem.doNotOptimizeAway(@field(Bitmap, @tagName(t))(rs[o.idx], rs[o.src1])),
         inline .and_inplace,
-        => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, &rs[o.src1]),
-        inline .or_inplace,
+        .or_inplace,
         => |o, t| try @field(Bitmap, @tagName(t))(&rs[o.idx], allocator, rs[o.src1]),
         inline .or_many => |o, t| {
             if (o.idxs.len == 0) return; // nothing to do
