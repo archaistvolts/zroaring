@@ -987,7 +987,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
         try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
         for (r.get_containers(), 0..) |zc, i| {
             //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
-            try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.typecode);
+            try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.data.typecode);
             const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
             const cr_card: u32 = if (cr_raw == std.math.maxInt(u32)) // convert -1 (u32 max) to u30 max
                 zroaring.constants.BITSET_UNKNOWN_CARDINALITY

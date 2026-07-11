@@ -2,7 +2,7 @@
 const Iterator = @This();
 
 parent: Bitmap,
-container: *const Container,
+container: Container,
 container_index: u32,
 highbits: u32,
 container_it: zr.container.Iterator,
