@@ -119,7 +119,9 @@ pub const free = deinit;
 
 // free all allocated memory and enter empty state
 pub fn deinit(r: *Bitmap, allocator: Allocator) void {
-    if (r.is_empty()) return;
+    if (r.is_empty())
+        return;
+
     if (r.get_flag(.frozen)) {
         var blocks_cap: u32 = 0;
         for (r.get_containers()) |c| {
@@ -129,16 +131,16 @@ pub fn deinit(r: *Bitmap, allocator: Allocator) void {
             }
         }
         const size = Array.calcSize(r.array.capacity) +
-            C.BLOCK_ALIGNMENT.forward(r.array.capacity * C.CONTAINER_DATA_SIZE) +
-            C.BLOCK_SIZE * blocks_cap;
+            r.array.capacity * C.CONTAINER_DATA_SIZE +
+            blocks_cap * C.BLOCK_SIZE;
         allocator.free(r.array.asBytes()[0..size]);
     } else {
         for (r.get_containers()) |*c| {
             c.deinit(allocator);
         }
-        if (r.array != empty.array)
-            r.array.destroy(allocator);
+        r.array.destroy(allocator);
     }
+
     r.* = empty;
 }
 
@@ -1359,6 +1361,13 @@ pub fn remove_at_index(r: *Bitmap, i: usize, allocator: mem.Allocator) void {
 
 /// Same as `deinit` because we don't free a Bitmap pointer like CRoaring.
 pub const clear = deinit;
+
+/// Clear containers and set array len to 0.  Usually frees most memory despite name.
+pub fn clear_retaining_capacity(r: *Bitmap, allocator: Allocator) void {
+    for (r.get_containers()) |*c|
+        c.deinit(allocator);
+    r.array.len = 0;
+}
 
 pub fn remove(r: *Bitmap, allocator: Allocator, val: u32) !void {
     _ = try r.remove_checked(allocator, val);

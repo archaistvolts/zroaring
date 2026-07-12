@@ -1,5 +1,5 @@
 # About
-A Roaring Bitmap with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring) with container data stored in simd sized blocks.
+A Roaring Bitmap with an API similar to [CRoaring](https://github.com/RoaringBitmap/CRoaring) and container data stored in simd sized blocks.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -137,5 +137,3 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 # References
 * https://github.com/RoaringBitmap/RoaringFormatSpec
 * https://github.com/RoaringBitmap/CRoaring
-* https://github.com/awesomo4000/rawr
-* https://github.com/lalinsky/roaring.zig
