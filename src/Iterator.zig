@@ -83,7 +83,7 @@ pub fn init_last(r: Bitmap) Iterator {
 }
 
 /// Advance the iterator. Returns has_value.
-pub fn advance(it: *Iterator) bool {
+fn advance(it: *Iterator) bool {
     if (it.container_index >= @as(i32, @intCast(it.parent.array.len))) {
         it.has_value = false;
         return false;
@@ -94,7 +94,7 @@ pub fn advance(it: *Iterator) bool {
         return it.has_value;
     }
     var low16: u16 = @truncate(it.current_value);
-    if (it.container.iterator_next(it.parent, &it.container_it, &low16)) {
+    if (it.container.iterator_next(&it.container_it, &low16)) {
         it.current_value = it.highbits | low16;
         it.has_value = true;
         return true;
@@ -105,7 +105,7 @@ pub fn advance(it: *Iterator) bool {
 }
 
 /// Move to previous value. Returns has_value.
-pub fn previous(it: *Iterator) bool {
+fn previous(it: *Iterator) bool {
     if (it.container_index < 0) {
         it.has_value = false;
         return false;
@@ -203,6 +203,18 @@ pub fn skip_backward(it: *Iterator, count: u32) u32 {
         it.has_value = it.load_last_value();
     }
     return ret;
+}
+
+pub fn next(it: *Iterator) ?u32 {
+    if (!it.has_value) return null;
+    defer _ = it.advance();
+    return it.current_value;
+}
+
+pub fn prev(it: *Iterator) ?u32 {
+    if (!it.has_value) return null;
+    defer _ = it.previous();
+    return it.current_value;
 }
 
 const zr = @import("root.zig");

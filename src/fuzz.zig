@@ -997,7 +997,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
         }
     }
 
-    if (@import("build-options").run_slow_tests) { // slow check disabled
+    if (@import("build-options").run_slow_tests) {
         switch (op) {
             inline .add,
             .add_many,
