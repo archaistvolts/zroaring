@@ -2325,4 +2325,86 @@
         .{ .add = .{ .idx = 1, .val = 50800342 } },
         .{ .and_inplace = .{ .idx = 0, .src1 = 5 } },
     }, // end and_inplace allocation failures
+
+    .{ // start flip_inplace - generated
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 100, 200 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50, 150 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 50000, 60000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 1000, 2000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 50, 50 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50, 51 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 100000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 500, 70000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 100, 200 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 0, 65536 } } },
+    },
+    .{
+        .{ .clear = 0 },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 1000, 2000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 200000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 500, 131072 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 200000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 65536, 200000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 65535, 65536 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 65535, 65536 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 1000, 50000 } } },
+        .{ .run_optimize = 0 },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 20000, 30000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 100, 200 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50, 150 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50, 150 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 200000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50000, 100000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 70000, 120000 } } },
+    },
+    .{
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 0, 1000000 } } },
+        .{ .flip_inplace = .{ .idx = 0, .vals = .{ 50000, 900000 } } },
+    }, // end flip_inplace - generated
+
+    .{ // flip_inplace
+        .{ .flip_inplace = .{ .idx = 3, .vals = .{ 51633546, 51777418 } } },
+        .{ .or_many = .{ .idxs = .{ 7, 6, 3, 3, 0, 7, 0, 2 } } },
+        .{ .add = .{ .idx = 1, .val = 77866442 } },
+        .{ .add_many = .{ .idx = 2, .vals = .{ 2565605, 90535877, 52866762, 54042810 } } },
+        .{ .flip_inplace = .{ .idx = 6, .vals = .{ 43372642, 43912057 } } },
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 20394504, 20918839 } } },
+        .{ .xor = .{ .idx = 0, .src1 = 1, .src2 = 4 } },
+        .{ .add_many = .{ .idx = 7, .vals = .{19685101} } },
+        .{ .or_inplace = .{ .idx = 3, .src1 = 1 } },
+        .{ .@"and" = .{ .idx = 4, .src1 = 5, .src2 = 7 } },
+        .{ .@"or" = .{ .idx = 4, .src1 = 4, .src2 = 7 } },
+        .{ .flip = .{ .idx = 0, .vals = .{ 47661856, 48170095 } } },
+        .{ .run_optimize = 7 },
+        .{ .or_many = .{ .idxs = .{ 1, 6, 7, 0, 4, 6, 0 } } },
+        .{ .lazy_or = .{ .idx = 4, .src1 = 4, .src2 = 1 } },
+        .{ .xor = .{ .idx = 2, .src1 = 7, .src2 = 4 } },
+        .{ .is_subset = .{ .idx = 3, .src1 = 2 } },
+        .{ .shrink_to_fit = 7 },
+        .{ .xor = .{ .idx = 5, .src1 = 3, .src2 = 6 } },
+        .{ .andnot = .{ .idx = 0, .src1 = 6, .src2 = 2 } },
+        .{ .is_subset = .{ .idx = 6, .src1 = 4 } },
+        .{ .is_subset = .{ .idx = 3, .src1 = 5 } },
+        .{ .flip_inplace = .{ .idx = 5, .vals = .{ 51477550, 51807613 } } },
+    }, // end flip_inplace
 }

@@ -2500,6 +2500,103 @@ fn insert_fully_flipped_container(
     }
 }
 
+/// Flip the range [lb_start, lb_end] within key hb, modifying the bitmap
+/// in place.
+fn inplace_flip_container(
+    r: *Bitmap,
+    allocator: Allocator,
+    hb: u16,
+    lb_start: u16,
+    lb_end: u16,
+) !void {
+    const i = r.get_key_index(hb);
+    if (i >= 0) {
+        const container_to_flip = &r.array.containers[@intCast(i)];
+        var flipped_container = try container_to_flip.inot_range(allocator, lb_start, @as(u32, lb_end) + 1);
+        if (flipped_container.nonzero_cardinality()) {
+            r.array.containers[@intCast(i)] = flipped_container;
+        } else {
+            flipped_container.deinit(allocator);
+            r.remove_at_index(@intCast(i), allocator);
+        }
+    } else {
+        var result = try Container.range_of_ones(allocator, lb_start, @as(u32, lb_end) + 1);
+        errdefer result.deinit(allocator);
+        try r.insert_new_key_value_at(allocator, @intCast(-i - 1), hb, result);
+    }
+}
+
+/// Flip the full key hb (range [0, 0xFFFF]), modifying the bitmap in place.
+fn inplace_fully_flip_container(
+    r: *Bitmap,
+    allocator: Allocator,
+    hb: u16,
+) !void {
+    const i = r.get_key_index(hb);
+    if (i >= 0) {
+        const container_to_flip = &r.array.containers[@intCast(i)];
+        var flipped_container = try container_to_flip.inot(allocator);
+        if (flipped_container.nonzero_cardinality()) {
+            r.array.containers[@intCast(i)] = flipped_container;
+        } else {
+            flipped_container.deinit(allocator);
+            r.remove_at_index(@intCast(i), allocator);
+        }
+    } else {
+        var result = try Container.range_of_ones(allocator, 0, C.MAX_KEY_CARDINALITY);
+        errdefer result.deinit(allocator);
+        try r.insert_new_key_value_at(allocator, @intCast(-i - 1), hb, result);
+    }
+}
+
+/// Compute the negation of the bitmap in the interval [range_start, range_end).
+/// The number of negated values is range_end - range_start.
+/// Areas outside the range are passed through unchanged.
+/// Modifies the bitmap in place.
+pub fn flip_inplace(r: *Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !void {
+    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1)
+        return;
+
+    return r.flip_inplace_closed(allocator, @truncate(range_start), @truncate(range_end - 1));
+}
+
+/// Compute the negation of the bitmap in the interval [range_start, range_end].
+/// The number of negated values is range_end - range_start + 1.
+/// Areas outside the range are passed through unchanged.
+/// Modifies the bitmap in place.
+pub fn flip_inplace_closed(r: *Bitmap, allocator: Allocator, range_start: u32, range_end: u32) !void {
+    if (range_start > range_end)
+        return; // empty range
+
+    var hb_start: u16 = @truncate(range_start >> 16);
+    const lb_start: u16 = @truncate(range_start);
+    var hb_end: u16 = @truncate(range_end >> 16);
+    const lb_end: u16 = @truncate(range_end);
+
+    if (hb_start == hb_end) {
+        try r.inplace_flip_container(allocator, hb_start, lb_start, lb_end);
+    } else {
+        // start and end containers are distinct
+        if (lb_start > 0) {
+            // handle first (partial) container
+            try r.inplace_flip_container(allocator, hb_start, lb_start, 0xFFFF);
+            hb_start += 1; // for the full containers.  Can't wrap.
+        }
+
+        if (lb_end != 0xFFFF) hb_end -= 1;
+
+        var hb: u32 = hb_start;
+        while (hb <= hb_end) : (hb += 1) {
+            try r.inplace_fully_flip_container(allocator, @truncate(hb));
+        }
+
+        // handle a partial final container
+        if (lb_end != 0xFFFF) {
+            try r.inplace_flip_container(allocator, hb_end + 1, 0, lb_end);
+        }
+    }
+}
+
 fn validateTestdataFile(rb: Bitmap) !void {
     // > They contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
     // > https://github.com/RoaringBitmap/RoaringFormatSpec/tree/master/testdata

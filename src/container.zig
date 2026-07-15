@@ -5809,6 +5809,41 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
             unreachable;
         }
     }
+
+    /// In-place negation across a range [range_start, range_end).
+    /// Modifies the container in place when possible (bitset), otherwise
+    /// frees the original and returns a new container.
+    pub fn inot_range(c: *Container, allocator: Allocator, range_start: u32, range_end: u32) !Container {
+        if (range_start >= range_end) return c.*;
+        switch (c.data.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset);
+                misc.bitset_flip_range(words, range_start, range_end);
+                c.data.cardinality = bitset_container_compute_cardinality(words);
+                if (c.data.cardinality > C.DEFAULT_MAX_SIZE) return c.*;
+                const answer = try c.array_container_from_bitset(allocator);
+                c.deinit(allocator);
+                return answer;
+            },
+            .array => {
+                const result = try c.array_container_negation_range(allocator, range_start, range_end);
+                c.deinit(allocator);
+                return result;
+            },
+            .run => {
+                const result = try c.run_container_negation_range(allocator, range_start, range_end);
+                c.deinit(allocator);
+                return result;
+            },
+            .shared => unreachable,
+        }
+    }
+
+    /// Compute the full negation of a container (range [0, 0x10000)),
+    /// modifying in place when possible.
+    pub fn inot(c: *Container, allocator: Allocator) !Container {
+        return try c.inot_range(allocator, 0, C.MAX_KEY_CARDINALITY);
+    }
 };
 
 /// For bitset and array containers this is the index of the bit / entry.
