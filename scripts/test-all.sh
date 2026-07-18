@@ -20,4 +20,8 @@ buildAndTest
 opt="-Doptimize=ReleaseSmall"
 buildAndTest
 
+./bench
+
+zig build -Dfuzz-exe
+
 time zig build test -Drun-slow-tests -Doptimize=ReleaseSafe -Dtest-filter="allocation failures" # -Dfuzzprint -Dtrace

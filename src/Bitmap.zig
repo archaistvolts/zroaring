@@ -1362,8 +1362,10 @@ pub fn remove_at_index(r: *Bitmap, i: usize, allocator: mem.Allocator) void {
 /// Same as `deinit` because we don't free a Bitmap pointer like CRoaring.
 pub const clear = deinit;
 
-/// Clear containers and set array len to 0.  Usually frees most memory despite name.
-pub fn clear_retaining_capacity(r: *Bitmap, allocator: Allocator) void {
+/// Clear containers and set array len to 0. Usually frees most memory but
+/// retains array allocation.
+pub fn clear_containers(r: *Bitmap, allocator: Allocator) void {
+    if (r.is_empty()) return;
     for (r.get_containers()) |*c|
         c.deinit(allocator);
     r.array.len = 0;
