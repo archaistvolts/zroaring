@@ -362,12 +362,13 @@ pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
     if (mcontaineridx >= 0) { // key found
         const cid: u32 = @bitCast(mcontaineridx);
         const c = &r.array.containers[cid];
+        const ccard = c.data.cardinality;
         const c2 = try c.add(allocator, valuelow);
         if (c2.data != c.data) {
             c.deinit(allocator);
             r.array.containers[cid] = c2;
         }
-        return c.data.cardinality != c2.data.cardinality;
+        return ccard != c2.data.cardinality;
     } else { // key not found, add new array container
         const cid: u32 = @intCast(-mcontaineridx - 1);
         var newac = try Container.create(allocator, .array, 0, 1);

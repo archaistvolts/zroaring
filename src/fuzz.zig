@@ -679,8 +679,10 @@ fn perform_op(
     }
     switch (op) {
         .add => |o| {
-            try rs[o.idx].add(allocator, o.val);
-            c.roaring_bitmap_add(oracles[o.idx], o.val);
+            try testing.expectEqual(
+                c.roaring_bitmap_add_checked(oracles[o.idx], o.val),
+                try rs[o.idx].add_checked(allocator, o.val),
+            );
         },
         .add_many => |o| {
             _ = try rs[o.idx].add_many(allocator, o.vals);
@@ -692,9 +694,7 @@ fn perform_op(
             c.roaring_bitmap_add_range_closed(oracles[o.idx], val1, val2);
         },
         .remove => |o| {
-            const card =
-                c.roaring_bitmap_get_cardinality(oracles[o.idx]);
-
+            const card = c.roaring_bitmap_get_cardinality(oracles[o.idx]);
             // 75% chance to pick existing (255 * 0.25 = ~60)
             const val = if (o.pick_existing > 60 and card > 0) val: {
                 const rank = o.val % @as(u32, @truncate(card));
@@ -923,6 +923,10 @@ fn perform_op(
         },
         // don't print, not part of reproduction
         .contains => |o| {
+            try std.testing.expectEqual(
+                c.roaring_bitmap_contains(oracles[o.idx], o.val),
+                rs[o.idx].contains(o.val),
+            );
             try std.testing.expectEqual(
                 c.roaring_bitmap_contains(oracles[o.idx], o.val),
                 rs[o.idx].contains(o.val),
