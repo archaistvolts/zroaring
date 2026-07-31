@@ -149,6 +149,7 @@ pub const Op = union(enum) {
     flip: Vals2,
     frozen_view: u8,
     flip_inplace: Vals2,
+    remove_range: Vals2,
 
     // bitmap idx with 1 u32 param
     const Val = struct { idx: u8, val: u32 };
@@ -205,6 +206,7 @@ fn croaringOracle(allocator: mem.Allocator, smith: *testing.Smith) !void {
             .range_cardinality,
             .flip,
             .flip_inplace,
+            .remove_range,
             => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL);
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN);
@@ -354,6 +356,7 @@ const AflSmith = struct {
             .range_cardinality,
             .flip,
             .flip_inplace,
+            .remove_range,
             => |t| {
                 const start = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null;
                 const len = smith.valueRangeLessThan(u32, 1, MAX_RANGE_LEN) orelse return null;
@@ -492,6 +495,7 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
         .range_cardinality,
         .flip,
         .flip_inplace,
+        .remove_range,
         => |o| {
             const len = o.vals[1] - o.vals[0];
             try writer.writeInt(u32, o.vals[0], .little);
@@ -648,6 +652,7 @@ fn perform_op(
         .add_range_closed,
         .flip,
         .flip_inplace,
+        .remove_range,
         => |x| fuzzprint(".{{ .{t} = .{{ .idx = {}, .vals = .{{ {}, {} }} }} }},\n", .{ op, x.idx, x.vals[0], x.vals[1] }),
         .add_many,
         => |x| fuzzprint(".{{ .{t} = .{{ .idx = {}, .vals = .{any} }} }},\n", .{ op, x.idx, x.vals }),
@@ -967,12 +972,14 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
             c.roaring_bitmap_free(oracles[o.idx]);
             oracles[o.idx] = cr_res;
         },
-
         .flip_inplace => |o| {
             try rs[o.idx].flip_inplace(allocator, o.vals[0], o.vals[1]);
             c.roaring_bitmap_flip_inplace(oracles[o.idx], o.vals[0], o.vals[1]);
         },
-
+        .remove_range => |o| {
+            try rs[o.idx].remove_range(allocator, o.vals[0], o.vals[1]);
+            c.roaring_bitmap_remove_range(oracles[o.idx], o.vals[0], o.vals[1]);
+        },
         .frozen_view => |o| {
             const zr = rs[o];
             const zr_frozen_buf = try allocator.alignedAlloc(
@@ -1019,6 +1026,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
             .add_range_closed,
             .flip,
             .flip_inplace,
+            .remove_range,
             .remove,
             .@"and",
             .@"or",

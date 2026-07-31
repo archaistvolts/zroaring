@@ -5844,6 +5844,159 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     pub fn inot(c: *Container, allocator: Allocator) !Container {
         return try c.inot_range(allocator, 0, C.MAX_KEY_CARDINALITY);
     }
+
+    /// Removes all elements array[pos] .. array[pos+count-1]
+    fn array_container_remove_range(ac: *Container, pos: u32, count: u32) void {
+        if (count != 0) {
+            const array = ac.blocks_as(.array);
+            @memmove(
+                array[pos..],
+                array[pos + count ..][0 .. ac.data.cardinality - pos - count],
+            );
+            ac.data.cardinality -= count;
+        }
+    }
+
+    /// Shifts last $count elements either left (distance < 0) or right (distance > 0)
+    fn run_container_shift_tail(run: *Container, gpa: mem.Allocator, count: u32, distance: i32) !void {
+        const distanceu: u32 = @bitCast(distance);
+        if (distance > 0) {
+            if (run.calc_capacity() < count + distanceu) {
+                try run.run_container_grow(gpa, count + distanceu, true);
+            }
+        }
+        const srcpos = run.data.cardinality - count;
+        const dstpos = srcpos +% distanceu;
+        const runs = run.blocks_as(.run);
+        @memmove(
+            runs[dstpos..],
+            runs[srcpos..][0..count],
+        );
+        run.data.cardinality +%= distanceu;
+    }
+
+    /// Remove all elements in range [min, max]
+    fn run_container_remove_range(run: *Container, gpa: mem.Allocator, min: u32, max: u32) !void {
+        const runs = run.blocks_as(.run);
+        var first = misc.rle16_find_run(runs, run.data.cardinality, @truncate(min));
+        var last = misc.rle16_find_run(runs, run.data.cardinality, @truncate(max));
+        const firstu: u32 = @bitCast(first);
+        const lastu: u32 = @bitCast(last);
+
+        if (first >= 0 and
+            min > runs[firstu].value and
+            max < (@as(u32, runs[firstu].value) + runs[firstu].length))
+        {
+            // split this run into two adjacent runs
+
+            // right subinterval
+            try makeRoomAtIndex(run, gpa, @truncate(firstu + 1));
+            runs[firstu + 1].value = @truncate(max + 1);
+            runs[firstu + 1].length =
+                @truncate((runs[firstu].value + runs[firstu].length) -
+                    (max + 1));
+
+            // left subinterval
+            runs[firstu].length = @truncate((min - 1) - runs[firstu].value);
+            return;
+        }
+
+        // update left-most partial run
+        if (first >= 0) {
+            if (min > runs[firstu].value) {
+                runs[firstu].length = @truncate((min - 1) - runs[firstu].value);
+                first += 1;
+            }
+        } else {
+            first = -first - 1;
+        }
+
+        // update right-most run
+        if (last >= 0) {
+            const run_max = runs[lastu].value + runs[lastu].length;
+            if (run_max > max) {
+                runs[lastu].value = @truncate(max + 1);
+                runs[lastu].length = @truncate(run_max - (max + 1));
+                last -= 1;
+            }
+        } else {
+            last = (-last - 1) - 1;
+        }
+
+        // remove intermediate runs
+        if (first <= last) {
+            try run.run_container_shift_tail(
+                gpa,
+                run.data.cardinality - @as(u32, @intCast(last + 1)),
+                -(last - first + 1),
+            );
+        }
+    }
+
+    /// Removes all elements in range [min, max].
+    /// Returns one of:
+    ///   - uninit if no elements left
+    ///   - the original container
+    ///   - a newly-allocated container (if it is more efficient)
+    ///
+    /// If the returned pointer is different from $c, then a new container
+    /// has been created and the caller is responsible for freeing the original
+    /// container.
+    pub fn container_remove_range(
+        c: *Container,
+        gpa: mem.Allocator,
+        min: u32,
+        max: u32,
+    ) !Container {
+        switch (c.data.typecode) {
+            .bitset => {
+                const words = c.blocks_as(.bitset);
+                const result_cardinality =
+                    c.data.cardinality -
+                    misc.bitset_lenrange_cardinality(words, min, max - min);
+
+                if (result_cardinality == 0) {
+                    return uninit;
+                } else if (result_cardinality <= C.DEFAULT_MAX_SIZE) {
+                    bitset_reset_range(c.blocks_as(.bitset), min, max + 1);
+                    c.data.cardinality = result_cardinality;
+                    return array_container_from_bitset(c.*, gpa);
+                } else {
+                    bitset_reset_range(c.blocks_as(.bitset), min, max + 1);
+                    c.data.cardinality = result_cardinality;
+                    return c.*;
+                }
+            },
+            .array => {
+                const array = c.blocks_as(.array);
+                const nvals_greater =
+                    misc.count_greater(array[0..c.data.cardinality], @truncate(max));
+                const nvals_less =
+                    misc.count_less(array[0 .. c.data.cardinality - nvals_greater], @truncate(min));
+                const result_cardinality = nvals_less + nvals_greater;
+
+                if (result_cardinality == 0) {
+                    return uninit;
+                } else {
+                    array_container_remove_range(c, nvals_less, c.data.cardinality - result_cardinality);
+                    return c.*;
+                }
+            },
+            .run => {
+                if (c.data.cardinality == 0)
+                    return uninit;
+
+                const runs = c.blocks_as(.run);
+                if (min <= run_container_minimum(c.*, runs) and
+                    max >= run_container_maximum(c.*, runs))
+                    return uninit;
+
+                try c.run_container_remove_range(gpa, min, max);
+                return try c.convert_run_to_efficient_container(gpa);
+            },
+            else => unreachable,
+        }
+    }
 };
 
 /// For bitset and array containers this is the index of the bit / entry.

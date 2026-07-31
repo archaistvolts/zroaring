@@ -96,6 +96,9 @@ pub fn zr_benchmark_op(
         .flip_inplace => |o| {
             try rs[o.idx].flip_inplace(allocator, o.vals[0], o.vals[1]);
         },
+        .remove_range => |o| {
+            try rs[o.idx].remove_range(allocator, o.vals[0], o.vals[1]);
+        },
         inline .range_cardinality, .contains_range => |o, t| std.mem.doNotOptimizeAway(
             @field(Bitmap, @tagName(t))(rs[o.idx], o.vals[0], o.vals[1]),
         ),
@@ -212,6 +215,9 @@ pub fn cr_benchmark_op(
         .flip_inplace => |o| {
             c.roaring_bitmap_flip_inplace(rs[o.idx], o.vals[0], o.vals[1]);
         },
+        .remove_range => |o| {
+            c.roaring_bitmap_remove_range(rs[o.idx], o.vals[0], o.vals[1]);
+        },
         // inline else => |_, t| @panic("TODO: " ++ @tagName(t)),
     }
 }
@@ -308,6 +314,7 @@ fn runBenchmark(allocator: std.mem.Allocator, io: Io, parsed_args: std.EnumSet(A
             .range_cardinality,
             .flip,
             .flip_inplace,
+            .remove_range,
             => |t| {
                 const start = random.intRangeLessThan(u32, 0, fuzz.MAX_VAL);
                 const len = random.intRangeLessThan(u32, 1, fuzz.MAX_RANGE_LEN);

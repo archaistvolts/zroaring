@@ -998,10 +998,10 @@ pub fn shift_tail(r: *Bitmap, allocator: Allocator, count: u32, distance: i32) !
     // trace(@src(), "count={} distance={} srcpos={} dstpos={}", .{ count, distance, srcpos, dstpos });
     len.* +%= @bitCast(distance);
 
-    const keys = r.get_keys();
-    @memmove(keys[dstpos..].ptr, keys[srcpos..][0..count]);
-    const cs = r.get_containers();
-    @memmove(cs[dstpos..].ptr, cs[srcpos..][0..count]);
+    const keys = r.get_keys().ptr;
+    @memmove(keys[dstpos..], keys[srcpos..][0..count]);
+    const cs = r.get_containers().ptr;
+    @memmove(cs[dstpos..], cs[srcpos..][0..count]);
 }
 
 pub fn format(r: Bitmap, w: *Io.Writer) !void {
@@ -1769,7 +1769,7 @@ pub fn minimum(bm: Bitmap) u32 {
         const lowvalue = c.minimum();
         return lowvalue | (key << 16);
     }
-    return std.math.maxInt(u32);
+    return math.maxInt(u32);
 }
 
 /// returns the greatest value in the set or 0 if the set is empty.
@@ -2080,7 +2080,7 @@ pub fn contains_range_closed(r: Bitmap, range_start: u32, range_end: u32) bool {
 /// Check whether a range of values from range_start (included) to
 /// range_end (excluded) is present
 pub fn contains_range(r: Bitmap, range_start: u64, range_end: u64) bool {
-    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1)
+    if (range_start >= range_end or range_start > math.maxInt(u32) + 1)
         return true;
     return r.contains_range_closed(@intCast(range_start), @intCast(range_end - 1));
 }
@@ -2135,7 +2135,7 @@ pub fn xor_cardinality(x1: Bitmap, x2: Bitmap) u64 {
 pub const iterator = Iterator.init;
 
 pub fn range_cardinality(r: Bitmap, range_start: u64, range_end: u64) u64 {
-    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1) {
+    if (range_start >= range_end or range_start > math.maxInt(u32) + 1) {
         return 0;
     }
     return range_cardinality_closed(r, @truncate(range_start), @truncate(range_end - 1));
@@ -2308,7 +2308,7 @@ pub fn statistics(bm: Bitmap) Statistics {
     var stat: Statistics = undefined;
     @memset(mem.asBytes(&stat), 0);
     stat.n_containers = len;
-    stat.min_value = if (len > 0) bm.minimum() else std.math.maxInt(u32);
+    stat.min_value = if (len > 0) bm.minimum() else math.maxInt(u32);
     stat.max_value = if (len > 0) bm.maximum() else 0;
 
     for (bm.get_containers()) |c| {
@@ -2341,7 +2341,7 @@ pub fn statistics(bm: Bitmap) Statistics {
 /// The number of negated values is range_end - range_start.
 /// Areas outside the range are passed through unchanged.
 pub fn flip(x1: Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !Bitmap {
-    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1) {
+    if (range_start >= range_end or range_start > math.maxInt(u32) + 1) {
         return x1.copy(allocator);
     }
     return x1.flip_closed(allocator, @truncate(range_start), @truncate(range_end - 1));
@@ -2557,7 +2557,7 @@ fn inplace_fully_flip_container(
 /// Areas outside the range are passed through unchanged.
 /// Modifies the bitmap in place.
 pub fn flip_inplace(r: *Bitmap, allocator: Allocator, range_start: u64, range_end: u64) !void {
-    if (range_start >= range_end or range_start > std.math.maxInt(u32) + 1)
+    if (range_start >= range_end or range_start > math.maxInt(u32) + 1)
         return;
 
     return r.flip_inplace_closed(allocator, @truncate(range_start), @truncate(range_end - 1));
@@ -2598,6 +2598,47 @@ pub fn flip_inplace_closed(r: *Bitmap, allocator: Allocator, range_start: u32, r
             try r.inplace_flip_container(allocator, hb_end + 1, 0, lb_end);
         }
     }
+}
+
+/// Remove all values in range [min, max)
+pub fn remove_range_closed(r: *Bitmap, gpa: mem.Allocator, min: u32, max: u32) !void {
+    if (min > max)
+        return;
+
+    const min_key = min >> 16;
+    const max_key = max >> 16;
+
+    var src = misc.count_less(r.get_keys(), @truncate(min_key));
+    var dst = src;
+    while (src < r.array.len and r.array.keys[src] <= max_key) {
+        const container_min =
+            if (min_key == r.array.keys[src]) (min & 0xffff) else 0;
+        const container_max =
+            if (max_key == r.array.keys[src]) (max & 0xffff) else 0xffff;
+        // TODO ra_unshare_container_at_index(ra, (uint16_t)src);
+
+        const new_container =
+            try r.array.containers[src].container_remove_range(gpa, container_min, container_max);
+        if (new_container.data != r.array.containers[src].data) {
+            r.array.containers[src].deinit(gpa);
+        }
+        if (!new_container.is_uninit()) {
+            r.replace_key_and_container_at_index(dst, r.array.keys[src], new_container);
+            dst += 1;
+        }
+        src += 1;
+    }
+    if (src > dst) {
+        try r.shift_tail(gpa, r.array.len - src, @bitCast(dst -% src));
+    }
+}
+
+/// Remove all values in range [min, max]
+pub fn remove_range(r: *Bitmap, gpa: mem.Allocator, min: u64, max: u64) !void {
+    if (max <= min or min > math.maxInt(u32) + 1)
+        return;
+
+    try r.remove_range_closed(gpa, @intCast(min), @intCast(max - 1));
 }
 
 fn validateTestdataFile(rb: Bitmap) !void {
@@ -2647,6 +2688,7 @@ const Allocator = mem.Allocator;
 const testing = std.testing;
 const assert = std.debug.assert;
 const Io = std.Io;
+const math = std.math;
 const builtin = @import("builtin");
 const C = @import("constants.zig");
 const misc = @import("misc.zig");

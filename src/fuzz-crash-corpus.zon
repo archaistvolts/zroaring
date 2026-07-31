@@ -2415,4 +2415,13 @@
         .{ .add_range_closed = .{ .idx = 0, .vals = .{ 1, 232281 } } },
         .{ .add = .{ .idx = 0, .val = 0 } },
     },
+    .{ //  remove_range
+        .{ .flip_inplace = .{ .idx = 2, .vals = .{ 13960695, 14108810 } } },
+        .{ .remove_range = .{ .idx = 2, .vals = .{ 13962779, 14154299 } } },
+    },
+    .{
+        .{ .flip_inplace = .{ .idx = 2, .vals = .{ 14098995, 14493920 } } },
+        .{ .remove_range = .{ .idx = 2, .vals = .{ 13962779, 14154299 } } },
+    },
+    //  end remove_range
 }

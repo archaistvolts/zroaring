@@ -1334,6 +1334,30 @@ pub fn bitset_extract_setbits_avx2(
     return @intCast(outcur - out);
 }
 
+/// Returns index of the run which contains $ikey
+pub fn rle16_find_run(
+    runs: [*]align(C.BLOCK_ALIGN) const root.Rle16,
+    lenarray: u32,
+    ikey: u16,
+) i32 {
+    var low: i32 = 0;
+    var high: i32 = @bitCast(lenarray -% 1);
+    while (low <= high) {
+        const middleIndex = (low + high) >> 1;
+        const middleIndexu: u32 = @bitCast(middleIndex);
+        const min = runs[middleIndexu].value;
+        const max = runs[middleIndexu].value + runs[middleIndexu].length;
+        if (ikey > max) {
+            low = middleIndex + 1;
+        } else if (ikey < min) {
+            high = middleIndex - 1;
+        } else {
+            return middleIndex;
+        }
+    }
+    return -(low + 1);
+}
+
 pub inline fn cmpBlock(
     a: [*]const u8,
     b: [*]const u8,
