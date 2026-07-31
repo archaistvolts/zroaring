@@ -362,13 +362,13 @@ pub fn add_checked(r: *Bitmap, allocator: Allocator, value: u32) !bool {
     if (mcontaineridx >= 0) { // key found
         const cid: u32 = @bitCast(mcontaineridx);
         const c = &r.array.containers[cid];
-        const ccard = c.data.cardinality;
+        const ccard = c.get_cardinality();
         const c2 = try c.add(allocator, valuelow);
         if (c2.data != c.data) {
             c.deinit(allocator);
             r.array.containers[cid] = c2;
         }
-        return ccard != c2.data.cardinality;
+        return ccard != c2.get_cardinality();
     } else { // key not found, add new array container
         const cid: u32 = @intCast(-mcontaineridx - 1);
         var newac = try Container.create(allocator, .array, 0, 1);
@@ -432,7 +432,7 @@ pub fn add_checked_bulk(
         // no need to seek the container, it is at hand
         // because we already have the container at hand, we can do the
         // insertion directly, bypassing `add`
-        const card = context.container.data.cardinality;
+        const card = context.container.get_cardinality();
         const c2 = try context.container.add(allocator, @truncate(val));
         if (c2.data != context.container.data) {
             @branchHint(.unlikely);
@@ -441,7 +441,7 @@ pub fn add_checked_bulk(
             r.array.containers[context.idx] = c2;
             context.container = &r.array.containers[context.idx];
         }
-        return context.container.data.cardinality != card;
+        return context.container.get_cardinality() != card;
     }
 }
 

@@ -2407,4 +2407,12 @@
         .{ .is_subset = .{ .idx = 3, .src1 = 5 } },
         .{ .flip_inplace = .{ .idx = 5, .vals = .{ 51477550, 51807613 } } },
     }, // end flip_inplace
+    .{
+        .{ .remove = .{ .idx = 0, .val = 35631390, .pick_existing = 1 } },
+        .{ .add_range_closed = .{ .idx = 6, .vals = .{ 225, 226 } } },
+        .{ .clear = 0 },
+        .{ .clear = 0 },
+        .{ .add_range_closed = .{ .idx = 0, .vals = .{ 1, 232281 } } },
+        .{ .add = .{ .idx = 0, .val = 0 } },
+    },
 }
