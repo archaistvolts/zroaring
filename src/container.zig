@@ -268,7 +268,7 @@ pub const Container = struct {
 
     /// Add `pos' to `bitset'. Returns true if `pos' was not present. Might be slower
     /// than bitset_container_set.
-    fn bitset_container_add(bc: Container, pos: u16, words: Words) bool {
+    pub fn bitset_container_add(bc: Container, pos: u16, words: Words) bool {
         const old_word = words[pos >> 6];
         const index: u6 = @truncate(pos & 63);
         const new_word = old_word | (@as(u64, 1) << index);
@@ -981,6 +981,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         @memset(bc.data.blocks[0..C.BITSET_BLOCKS], @splat(0));
     }
 
+    /// create but don't clear with 0s
     pub fn bitset_container_create_noinit(allocator: Allocator) !Container {
         return try create(allocator, .bitset, 0, C.BITSET_BLOCKS);
     }
@@ -2272,7 +2273,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         return op_methods(.Or).bitset_container_op_nocard(data1, data2, dstc, dst);
     }
 
-    fn bitset_container_or(
+    pub fn bitset_container_or(
         src1: Container,
         src2: Container,
         dst: *Container,

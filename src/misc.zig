@@ -649,7 +649,7 @@ pub fn intersect_vector16_cardinality(
     return count;
 }
 
-/// Batcher odd-even merge: two sorted 8-u16 vectors → 8 smallest + 8 largest sorted.
+/// Batcher odd-even merge: two sorted 8-u16 vectors -> 8 smallest + 8 largest sorted.
 fn sse_merge(v1: u16x8, v2: u16x8, min: *u16x8, max: *u16x8) void {
     var cur = @min(v1, v2);
     var max2 = @max(v1, v2);
