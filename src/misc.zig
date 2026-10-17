@@ -1483,12 +1483,12 @@ test numGroupsOfSize {
 
 /// a u8 with t1 in hi nibble, t2 in lo nibble
 pub fn pair(t1: root.Typecode, t2: root.Typecode) u8 {
-    return @as(u8, @intFromEnum(t1)) << 4 | @intFromEnum(t2);
+    return @as(u8, @backingInt(t1)) << 4 | @backingInt(t2);
 }
 
 /// an int with t1 in lo, t2 in hi bits
 pub fn pairFromInt(int: u16) [2]root.Typecode {
-    return .{ @enumFromInt(int >> 8), @enumFromInt(int & 0xF) };
+    return .{ @fromBackingInt(int >> 8), @fromBackingInt(int & 0xF) };
 }
 
 // ---

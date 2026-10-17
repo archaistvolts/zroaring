@@ -99,7 +99,7 @@ pub const empty: Bitmap = .{
         const aligned: Array align(C.BLOCK_ALIGN) = .{
             .len = 0,
             .capacity = 0,
-            .magic = @enumFromInt(0),
+            .magic = @fromBackingInt(0),
             .flags = 0,
             .keys = &.{},
             .containers = &.{},
@@ -817,7 +817,7 @@ pub fn get_cardinality(r: Bitmap) u64 {
 /// When setting this flag to false, if any containers are shared, they
 /// are unshared (cloned) immediately.
 pub fn get_flag(r: Bitmap, flag: Flag) bool {
-    return r.array.flags & @as(u8, 1) << @intCast(@intFromEnum(flag)) != 0;
+    return r.array.flags & @as(u8, 1) << @intCast(@backingInt(flag)) != 0;
 }
 
 pub fn internal_validate_header(r: Bitmap, reason: *?[]const u8) bool {
@@ -827,7 +827,7 @@ pub fn internal_validate_header(r: Bitmap, reason: *?[]const u8) bool {
         magic == .SERIAL_COOKIE or
         magic == .SERIAL_COOKIE_NO_RUNCONTAINER))
     {
-        trace(@src(), "magic={}", .{@intFromEnum(magic)});
+        trace(@src(), "magic={}", .{@backingInt(magic)});
         reason.* = "unsupported magic";
         return false;
     }
@@ -871,7 +871,7 @@ pub fn internal_validate_header(r: Bitmap, reason: *?[]const u8) bool {
 /// - Shared containers are only used when the bitmap is COW
 ///
 pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
-    if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+    if (!(@import("builtin").is_test or @import("builtin").mode == .debug))
         return;
     reason.* = null;
     // trace(@src(), "{f}", .{r});
@@ -908,7 +908,7 @@ pub fn internal_validate(r: Bitmap, reason: *?[]const u8) bool {
 }
 
 pub fn assert_valid(r: Bitmap) void {
-    if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+    if (!(@import("builtin").is_test or @import("builtin").mode == .debug))
         return;
     var reason: ?[]const u8 = null;
     if (!r.internal_validate(&reason)) {
@@ -1168,7 +1168,7 @@ pub fn frozen_serialize(r: Bitmap, buf: []u8) !void {
     var headerw = fixedw(mem.sliceAsBytes(header_zone[0..1]));
     try headerw.writeInt(
         u32,
-        (@as(u32, @intCast(len)) << 15) | @intFromEnum(root.Magic.FROZEN_COOKIE),
+        (@as(u32, @intCast(len)) << 15) | @backingInt(root.Magic.FROZEN_COOKIE),
         .little,
     );
 }
@@ -1202,7 +1202,7 @@ pub fn frozen_view(
     const header = mem.readInt(u32, buf[buf.len - 4 ..][0..4], .little);
 
     const num_containers = (header >> 15);
-    if (header & 0x7FFF != @intFromEnum(root.Magic.FROZEN_COOKIE))
+    if (header & 0x7FFF != @backingInt(root.Magic.FROZEN_COOKIE))
         return error.Magic;
 
     if (length < 4 + num_containers * (1 + 2 + 2)) // typecodes + counts + keys
@@ -1222,7 +1222,7 @@ pub fn frozen_view(
     var num_blocks: u32 = 0;
 
     for (0..num_containers) |i| {
-        switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
+        switch (@as(Typecode, @fromBackingInt(@intCast(typecodes[i])))) {
             .bitset => {
                 num_bitset_containers += 1;
                 bitset_zone_size += @sizeOf(root.Bitset);
@@ -1257,7 +1257,7 @@ pub fn frozen_view(
     const array: *Array = @ptrCast(arena_mem.ptr);
     var arena: [*]u8 = arena_mem.ptr + @sizeOf(Array);
     array.* = .{
-        .flags = 1 << @intFromEnum(Flag.frozen),
+        .flags = 1 << @backingInt(Flag.frozen),
         .magic = .FROZEN_COOKIE,
         .len = num_containers,
         .capacity = num_containers,
@@ -1271,7 +1271,7 @@ pub fn frozen_view(
     var blocks: [*]Block = @ptrCast(@alignCast(&arena_mem.ptr[arena_mem.len]));
 
     for (0..num_containers) |i| {
-        switch (@as(Typecode, @enumFromInt(typecodes[i]))) {
+        switch (@as(Typecode, @fromBackingInt(@intCast(typecodes[i])))) {
             .bitset => {
                 const cardinality = counts[i] + @as(u32, 1);
                 arena = mem.alignPointer(arena, C.BLOCK_ALIGN).?;
@@ -1407,11 +1407,11 @@ pub fn remove_checked(r: *Bitmap, allocator: Allocator, val: u32) !bool {
 }
 
 pub fn is_cow(x1: Bitmap) bool {
-    return (x1.array.flags & 1 << @intFromEnum(Flag.cow)) != 0;
+    return (x1.array.flags & 1 << @backingInt(Flag.cow)) != 0;
 }
 
 pub fn set_copy_on_write(x1: Bitmap, cow: bool) void {
-    x1.array.flags |= (@as(u8, @intFromBool(cow)) << @intFromEnum(Flag.cow));
+    x1.array.flags |= (@as(u8, @intFromBool(cow)) << @backingInt(Flag.cow));
 }
 
 fn advance_until(ra: Bitmap, x: u16, pos: u32) u32 {

@@ -203,8 +203,7 @@ fn collect_api(T: type, arena: mem.Allocator) !StringMap {
     try r.ensureTotalCapacity(arena, 10_000);
     @setEvalBranchQuota(30_000);
     const is_croaring = T == croaring;
-    for (meta.declarations(T)) |decl| {
-        const declname = decl.name;
+    for (meta.declarations(T)) |declname| {
         if (!is_croaring or
             for (crprefixes) |crprefix| {
                 if (mem.startsWith(u8, declname, crprefix)) break true;

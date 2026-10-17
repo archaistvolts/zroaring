@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Build docs
         run: zig build docs
       - name: Upload artifact
@@ -54,7 +54,7 @@ jobs:
 #       - uses: actions/checkout@v3
 #       - uses: mlugg/setup-zig@v2
 #         with:
-#           version: 0.16.0
+#           version: 0.17.0
 #       - name: Build docs
 #         run: zig build docs
 #       - name: Deploy to GitHub Pages

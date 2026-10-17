@@ -1,5 +1,6 @@
 const std = @import("std");
 const BenchTarget = @import("src/bench2.zig").BenchTarget;
+const Translator = @import("translate_c").Translator;
 
 pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
@@ -26,12 +27,12 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
-    const translate_cr = b.addTranslateC(.{
-        .root_source_file = b.path("src/c/roaring-subset.h"),
+    const translate_c = b.dependency("translate_c", .{});
+    const translate_cr: Translator = .init(translate_c, .{
+        .c_source_file = b.path("src/c/roaring-subset.h"),
         .target = target,
         .optimize = optimize,
     });
-    const translate_cr_mod = translate_cr.createModule();
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -39,7 +40,7 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "build-options", .module = options.createModule() },
-            .{ .name = "croaring", .module = translate_cr_mod },
+            .{ .name = "croaring", .module = translate_cr.mod },
         },
     });
 
@@ -52,9 +53,7 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     libcroaring.root_module.addIncludePath(b.path("src/c"));
-    libcroaring.root_module.addCSourceFile(.{
-        .file = b.path("src/c/roaring.c"),
-    });
+    libcroaring.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
     if (!avx512) libcroaring.root_module.addCMacro("CROARING_COMPILER_SUPPORTS_AVX512", "0");
 
     const tests = b.addTest(.{
@@ -87,7 +86,7 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{
                 .{ .name = "zroaring", .module = zr_mod },
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
         });
         fuzz_mod.linkLibrary(libcroaring);
@@ -99,7 +98,7 @@ pub fn build(b: *std.Build) !void {
         });
         afl_obj.sanitize_coverage_trace_pc_guard = true;
 
-        const afl_cc = b.findProgram(&.{"afl-clang-lto"}, &.{}) catch @panic("afl-clang-lto not found; is AFL++ installed?");
+        const afl_cc = b.findProgram(.{ .names = &.{"afl-clang-lto"} }) orelse @panic("afl-clang-lto not found; is AFL++ installed?");
         const run_afl_cc = b.addSystemCommand(&.{
             afl_cc,
             "-O3",
@@ -129,14 +128,14 @@ pub fn build(b: *std.Build) !void {
             .imports = &.{
                 .{ .name = "zroaring", .module = zr_mod },
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
         }),
     });
     b.installArtifact(exe);
     const exe_run = b.step("run", "run main exe");
     const run_exe = b.addRunArtifact(exe);
-    if (b.args) |args| run_exe.addArgs(args);
+    run_exe.addPassthruArgs();
     exe_run.dependOn(&run_exe.step);
 
     const gen_corpus = b.addExecutable(.{
@@ -146,7 +145,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .imports = &.{
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
         }),
     });
@@ -163,7 +162,7 @@ pub fn build(b: *std.Build) !void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
         }),
     });
@@ -181,14 +180,14 @@ pub fn build(b: *std.Build) !void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
             // .strip = false,
         }),
     });
     bench_exe.root_module.linkLibrary(libcroaring);
     const bench_run = b.addRunArtifact(bench_exe);
-    if (b.args) |args| bench_run.addArgs(args);
+    bench_run.addPassthruArgs();
     b.step("bench", "Run simple benchmark with CRoaring.").dependOn(&bench_run.step);
     b.installArtifact(bench_exe);
 
@@ -204,7 +203,7 @@ pub fn build(b: *std.Build) !void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "build-options", .module = options_mod },
-                .{ .name = "croaring", .module = translate_cr_mod },
+                .{ .name = "croaring", .module = translate_cr.mod },
             },
         }),
     });
@@ -229,7 +228,7 @@ pub fn build(b: *std.Build) !void {
                 .link_libc = true,
                 .imports = &.{
                     .{ .name = "build-options", .module = options_mod },
-                    .{ .name = "croaring", .module = translate_cr_mod },
+                    .{ .name = "croaring", .module = translate_cr.mod },
                     .{ .name = "zroaring", .module = zr_mod },
                 },
             }),

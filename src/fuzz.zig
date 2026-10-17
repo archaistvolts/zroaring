@@ -15,8 +15,8 @@ test "croaring oracle fuzz" { // primary zig fuzzing routine
 test "crash corpus" {
     for (crash_corpus) |ops| {
         try cr_perform_ops(testgpa, ops);
-        if (testing.allocator_instance.deinit() == .leak) @panic("leak detected!");
-        testing.allocator_instance = .init;
+        if (testing.allocator_instance.deinit() != 0) @panic("leak detected!");
+        testing.allocator_instance = .init(std.heap.page_allocator, .{});
     }
 }
 
@@ -342,7 +342,7 @@ const AflSmith = struct {
     /// returns or null on eof
     pub fn nextOp(smith: *AflSmith, buf: []u32) ?Op {
         const byte = smith.bytes.takeByte() catch return null;
-        const tag: Op.Tag = @enumFromInt(byte % @typeInfo(Op).@"union".fields.len);
+        const tag: Op.Tag = @fromBackingInt(@intCast(byte % @typeInfo(Op).@"union".field_names.len));
         const idx = smith.valueRangeLessThan(u8, 0, NUM_BITMAPS) orelse return null;
         return switch (tag) {
             .add => .{ .add = .{ .idx = idx, .val = smith.valueRangeLessThan(u32, 0, MAX_VAL) orelse return null } },
@@ -479,7 +479,7 @@ pub fn writeOpFile(ctx: AflCtx, ops: []const Op) !void {
 }
 
 pub fn writeOp(op: Op, writer: *Io.Writer) !void {
-    try writer.writeByte(@intFromEnum(op));
+    try writer.writeByte(@backingInt(op));
     switch (op) { // write idx for all ops
         inline else => |x| try writer.writeByte(if (@TypeOf(x) == u8) x else x.idx),
         .or_many => {},
@@ -547,7 +547,7 @@ pub fn writeOp(op: Op, writer: *Io.Writer) !void {
 }
 
 pub fn readOp(r: *Io.Reader, buf: []u32) !Op {
-    const tag: Op.Tag = @enumFromInt(try r.takeByte());
+    const tag: Op.Tag = @fromBackingInt(try r.takeByte());
     switch (tag) {
         inline .clear,
         .run_optimize,
@@ -1009,7 +1009,7 @@ try testing.expectEqual(cs.cardinality,                zs.cardinality); // zig f
         try testing.expectEqual(@as(u32, @bitCast(ra.*.size)), r.array.len);
         for (r.get_containers(), 0..) |zc, i| {
             //                                                                            % 4 maps [1,2,3,4] to [1,2,3,0]
-            try testing.expectEqual(@as(zroaring.Typecode, @enumFromInt(ra.*.typecodes[i] % 4)), zc.data.typecode);
+            try testing.expectEqual(@as(zroaring.Typecode, @fromBackingInt(@intCast(ra.*.typecodes[i] % 4))), zc.data.typecode);
             const cr_raw = @as(u32, @bitCast(c.container_get_cardinality(ra.*.containers[i], ra.*.typecodes[i])));
             const cr_card: u32 = if (cr_raw == std.math.maxInt(u32)) // convert -1 (u32 max) to u30 max
                 zroaring.constants.BITSET_UNKNOWN_CARDINALITY

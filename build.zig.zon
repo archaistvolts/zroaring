@@ -2,8 +2,13 @@
     .name = .zroaring,
     .version = "0.0.1",
     .fingerprint = 0xd02d5a2babbace84, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c#a8b717716b048b2cb17f732d8593cc44a927b695",
+            .hash = "translate_c-2.0.1-Q_BUWvBNBwClnqlfNBHRsHsfCBDynnRrQccpACbrm8d3",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

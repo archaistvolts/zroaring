@@ -7,7 +7,7 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 [Documentation](https://archaistvolts.github.io/zroaring/) is hosted on github.
 
 # Use
-With zig version 0.16.0
+With zig version 0.17.0
 
 ### fetch package
 ```console

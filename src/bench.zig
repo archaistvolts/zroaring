@@ -606,7 +606,7 @@ pub fn main(init: std.process.Init) !void {
         std.heap.c_allocator;
     var args = try init.minimal.args.iterateAllocator(gpa);
     _ = args.next();
-    var parsed_args: std.EnumSet(Arg) = .initEmpty();
+    var parsed_args: std.EnumSet(Arg) = .empty;
     while (args.next()) |arg| {
         parsed_args.insert(std.meta.stringToEnum(Arg, arg) orelse
             return error.Arg);

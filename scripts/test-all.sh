@@ -20,7 +20,7 @@ buildAndTest
 opt="-Doptimize=ReleaseSmall"
 buildAndTest
 
-./bench
+zig build bench -Doptimize=ReleaseFast
 
 zig build -Dfuzz-exe
 

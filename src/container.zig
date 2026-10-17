@@ -110,7 +110,7 @@ pub const Container = struct {
     }
 
     pub fn assert_valid(c: Container) void {
-        if (!(builtin.is_test or builtin.mode == .Debug)) return;
+        if (!(builtin.is_test or builtin.mode == .debug)) return;
         var reason: ?[]const u8 = null;
         if (!c.internal_validate(&reason)) {
             trace(@src(), "{s}", .{reason.?});
@@ -606,7 +606,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
     }
 
     pub fn internal_validate(v: Container, reason: *?[]const u8) bool {
-        if (!(@import("builtin").is_test or @import("builtin").mode == .Debug))
+        if (!(@import("builtin").is_test or @import("builtin").mode == .debug))
             return;
         if (v.is_uninit()) return true; // FIXME
         if (v.data.cardinality == 0) {
@@ -1314,7 +1314,7 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         var eightsB: u8x32 = undefined;
         const size = data.len;
         const limit = size - size % 16;
-        var i: u64 = 0;
+        var i: usize = 0;
 
         while (i < limit) : (i += 16) {
             CSA(&twosA, &ones, ones, data[i], data[i + 1]);
@@ -1938,8 +1938,8 @@ misc.pair(.run,    .array) =>     run_container_equals_array(c1, c2), // zig fmt
         if (n_runs > step) {
             var total: root.Block32 = @splat(0);
             while (k + step <= n_runs) : (k += step) {
-                const ymm1: root.Block32 = @bitCast((runs + k)[0..C.BLOCK_LEN32].*);
-                const justlengths = ymm1 >> @splat(16);
+                const ymm1: *align(4) const root.Block32 = @ptrCast((runs + k)[0..C.BLOCK_LEN32]);
+                const justlengths = ymm1.* >> @splat(16);
                 total += justlengths;
             }
             // a store might be faster than extract?
